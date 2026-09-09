@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# secrets / local env
+.env
+.env.*
+!.env.example
+
+# runtime artifacts (traces, videos, encrypted credential store)
+/artifacts/

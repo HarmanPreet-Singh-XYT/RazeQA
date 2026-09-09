@@ -1,0 +1,34 @@
+[project]
+name = "agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "HarmanPreet-Singh-XYT", email = "preetsinghharman27@gmail.com" },
+]
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=50.0.1",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "playwright>=1.62.0",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.3",
+    "strands-agents[anthropic,gemini]>=1.55.0",
+    "pyjwt>=2.9.0",
+    "supabase>=2.13.0",
+    "uvicorn[standard]>=0.52.4",
+    "websockets>=13.0,<16",
+]
+
+
+[project.scripts]
+agent-bridge = "agent.bridge.cli:main"
+
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest>=9.1.1", "pytest-asyncio>=1.4.0", "ruff>=0.16.6"]
