@@ -25,6 +25,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { CustomVideoPlayer } from "@/components/custom-video-player";
+import { LanguageSwitcher } from "@/components/language-switcher";
 
 function GithubIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -79,10 +80,10 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-950 text-white font-mono font-bold text-xs shadow-sm">
-              PR
+              QA
             </div>
             <div className="flex items-center gap-2">
-              <span className="font-bold text-slate-900 tracking-tight text-base">PR Testing Engine</span>
+              <span className="font-bold text-slate-900 tracking-tight text-base">AutoQA</span>
               <span className="hidden sm:inline-block rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-600">
                 v1.0
               </span>
@@ -100,6 +101,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
           </nav>
 
           <div className="flex items-center gap-3">
+            <LanguageSwitcher />
             <Link
               href="/tools"
               className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2 py-1.5 transition-colors hidden sm:inline-block"
@@ -556,7 +558,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                 <tr className="border-b border-slate-200 bg-slate-50 font-semibold text-slate-700">
                   <th className="py-3 px-5">Capability</th>
                   <th className="py-3 px-5 text-slate-500">Traditional CI Suite</th>
-                  <th className="py-3 px-5 text-slate-950 font-bold">PR Testing Engine</th>
+                  <th className="py-3 px-5 text-slate-950 font-bold">AutoQA Platform</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 font-normal text-slate-700">
@@ -735,12 +737,16 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
       <footer className="border-t border-slate-200 py-8 bg-slate-50 text-xs text-slate-500">
         <div className="mx-auto max-w-6xl px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2 font-medium text-slate-700">
-            <span className="font-bold text-slate-900">PR Testing Engine</span>
+            <span className="font-bold text-slate-950">AutoQA</span>
             <span>—</span>
             <span>Autonomous PR verification for AI coding agents</span>
           </div>
 
-          <div className="flex items-center gap-5 font-medium">
+          <div className="flex items-center gap-5 font-medium flex-wrap">
+            <Link href="/terms" className="hover:text-slate-900 transition-colors">Terms</Link>
+            <Link href="/privacy" className="hover:text-slate-900 transition-colors">Privacy</Link>
+            <Link href="/security" className="hover:text-slate-900 transition-colors">Security</Link>
+            <span className="text-slate-300">•</span>
             <Link href="/tools" className="text-indigo-600 hover:text-indigo-900 transition-colors font-semibold">Dev Tools Hub</Link>
             <Link href="/dashboard" className="hover:text-slate-900 transition-colors">Console</Link>
             <Link href="/design-system" className="hover:text-slate-900 transition-colors">Design System</Link>

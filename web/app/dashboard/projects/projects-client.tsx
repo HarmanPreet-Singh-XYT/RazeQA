@@ -28,6 +28,7 @@ import {
   Users,
   Workflow,
   Zap,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -89,9 +90,10 @@ export default function ProjectsClient() {
   });
 
   const [userEmail, setUserEmail] = useState(settings.roles.user.email);
-  const [userPassword, setUserPassword] = useState("changeme123");
+  const [userPassword, setUserPassword] = useState("");
   const [adminEmail, setAdminEmail] = useState(settings.roles.admin.email);
-  const [adminPassword, setAdminPassword] = useState("adminpass456");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadProjects() {
@@ -118,12 +120,19 @@ export default function ProjectsClient() {
 
   const handleSave = async () => {
     setIsSaving(true);
+    setSaveError(null);
     try {
       const updatedSettings = {
         ...settings,
         roles: {
-          user: { email: userEmail, password: userPassword },
-          admin: { email: adminEmail, password: adminPassword },
+          user: {
+            email: userEmail,
+            password: userPassword.trim() ? userPassword : (settings.roles?.user?.password || "••••••••••••"),
+          },
+          admin: {
+            email: adminEmail,
+            password: adminPassword.trim() ? adminPassword : (settings.roles?.admin?.password || "••••••••••••"),
+          },
         },
       };
 
@@ -138,11 +147,18 @@ export default function ProjectsClient() {
 
       if (res.ok) {
         setSettings(updatedSettings);
+        setUserPassword("");
+        setAdminPassword("");
         setSaveSuccess(true);
+        setSaveError(null);
         setTimeout(() => setSaveSuccess(false), 3000);
+      } else {
+        const errorData = await res.json().catch(() => ({}));
+        setSaveError(errorData.error || `Failed to save changes (HTTP ${res.status}).`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Save error", err);
+      setSaveError(err?.message || "A network error occurred while saving project settings.");
     } finally {
       setIsSaving(false);
     }
@@ -155,10 +171,10 @@ export default function ProjectsClient() {
         <div className="flex items-center gap-4">
           <Link href="/dashboard" className="flex items-center gap-2 group">
             <div className="h-8 w-8 rounded-lg bg-emerald-600 flex items-center justify-center text-white font-bold text-base shadow-sm group-hover:bg-emerald-700 transition-colors">
-              I
+              A
             </div>
             <span className="font-extrabold text-base tracking-tight text-slate-950">
-              AutoQA <span className="font-medium text-slate-500 text-xs">QA Engine</span>
+              AutoQA <span className="font-medium text-slate-500 text-xs">Engine</span>
             </span>
           </Link>
 
@@ -239,6 +255,24 @@ export default function ProjectsClient() {
 
       {/* ---------------- Main Content ---------------- */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-6 md:p-8 space-y-8">
+        {saveError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-xs text-red-800 flex items-center justify-between shadow-xs animate-in fade-in-50">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+              <div>
+                <span className="font-bold">Save Failed:</span> {saveError}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSaveError(null)}
+              className="text-red-600 hover:text-red-900 font-semibold text-xs ml-4"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Page Banner */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-6">
           <div>
@@ -410,6 +444,7 @@ export default function ProjectsClient() {
                     <input
                       type="password"
                       value={userPassword}
+                      placeholder="•••••••••••• (Leave blank to keep existing)"
                       onChange={(e) => setUserPassword(e.target.value)}
                       className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900 font-mono"
                     />
@@ -443,6 +478,7 @@ export default function ProjectsClient() {
                     <input
                       type="password"
                       value={adminPassword}
+                      placeholder="•••••••••••• (Leave blank to keep existing)"
                       onChange={(e) => setAdminPassword(e.target.value)}
                       className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900 font-mono"
                     />

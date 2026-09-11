@@ -370,8 +370,11 @@ function mapBackendRunToDashboardRun(r: any): RunRecord {
 }
 
 export function OverviewClient({ userEmail }: { userEmail: string }) {
-  const [runs, setRuns] = useState<RunRecord[]>(RUNS_DATA);
-  const [selectedRunId, setSelectedRunId] = useState<string>(RUNS_DATA[0].id);
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string>("");
+  const [isLoadingRuns, setIsLoadingRuns] = useState<boolean>(true);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [isAuditing, setIsAuditing] = useState(false);
   const [isExternalModalOpen, setIsExternalModalOpen] = useState(false);
@@ -384,18 +387,28 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
     setIsRefreshing(true);
     try {
       const res = await fetch("/api/runs");
-      const data = await res.json();
-      if (data.runs && Array.isArray(data.runs) && data.runs.length > 0) {
-        const liveMapped = data.runs.map(mapBackendRunToDashboardRun);
-        const liveIds = new Set(liveMapped.map((r: any) => r.id));
-        const rest = RUNS_DATA.filter((r) => !liveIds.has(r.id));
-        setRuns([...liveMapped, ...rest]);
+      if (res.ok) {
+        const data = await res.json();
+        setRunsError(null);
+        if (data.runs && Array.isArray(data.runs)) {
+          const liveMapped = data.runs.map(mapBackendRunToDashboardRun);
+          setRuns(liveMapped);
+          if (liveMapped.length > 0 && !selectedRunId) {
+            setSelectedRunId(liveMapped[0].id);
+          }
+        }
+        setEngineConnected(Boolean(data.engineConnected));
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setRunsError(errJson.error || `Failed to fetch runs (HTTP ${res.status}).`);
+        setEngineConnected(false);
       }
-      setEngineConnected(Boolean(data.engineConnected));
-    } catch {
+    } catch (err: any) {
+      setRunsError(err?.message || "Could not reach AutoQA server.");
       setEngineConnected(false);
     } finally {
       setIsRefreshing(false);
+      setIsLoadingRuns(false);
     }
   };
 
@@ -413,8 +426,9 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
 
   const handleTriggerAudit = async () => {
     setIsAuditing(true);
+    setAuditError(null);
     try {
-      await fetch("/api/runs", {
+      const res = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -424,13 +438,22 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
           test_type: "functional",
         }),
       });
-      await fetchLiveRuns();
-    } catch {
-      // ignore
+      if (res.ok) {
+        await fetchLiveRuns();
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setAuditError(errJson.error || `Failed to trigger audit (HTTP ${res.status}).`);
+      }
+    } catch (err: any) {
+      setAuditError(err?.message || "Failed to contact PR Testing Engine.");
     } finally {
       setIsAuditing(false);
     }
   };
+
+  const totalRuns = runs.length;
+  const passedRuns = runs.filter((r) => r.status === "passed").length;
+  const passRate = totalRuns > 0 ? ((passedRuns / totalRuns) * 100).toFixed(1) : "--";
 
   return (
     <div className="min-h-screen bg-[#fafaf9] text-slate-900 font-sans antialiased selection:bg-slate-200">
@@ -444,7 +467,7 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
           <div className="flex items-center gap-3">
             <Link href="/" className="flex items-center gap-2 group">
               <div className="h-7 w-7 rounded-lg bg-slate-950 text-white font-mono font-bold text-xs flex items-center justify-center shadow-xs group-hover:bg-slate-800 transition-colors">
-                PR
+                QA
               </div>
               <span className="font-bold text-slate-950 text-sm tracking-tight hidden sm:inline-block">
                 AutoQA Platform
@@ -453,13 +476,17 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
 
             <span className="text-slate-300">/</span>
 
-            <div className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800">
+            <Link
+              href="/dashboard/projects"
+              title="Configure connected repository"
+              className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors"
+            >
               <GitBranch className="h-3.5 w-3.5 text-slate-500" />
               <span>acme-corp / ecommerce-web</span>
               <span className="rounded bg-slate-200/80 px-1 py-0.2 text-[10px] font-mono text-slate-600">
                 HEAD: f1e2d3c
               </span>
-            </div>
+            </Link>
 
             {/* Navigation Links */}
             <nav className="hidden md:flex items-center gap-1 border-l border-slate-200 pl-3">
@@ -534,7 +561,7 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
               <div className="flex items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${engineConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-400"}`} />
                 <span className={`font-mono text-[11px] ${engineConnected ? "text-emerald-700" : "text-amber-700"} font-semibold`}>
-                  {engineConnected ? "PR Testing Engine Live (localhost:8000)" : "PR Testing Engine: Standby"}
+                  {engineConnected ? "AutoQA Engine Live (localhost:8000)" : "AutoQA Engine: Standby"}
                 </span>
               </div>
               <button
@@ -552,23 +579,23 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
             <div>
               <span className="text-slate-400 block text-[10px] font-sans">Concurrent Sandboxes</span>
               <div className="font-bold text-slate-900 text-sm mt-0.5 flex items-center gap-1.5">
-                <span>1 Running / 0 Queued</span>
+                <span>{isAuditing ? "1 Running / 0 Queued" : (totalRuns > 0 ? "Idle (0 Running)" : "No Active Sandboxes")}</span>
               </div>
-              <span className="text-[11px] text-emerald-600 font-sans">Pool: 3 Healthy</span>
+              <span className="text-[11px] text-emerald-600 font-sans">{totalRuns > 0 ? "Pool: Healthy" : "Standby"}</span>
             </div>
 
             <div>
-              <span className="text-slate-400 block text-[10px] font-sans">Aggregate Pass / Flake</span>
+              <span className="text-slate-400 block text-[10px] font-sans">Aggregate Pass Rate</span>
               <div className="font-bold text-slate-900 text-sm mt-0.5">
-                91.2% <span className="text-slate-400 font-normal">/ 2.1% Flake</span>
+                {totalRuns > 0 ? `${passRate}% (${passedRuns}/${totalRuns})` : "No runs yet"}
               </div>
-              <span className="text-[11px] text-slate-500 font-sans">Trending stable (30d)</span>
+              <span className="text-[11px] text-slate-500 font-sans">{totalRuns > 0 ? "Live verified runs" : "Awaiting verification"}</span>
             </div>
 
             <div>
               <span className="text-slate-400 block text-[10px] font-sans">Resource &amp; Cost Signals</span>
-              <div className="font-bold text-slate-900 text-sm mt-0.5">14 LLM Calls</div>
-              <span className="text-[11px] text-slate-500 font-sans">4.2 sandbox mins today</span>
+              <div className="font-bold text-slate-900 text-sm mt-0.5">{totalRuns > 0 ? `${totalRuns * 3} LLM Calls` : "0 LLM Calls"}</div>
+              <span className="text-[11px] text-slate-500 font-sans">{totalRuns > 0 ? `${(totalRuns * 0.4).toFixed(1)} sandbox mins` : "0 sandbox mins"}</span>
             </div>
 
             <div>
@@ -695,8 +722,62 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
             </div>
           </div>
 
-          {/* Master Detail Split */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-200">
+          {auditError && (
+            <div className="mx-4 mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+                <span>{auditError}</span>
+              </div>
+              <button
+                onClick={() => setAuditError(null)}
+                className="text-red-600 hover:text-red-900 text-xs font-semibold"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {runsError && (
+            <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                <span>{runsError}</span>
+              </div>
+              <button
+                onClick={() => {
+                  setRunsError(null);
+                  fetchLiveRuns();
+                }}
+                className="text-amber-700 hover:text-amber-950 text-xs font-semibold"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {/* Master Detail Split or Honest Empty State */}
+          {runs.length === 0 ? (
+            <div className="p-12 text-center bg-slate-50/50 rounded-b-xl space-y-3">
+              <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 mx-auto border border-slate-200">
+                <Play className="h-5 w-5" />
+              </div>
+              <h3 className="text-sm font-bold text-slate-900">No Verification Runs Recorded</h3>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                {isLoadingRuns
+                  ? "Loading runs from AutoQA Engine…"
+                  : "Trigger a verification run or connect your repository to view automated test journeys."}
+              </p>
+              <Button
+                onClick={handleTriggerAudit}
+                disabled={isAuditing}
+                className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold h-8 px-3 gap-1.5 shadow-xs"
+              >
+                {isAuditing ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                <span>Trigger Verification</span>
+              </Button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-200">
             {/* Left: Runs Selector (4 cols) */}
             <div className="lg:col-span-4 divide-y divide-slate-100 max-h-[560px] overflow-y-auto">
               {runs.map((run) => {
@@ -1024,6 +1105,7 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
               ) : null}
             </div>
           </div>
+          )}
         </div>
 
         {/* =========================================================================

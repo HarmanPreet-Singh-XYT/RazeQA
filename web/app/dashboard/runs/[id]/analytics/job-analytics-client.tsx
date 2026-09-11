@@ -49,8 +49,11 @@ export default function JobAnalyticsClient({
   const { t, locale, formatNumber } = useTranslation();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string>("");
   const [appliedFix, setAppliedFix] = useState(false);
+  const [isApplyingFix, setIsApplyingFix] = useState(false);
+  const [applyFixError, setApplyFixError] = useState<string | null>(null);
 
   const fetchJobAnalytics = async () => {
     try {
@@ -58,13 +61,17 @@ export default function JobAnalyticsClient({
       if (res.ok) {
         const json = await res.json();
         setData(json);
+        setFetchError(null);
         const paths = Object.keys(json.quality_report?.per_path_analysis || {});
         if (paths.length > 0) {
           setSelectedPath(paths[0]);
         }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setFetchError(errData.error || `Could not load quality report (HTTP ${res.status}).`);
       }
-    } catch {
-      // handled by fallback
+    } catch (err: any) {
+      setFetchError(err?.message || "Failed to reach PR Testing Engine.");
     } finally {
       setLoading(false);
     }
@@ -74,34 +81,79 @@ export default function JobAnalyticsClient({
     fetchJobAnalytics();
   }, [runId]);
 
-  const report = data?.quality_report || {
-    run_id: runId,
-    mode: runId.includes("ext") ? "external_site" : "github_pr",
-    composite_health_index: 88,
-    dimensions: {
-      performance: 88,
-      usability: 91,
-      i18n: 86,
-      security: 95,
-      reliability: 89,
-      seo: 92,
-      maintainability: 89,
-      observability: 94,
-    },
-    per_path_analysis: {},
-    critical_findings: [],
-    remediations: [],
+  const handleApplyFix = async () => {
+    setIsApplyingFix(true);
+    setApplyFixError(null);
+    try {
+      const res = await fetch(`/api/runs/${runId}/apply`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        setAppliedFix(true);
+        setTimeout(() => setAppliedFix(false), 4000);
+        await fetchJobAnalytics();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setApplyFixError(errData.error || `Failed to apply fix (HTTP ${res.status}).`);
+      }
+    } catch (err: any) {
+      setApplyFixError(err?.message || "Network error while connecting to PR Testing Engine.");
+    } finally {
+      setIsApplyingFix(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#fafaf9] flex flex-col items-center justify-center p-6 text-center">
+        <div className="flex items-center gap-2 text-slate-600 text-xs font-medium">
+          <RefreshCw className="h-4 w-4 animate-spin text-indigo-600" />
+          <span>Loading quality diagnostics for {runId}...</span>
+        </div>
+      </div>
+    );
+  }
+
+  const report = data?.quality_report;
+
+  if (!report) {
+    return (
+      <div className="min-h-screen bg-[#fafaf9] flex flex-col items-center justify-center p-6 text-center">
+        <div className="max-w-md w-full bg-white rounded-2xl border border-slate-200 p-8 shadow-sm space-y-4">
+          <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto">
+            <AlertTriangle className="h-6 w-6" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-900">Job Analytics Unavailable</h2>
+          <p className="text-xs text-slate-600">
+            {fetchError || `Could not find forensic quality report for run "${runId}". Ensure the backend service is active.`}
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => {
+                setLoading(true);
+                fetchJobAnalytics();
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Retry
+            </button>
+            <Link
+              href="/dashboard/runs"
+              className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Back to PR Forensics
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const isExternal = report.mode === "external_site";
   const perPathMap = report.per_path_analysis || {};
   const pathKeys = Object.keys(perPathMap);
   const activePathData = perPathMap[selectedPath] || (pathKeys.length > 0 ? perPathMap[pathKeys[0]] : null);
-
-  const handleApplyFix = () => {
-    setAppliedFix(true);
-    setTimeout(() => setAppliedFix(false), 3000);
-  };
 
   return (
     <div className="min-h-screen bg-[#fafaf9] text-slate-900 font-sans antialiased selection:bg-indigo-100">
@@ -416,13 +468,31 @@ export default function JobAnalyticsClient({
             </div>
 
             {!isExternal && (
-              <button
-                onClick={handleApplyFix}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 transition-colors shadow-xs"
-              >
-                {appliedFix ? <Check className="h-3.5 w-3.5" /> : <GitPullRequest className="h-3.5 w-3.5" />}
-                {appliedFix ? "Patch Committed to Branch!" : "Apply Fix to PR"}
-              </button>
+              <div className="flex flex-col items-end gap-1.5">
+                <button
+                  onClick={handleApplyFix}
+                  disabled={isApplyingFix}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 transition-colors shadow-xs disabled:opacity-60"
+                >
+                  {isApplyingFix ? (
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  ) : appliedFix ? (
+                    <Check className="h-3.5 w-3.5" />
+                  ) : (
+                    <GitPullRequest className="h-3.5 w-3.5" />
+                  )}
+                  {isApplyingFix
+                    ? "Applying Patch to PR..."
+                    : appliedFix
+                    ? "Patch Committed to Branch!"
+                    : "Apply Fix to PR"}
+                </button>
+                {applyFixError && (
+                  <span className="text-[11px] text-red-600 font-medium">
+                    {applyFixError}
+                  </span>
+                )}
+              </div>
             )}
           </div>
 

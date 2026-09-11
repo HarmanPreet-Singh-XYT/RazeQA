@@ -49,6 +49,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
   const [userQuery, setUserQuery] = useState("");
   const [isQuerying, setIsQuerying] = useState(false);
   const [queryResponse, setQueryResponse] = useState<any>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const fetchAnalytics = async () => {
     try {
@@ -56,9 +57,13 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
       if (res.ok) {
         const json = await res.json();
         setData(json);
+        setFetchError(null);
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setFetchError(errJson.error || `Failed to load fleet analytics (HTTP ${res.status}).`);
       }
-    } catch {
-      // Handled by default state
+    } catch (err: any) {
+      setFetchError(err?.message || "Failed to contact PR Testing Engine.");
     } finally {
       setLoading(false);
     }
@@ -93,31 +98,87 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
     }
   };
 
-  const metrics = data?.metrics || {
-    total_runs: 14,
-    pass_rate: 92.8,
-    flakiness_index: 1.4,
-    mttd_seconds: 1.38,
-    p50_latency_ms: 1120.0,
-    p95_latency_ms: 2180.0,
-    composite_fleet_health: 93,
-    dimensions: {
-      performance: 91,
-      usability: 94,
-      i18n: 88,
-      security: 96,
-      reliability: 93,
-      seo: 92,
-      maintainability: 90,
-      observability: 95,
-    },
-    velocity_trend: [],
-    component_risk_heatmap: [],
-    pr_runs_count: 11,
-    external_runs_count: 3,
-  };
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#fafaf9] flex flex-col items-center justify-center p-6 text-center">
+        <div className="flex items-center gap-2 text-slate-600 text-xs font-medium">
+          <RefreshCw className="h-4 w-4 animate-spin text-indigo-600" />
+          <span>Loading fleet quality dimensions…</span>
+        </div>
+      </div>
+    );
+  }
 
-  const insights = data?.insights || [];
+  if (!data?.metrics || data.metrics.total_runs === 0) {
+    return (
+      <div className="min-h-screen bg-[#fafaf9] text-slate-900 font-sans antialiased">
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md">
+          <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
+            <div className="flex items-center gap-3">
+              <Link href="/" className="flex items-center gap-2 group">
+                <div className="h-7 w-7 rounded-lg bg-slate-950 text-white font-mono font-bold text-xs flex items-center justify-center shadow-xs group-hover:bg-slate-800 transition-colors">
+                  QA
+                </div>
+                <span className="font-bold text-slate-950 text-sm tracking-tight hidden sm:inline-block">
+                  AutoQA Platform
+                </span>
+              </Link>
+              <span className="text-slate-300">/</span>
+              <div className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800">
+                <Compass className="h-3.5 w-3.5 text-indigo-600" />
+                <span>Fleet Analytics</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <LanguageSwitcher />
+              <Link
+                href="/dashboard"
+                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+              >
+                Overview
+              </Link>
+            </div>
+          </div>
+        </header>
+
+        <main className="max-w-7xl mx-auto px-6 py-24 text-center">
+          <div className="max-w-md mx-auto bg-white rounded-2xl border border-slate-200 p-8 shadow-sm space-y-4">
+            <div className="w-12 h-12 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center mx-auto border border-slate-200">
+              <Activity className="h-6 w-6" />
+            </div>
+            <h2 className="text-lg font-bold text-slate-900">
+              {fetchError ? "Fleet Analytics Unavailable" : "No Verification Data Recorded"}
+            </h2>
+            <p className="text-xs text-slate-500">
+              {fetchError ||
+                "Run your first PR verification journey or external site test to compute quality dimensions and regression forecasting."}
+            </p>
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                onClick={() => {
+                  setLoading(true);
+                  fetchAnalytics();
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Retry
+              </button>
+              <Link
+                href="/dashboard/runs"
+                className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Go to PR Forensics
+              </Link>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  const metrics = data.metrics;
+  const insights = data.insights || [];
   const dimensions = metrics.dimensions || {};
 
   return (

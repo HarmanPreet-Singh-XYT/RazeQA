@@ -386,14 +386,18 @@ function mapBackendToDashboardRun(r: any): DashboardRun {
 }
 
 export function RunsClient({ userEmail }: { userEmail: string }) {
-  const [runs, setRuns] = useState<DashboardRun[]>(SAMPLE_RUNS);
-  const [selectedRunId, setSelectedRunId] = useState<string>(SAMPLE_RUNS[0].id);
+  const [runs, setRuns] = useState<DashboardRun[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string>("");
+  const [isLoadingRuns, setIsLoadingRuns] = useState(true);
+  const [runsError, setRunsError] = useState<string | null>(null);
   const [selectedStepId, setSelectedStepId] = useState<number>(4);
   const [activeTab, setActiveTab] = useState<"visual" | "network" | "console" | "prompt" | "intent">("visual");
   const [filterStatus, setFilterStatus] = useState<"all" | "failed" | "passed">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [isApplyingFix, setIsApplyingFix] = useState(false);
+  const [applyFixError, setApplyFixError] = useState<string | null>(null);
+  const [isTriggeringTest, setIsTriggeringTest] = useState(false);
   const [isExternalModalOpen, setIsExternalModalOpen] = useState(false);
   const [showCliStream, setShowCliStream] = useState(false);
 
@@ -402,15 +406,24 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
   const fetchLiveRuns = async () => {
     try {
       const res = await fetch("/api/runs");
-      const data = await res.json();
-      if (data.runs && Array.isArray(data.runs) && data.runs.length > 0) {
-        const liveMapped = data.runs.map(mapBackendToDashboardRun);
-        const liveIds = new Set(liveMapped.map((r: any) => r.id));
-        const rest = SAMPLE_RUNS.filter((r) => !liveIds.has(r.id));
-        setRuns([...liveMapped, ...rest]);
+      if (res.ok) {
+        const data = await res.json();
+        setRunsError(null);
+        if (data.runs && Array.isArray(data.runs)) {
+          const liveMapped = data.runs.map(mapBackendToDashboardRun);
+          setRuns(liveMapped);
+          if (liveMapped.length > 0 && !selectedRunId) {
+            setSelectedRunId(liveMapped[0].id);
+          }
+        }
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setRunsError(errJson.error || `Failed to fetch runs (HTTP ${res.status}).`);
       }
-    } catch {
-      // offline fallback maintains SAMPLE_RUNS
+    } catch (err: any) {
+      setRunsError(err?.message || "Failed to contact PR Testing Engine.");
+    } finally {
+      setIsLoadingRuns(false);
     }
   };
 
@@ -419,6 +432,33 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
     const interval = setInterval(fetchLiveRuns, 4000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleTriggerTest = async () => {
+    setIsTriggeringTest(true);
+    setRunsError(null);
+    try {
+      const res = await fetch("/api/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          branch: "feat/quick-checkout",
+          sha: "f1e2d3c" + Math.random().toString(16).slice(2, 6),
+          scope: "changed",
+          test_type: "functional",
+        }),
+      });
+      if (res.ok) {
+        await fetchLiveRuns();
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setRunsError(errJson.error || `Failed to trigger journey test (HTTP ${res.status}).`);
+      }
+    } catch (err: any) {
+      setRunsError(err?.message || "Failed to contact PR Testing Engine.");
+    } finally {
+      setIsTriggeringTest(false);
+    }
+  };
 
   const filteredRuns = runs.filter((r) => {
     if (filterStatus === "failed" && r.status !== "failed") return false;
@@ -442,7 +482,9 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
   };
 
   const handleApplyFix = async () => {
+    if (!selectedRun) return;
     setIsApplyingFix(true);
+    setApplyFixError(null);
     setShowCliStream(true);
 
     try {
@@ -452,46 +494,13 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
       if (res.ok) {
         await fetchLiveRuns();
       } else {
-        // Fallback simulation for sample runs
-        setTimeout(() => {
-          setRuns((prev) =>
-            prev.map((r) =>
-              r.id === selectedRun.id
-                ? {
-                    ...r,
-                    status: "passed",
-                    risk: "none",
-                    commitMsg: "fix: pass default customer_address to charge invoice",
-                    sha: "c4d3e2f",
-                    failureReason: undefined,
-                    duration: "1.62s",
-                    timestamp: "Just now",
-                    steps: r.steps.map((s) => ({
-                      ...s,
-                      status: "passed",
-                      errorDetail: undefined,
-                    })),
-                    networkRequests: r.networkRequests.map((n) =>
-                      n.status === 422
-                        ? {
-                            ...n,
-                            status: 200,
-                            isError: false,
-                            responseSnippet: '{"status": "success", "charge_id": "ch_9841"}',
-                          }
-                        : n
-                    ),
-                    consoleErrors: [],
-                  }
-                : r
-            )
-          );
-        }, 1200);
+        const errJson = await res.json().catch(() => ({}));
+        setApplyFixError(errJson.error || `Failed to apply fix to PR (HTTP ${res.status}).`);
       }
-    } catch {
-      // Offline fallback
+    } catch (err: any) {
+      setApplyFixError(err?.message || "Failed to contact PR Testing Engine.");
     } finally {
-      setTimeout(() => setIsApplyingFix(false), 1500);
+      setIsApplyingFix(false);
     }
   };
 
@@ -503,21 +512,25 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
         <div className="flex items-center gap-3">
           <Link href="/" className="flex items-center gap-2 group">
             <div className="h-7 w-7 rounded-lg bg-slate-950 text-white font-mono font-bold text-xs flex items-center justify-center shadow-xs group-hover:bg-slate-800 transition-colors">
-              PR
+              QA
             </div>
             <span className="font-bold text-slate-950 text-sm tracking-tight hidden sm:inline-block">
-              PR Testing Engine
+              AutoQA Platform
             </span>
           </Link>
 
           <span className="text-slate-300">/</span>
 
           {/* Repo switcher */}
-          <div className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer">
+          <Link
+            href="/dashboard/projects"
+            title="Configure connected repository"
+            className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+          >
             <GitBranch className="h-3.5 w-3.5 text-slate-500" />
             <span>acme-corp / ecommerce-web</span>
             <ChevronDown className="h-3 w-3 text-slate-400" />
-          </div>
+          </Link>
 
           {/* Navigation Links */}
           <nav className="hidden md:flex items-center gap-1 border-l border-slate-200 pl-3">
@@ -573,11 +586,11 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
           </button>
 
           <button
-            onClick={handleApplyFix}
-            disabled={isApplyingFix}
-            className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50 active:scale-95 transition-all"
+            onClick={handleTriggerTest}
+            disabled={isTriggeringTest}
+            className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50 active:scale-95 transition-all disabled:opacity-60"
           >
-            {isApplyingFix ? (
+            {isTriggeringTest ? (
               <>
                 <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-900" />
                 <span>Running Pipeline…</span>
@@ -613,6 +626,24 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
           </div>
         </div>
       </header>
+
+      {runsError && (
+        <div className="bg-red-50 border-b border-red-200 px-5 py-2 text-xs text-red-800 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 text-red-600 shrink-0" />
+            <span>{runsError}</span>
+          </div>
+          <button
+            onClick={() => {
+              setRunsError(null);
+              fetchLiveRuns();
+            }}
+            className="font-bold text-red-700 hover:text-red-900 ml-4 text-[11px]"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* 2. Main Two-Column Split Workspace */}
       <div className="flex flex-1 overflow-hidden">
@@ -673,61 +704,106 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
 
           {/* Runs Feed */}
           <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
-            {filteredRuns.map((run) => {
-              const isSelected = run.id === selectedRun.id;
-              return (
-                <div
-                  key={run.id}
-                  onClick={() => setSelectedRunId(run.id)}
-                  className={`p-3.5 cursor-pointer transition-all ${
-                    isSelected
-                      ? "bg-slate-100/90 border-l-3 border-slate-950"
-                      : "hover:bg-slate-50/80"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2 mb-1.5">
-                    <div className="flex items-center gap-1.5">
-                      {run.status === "failed" ? (
-                        <span className="flex h-2 w-2 rounded-full bg-rose-600 ring-4 ring-rose-100 shrink-0" />
-                      ) : (
-                        <span className="flex h-2 w-2 rounded-full bg-emerald-600 ring-4 ring-emerald-100 shrink-0" />
-                      )}
-                      <span className="font-mono text-xs font-bold text-slate-900 truncate">
-                        {run.branch}
+            {filteredRuns.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-400 space-y-2">
+                {isLoadingRuns ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-500" />
+                    <span>Loading verification runs…</span>
+                  </div>
+                ) : (
+                  <>
+                    <p className="font-medium text-slate-600">No verification runs recorded</p>
+                    <p className="text-[11px] text-slate-400">Trigger a journey test or connect a repo to view live results.</p>
+                  </>
+                )}
+              </div>
+            ) : (
+              filteredRuns.map((run) => {
+                const isSelected = selectedRun && run.id === selectedRun.id;
+                return (
+                  <div
+                    key={run.id}
+                    onClick={() => setSelectedRunId(run.id)}
+                    className={`p-3.5 cursor-pointer transition-all ${
+                      isSelected
+                        ? "bg-slate-100/90 border-l-3 border-slate-950"
+                        : "hover:bg-slate-50/80"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2 mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        {run.status === "failed" ? (
+                          <span className="flex h-2 w-2 rounded-full bg-rose-600 ring-4 ring-rose-100 shrink-0" />
+                        ) : (
+                          <span className="flex h-2 w-2 rounded-full bg-emerald-600 ring-4 ring-emerald-100 shrink-0" />
+                        )}
+                        <span className="font-mono text-xs font-bold text-slate-900 truncate">
+                          {run.branch}
+                        </span>
+                      </div>
+
+                      <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                        {run.timestamp}
                       </span>
                     </div>
 
-                    <span className="text-[10px] font-mono text-slate-400 shrink-0">
-                      {run.timestamp}
-                    </span>
-                  </div>
+                    <p className="text-xs text-slate-700 line-clamp-1 mb-2">
+                      {run.commitMsg}
+                    </p>
 
-                  <p className="text-xs text-slate-700 line-clamp-1 mb-2">
-                    {run.commitMsg}
-                  </p>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono">
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-700 font-semibold">PR #{run.prNumber}</span>
+                        <span>•</span>
+                        <span>{run.sha}</span>
+                      </div>
 
-                  <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono">
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-700 font-semibold">PR #{run.prNumber}</span>
-                      <span>•</span>
-                      <span>{run.sha}</span>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <span className="rounded bg-slate-200/70 px-1.5 py-0.2 text-[10px] text-slate-700">
-                        {run.route}
-                      </span>
-                      <span>{run.duration}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="rounded bg-slate-200/70 px-1.5 py-0.2 text-[10px] text-slate-700">
+                          {run.route}
+                        </span>
+                        <span>{run.duration}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </aside>
 
         {/* Right Column: Run Forensics & Inspection Detail View */}
         <main className="flex-1 flex flex-col bg-white overflow-hidden">
+          {!selectedRun ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-slate-50/50">
+              <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-400 mb-4 border border-slate-200">
+                <Terminal className="h-6 w-6" />
+              </div>
+              <h3 className="text-base font-bold text-slate-900 mb-1">No Verification Runs Recorded</h3>
+              <p className="text-xs text-slate-500 max-w-sm mb-5">
+                Execute your first autonomous verification journey or click "Trigger Journey Test" to analyze code diffs.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleTriggerTest}
+                  disabled={isTriggeringTest}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-950 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 transition-colors shadow-xs disabled:opacity-60"
+                >
+                  {isTriggeringTest ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Terminal className="h-3.5 w-3.5" />}
+                  Trigger Journey Test
+                </button>
+                <button
+                  onClick={() => setIsExternalModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  <Globe className="h-3.5 w-3.5 text-indigo-600" />
+                  Verify External Site
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
           {/* Detail View Header */}
           <div className="border-b border-slate-200 bg-white p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
@@ -789,23 +865,28 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
               </Link>
 
               {selectedRun.status === "failed" && (
-                <Button
-                  onClick={handleApplyFix}
-                  disabled={isApplyingFix}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold h-9 shadow-sm shrink-0 gap-1.5"
-                >
-                  {isApplyingFix ? (
-                    <>
-                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                      <span>Applying Fix to PR…</span>
-                    </>
-                  ) : (
-                    <>
-                      <GitPullRequest className="h-3.5 w-3.5" />
-                      <span>Apply Fix to PR</span>
-                    </>
+                <div className="flex flex-col items-end gap-1">
+                  <Button
+                    onClick={handleApplyFix}
+                    disabled={isApplyingFix}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold h-9 shadow-sm shrink-0 gap-1.5 disabled:opacity-60"
+                  >
+                    {isApplyingFix ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        <span>Applying Fix to PR…</span>
+                      </>
+                    ) : (
+                      <>
+                        <GitPullRequest className="h-3.5 w-3.5" />
+                        <span>Apply Fix to PR</span>
+                      </>
+                    )}
+                  </Button>
+                  {applyFixError && (
+                    <span className="text-[11px] text-red-600 font-medium">{applyFixError}</span>
                   )}
-                </Button>
+                </div>
               )}
             </div>
           </div>
@@ -1266,6 +1347,8 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
               </div>
             )}
           </div>
+          </>
+          )}
         </main>
       </div>
 
