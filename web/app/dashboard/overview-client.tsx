@@ -8,6 +8,8 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowRight,
+  Calendar,
+  Camera,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -43,7 +45,10 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
+import { FixProposalViewer } from "@/components/fix-proposal-viewer";
+import { CustomVideoPlayer } from "@/components/custom-video-player";
 import { logout } from "@/app/login/actions";
+import { ExternalTestModal } from "@/components/external-test-modal";
 
 // --- Domain Models based on Specification ---
 
@@ -55,7 +60,7 @@ export type RunRecord = {
   prUrl?: string;
   triggeringUser: string;
   triggerType: "on-demand" | "on-push" | "on-PR";
-  status: "queued" | "running" | "passed" | "failed" | "flaky";
+  status: "queued" | "running" | "passed" | "failed" | "flaky" | "superseded" | "cached";
   duration: string;
   timestamp: string;
   // Risk tag + rationale from diff/intent analyzer
@@ -79,13 +84,20 @@ export type RunRecord = {
   };
   // Forensic artifacts
   artifacts: {
-    traceUrl: string;
-    videoUrl: string;
+    traceUrl: string | null;
+    videoUrl: string | null;
+    screenshotUrl?: string | null;
     domSnapshotAvailable: boolean;
     networkWaterfallCount: number;
   };
-  // Remediation prompt
+  timing?: {
+    analysis_duration_s?: number;
+    journeys_duration_s?: number;
+    total_duration_s?: number;
+  };
+  // Remediation prompt & fix proposals
   remediationPrompt?: string;
+  fixProposals?: any[];
 };
 
 export type IntentLog = {
@@ -284,33 +296,56 @@ const IN_FLIGHT_INTENTS: IntentLog[] = [
   },
 ];
 
+/** Artifact URLs from the backend are relative engine paths — rewrite them to
+ * go through this app's own /api/artifacts proxy, which holds AGENT_API_KEY
+ * server-side (the engine requires a bearer token the browser doesn't have). */
+function resolveArtifactUrl(url?: string | null): string | undefined {
+  if (!url) return undefined;
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `/api/artifacts?file=${encodeURIComponent(url)}`;
+}
+
 function mapBackendRunToDashboardRun(r: any): RunRecord {
   const result = r.result || {};
   const isFailed = r.status === "failed" || result.status === "failure";
-  const status = r.status === "running" ? "running" : r.status === "queued" ? "queued" : isFailed ? "failed" : "passed";
+  const isExternal = r.scope === "external";
+  const status: RunRecord["status"] =
+    r.status === "superseded"
+      ? "superseded"
+      : r.status === "running"
+      ? "running"
+      : r.status === "queued"
+      ? "queued"
+      : isFailed
+      ? "failed"
+      : "passed";
   const passedCount = result.passed_journeys?.length ?? (status === "passed" ? 1 : 0);
   const failedCount = result.failed_journeys?.length ?? (status === "failed" ? 1 : 0);
   const isNewRegression = Boolean(result.baseline_comparison?.has_new_regressions);
 
   return {
     id: r.run_id,
-    branch: r.branch,
-    sha: r.sha?.slice(0, 7) || "unknown",
-    prNumber: 42,
-    prUrl: "https://github.com/acme-corp/ecommerce-web/pull/42",
-    triggeringUser: "harman (via Coding Agent Bridge)",
+    branch: isExternal ? `🌐 ${r.branch}` : r.branch,
+    sha: isExternal ? r.sha : (r.sha?.slice(0, 7) || "unknown"),
+    prNumber: isExternal ? 0 : 42,
+    prUrl: isExternal ? r.sha : "https://github.com/acme-corp/ecommerce-web/pull/42",
+    triggeringUser: isExternal ? "External Site Tester" : "harman (via Coding Agent Bridge)",
     triggerType: "on-demand",
     status,
-    duration: "1.24s",
+    duration: result.duration_s
+      ? `${result.duration_s}s`
+      : result.timing?.total_duration_s
+      ? `${result.timing.total_duration_s.toFixed(2)}s`
+      : "1.24s",
     timestamp: new Date(r.created_at || Date.now()).toLocaleTimeString(),
-    risk: (result.risk_tag as any) || "Medium",
-    riskRationale: result.rationale || "Real-time automated journey verification against preview sandbox.",
+    risk: (result.risk_tag as any) || (isExternal ? "Live QA" : "Medium"),
+    riskRationale: result.summary || result.rationale || "Real-time automated journey verification against preview sandbox.",
     scope: (r.scope as any) || "changed",
     testType: (r.test_type as any) || "functional",
     bucketCounts: {
       passed: passedCount,
       failed: failedCount,
-      additionalFindings: 0,
+      additionalFindings: result.additional_findings?.length ?? 0,
     },
     baselineComparison: {
       isNewRegression,
@@ -320,12 +355,15 @@ function mapBackendRunToDashboardRun(r: any): RunRecord {
         : "Matches baseline behavior on main.",
     },
     artifacts: {
-      traceUrl: result.trace_path || "artifacts/runs/trace.zip",
-      videoUrl: result.video_path || "artifacts/runs/video.webm",
+      traceUrl: resolveArtifactUrl(r.trace_url || result.trace_url) || null,
+      videoUrl: resolveArtifactUrl(r.video_url || result.video_url) || null,
+      screenshotUrl: resolveArtifactUrl(result.screenshot_url) || null,
       domSnapshotAvailable: true,
       networkWaterfallCount: 4,
     },
-    remediationPrompt: result.remediation_prompt || (isFailed ? `## 🚨 Autonomous PR Verification Failed on ${r.branch}\nPlease inspect the failing journeys and remediate.` : undefined),
+    timing: result.timing,
+    remediationPrompt: result.remediation_prompt || (isFailed ? `## 🚨 Verification Failed on ${r.branch}\nPlease inspect the failing journeys and remediate.` : undefined),
+    fixProposals: result.fix_proposals || [],
   };
 }
 
@@ -334,6 +372,7 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
   const [selectedRunId, setSelectedRunId] = useState<string>(RUNS_DATA[0].id);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [isAuditing, setIsAuditing] = useState(false);
+  const [isExternalModalOpen, setIsExternalModalOpen] = useState(false);
   const [engineConnected, setEngineConnected] = useState<boolean>(false);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
@@ -419,6 +458,28 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
                 HEAD: f1e2d3c
               </span>
             </div>
+
+            {/* Navigation Links */}
+            <nav className="hidden md:flex items-center gap-1 border-l border-slate-200 pl-3">
+              <Link
+                href="/dashboard"
+                className="rounded-md px-2.5 py-1 text-xs font-bold text-slate-950 bg-slate-100 transition-colors"
+              >
+                Overview
+              </Link>
+              <Link
+                href="/dashboard/runs"
+                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+              >
+                PR Forensics
+              </Link>
+              <Link
+                href="/dashboard/projects"
+                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+              >
+                Projects & Settings
+              </Link>
+            </nav>
           </div>
 
           {/* Account Profile & Sign Out */}
@@ -591,6 +652,14 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
 
             <div className="flex items-center gap-2">
               <Button
+                onClick={() => setIsExternalModalOpen(true)}
+                variant="outline"
+                className="border-indigo-200 bg-indigo-50/50 hover:bg-indigo-100/70 text-indigo-700 text-xs font-semibold h-8 shadow-xs gap-1.5"
+              >
+                <Globe className="h-3.5 w-3.5 text-indigo-600" />
+                <span>Verify External Site</span>
+              </Button>
+              <Button
                 onClick={handleTriggerAudit}
                 disabled={isAuditing}
                 className="bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold h-8 shadow-xs gap-1.5"
@@ -637,6 +706,18 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
                       {run.status === "failed" ? (
                         <span className="rounded bg-rose-50 border border-rose-200 text-rose-700 px-1.5 py-0.2 text-[10px] font-bold">
                           FAILED
+                        </span>
+                      ) : run.status === "running" ? (
+                        <span className="rounded bg-sky-50 border border-sky-200 text-sky-700 px-1.5 py-0.2 text-[10px] font-bold animate-pulse">
+                          RUNNING
+                        </span>
+                      ) : run.status === "queued" ? (
+                        <span className="rounded bg-amber-50 border border-amber-200 text-amber-700 px-1.5 py-0.2 text-[10px] font-bold">
+                          QUEUED
+                        </span>
+                      ) : run.status === "superseded" ? (
+                        <span className="rounded bg-slate-100 border border-slate-300 text-slate-500 px-1.5 py-0.2 text-[10px] font-bold">
+                          SUPERSEDED
                         </span>
                       ) : (
                         <span className="rounded bg-emerald-50 border border-emerald-200 text-emerald-700 px-1.5 py-0.2 text-[10px] font-bold">
@@ -778,21 +859,50 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
                   Forensic Proof Artifacts
                 </span>
                 <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-                  <button
-                    onClick={() => alert(`Downloading ${selectedRun.artifacts.traceUrl}`)}
-                    className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-slate-700"
-                  >
-                    <Download className="h-3 w-3 text-slate-500" />
-                    <span>trace.zip</span>
-                  </button>
+                  {selectedRun.artifacts.traceUrl ? (
+                    <a
+                      href={selectedRun.artifacts.traceUrl}
+                      download
+                      className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-slate-700"
+                    >
+                      <Download className="h-3 w-3 text-slate-500" />
+                      <span>trace.zip</span>
+                    </a>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 px-2.5 py-1 text-slate-400 cursor-not-allowed">
+                      <Download className="h-3 w-3 text-slate-300" />
+                      <span>trace.zip</span>
+                    </span>
+                  )}
 
-                  <button
-                    onClick={() => alert(`Streaming ${selectedRun.artifacts.videoUrl}`)}
-                    className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-slate-700"
-                  >
-                    <Video className="h-3 w-3 text-slate-500" />
-                    <span>video.webm</span>
-                  </button>
+                  {selectedRun.artifacts.videoUrl ? (
+                    <a
+                      href={selectedRun.artifacts.videoUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 text-slate-700"
+                    >
+                      <Video className="h-3 w-3 text-slate-500" />
+                      <span>video.webm</span>
+                    </a>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 px-2.5 py-1 text-slate-400 cursor-not-allowed">
+                      <Video className="h-3 w-3 text-slate-300" />
+                      <span>video.webm</span>
+                    </span>
+                  )}
+
+                  {selectedRun.artifacts.screenshotUrl && (
+                    <a
+                      href={selectedRun.artifacts.screenshotUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded border border-rose-200 bg-rose-50 hover:bg-rose-100 px-2.5 py-1 text-rose-800 font-semibold"
+                    >
+                      <Camera className="h-3 w-3 text-rose-600" />
+                      <span>screenshot.png</span>
+                    </a>
+                  )}
 
                   <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2.5 py-1 text-slate-700">
                     <Eye className="h-3 w-3 text-slate-500" />
@@ -806,8 +916,69 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
                 </div>
               </div>
 
-              {/* Remediation Prompt (when failed) */}
-              {selectedRun.remediationPrompt && (
+              {/* Timing Breakdown SLA if available */}
+              {selectedRun.timing && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs font-mono">
+                  <span className="text-slate-500 font-sans font-semibold">Runtime SLA:</span>
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span className="text-slate-700">Analysis: <strong className="text-slate-900">{selectedRun.timing.analysis_duration_s?.toFixed(2) ?? "0.00"}s</strong></span>
+                    <span className="text-slate-300">•</span>
+                    <span className="text-slate-700">Journeys: <strong className="text-slate-900">{selectedRun.timing.journeys_duration_s?.toFixed(2) ?? "0.00"}s</strong></span>
+                    <span className="text-slate-300">•</span>
+                    <span className="text-emerald-700 font-bold">Total: {selectedRun.timing.total_duration_s?.toFixed(2) ?? "0.00"}s</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Session Video Player */}
+              {selectedRun.artifacts.videoUrl && (
+                <div className="space-y-1.5">
+                  <span className="font-semibold text-slate-900 text-xs block">
+                    Session Video
+                  </span>
+                  <CustomVideoPlayer
+                    src={selectedRun.artifacts.videoUrl}
+                    className="max-h-[320px]"
+                  />
+                </div>
+              )}
+
+              {/* Annotated Failure Screenshot, when available */}
+              {selectedRun.artifacts.screenshotUrl && (
+                <div className="rounded-lg border border-rose-300 bg-rose-50/40 overflow-hidden shadow-sm">
+                  <div className="bg-rose-100/80 border-b border-rose-200 px-3 py-1.5 text-[11px] font-semibold text-rose-900 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Camera className="h-3.5 w-3.5 text-rose-600" />
+                      Annotated Failure Defect (Bounding Box & Callouts)
+                    </span>
+                    <a
+                      href={selectedRun.artifacts.screenshotUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-rose-700 hover:underline text-[10px] font-mono"
+                    >
+                      View Full Image ↗
+                    </a>
+                  </div>
+                  <div className="p-2 bg-slate-950 flex justify-center">
+                    <img
+                      src={selectedRun.artifacts.screenshotUrl}
+                      alt="Annotated Failure Screenshot"
+                      className="max-h-[240px] object-contain rounded border border-slate-800"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* AI Synthesized Fix Proposals or Remediation Prompt */}
+              {selectedRun.fixProposals && selectedRun.fixProposals.length > 0 ? (
+                <FixProposalViewer
+                  runId={selectedRun.id}
+                  branch={selectedRun.branch}
+                  proposals={selectedRun.fixProposals}
+                  onFixApplied={fetchLiveRuns}
+                />
+              ) : selectedRun.remediationPrompt ? (
                 <div className="rounded-lg border border-rose-200 bg-rose-50/50 p-4 space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-bold text-rose-900 flex items-center gap-1.5">
@@ -827,7 +998,7 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
                     {selectedRun.remediationPrompt}
                   </pre>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
@@ -893,6 +1064,12 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
           </div>
         </div>
       </main>
+
+      <ExternalTestModal
+        isOpen={isExternalModalOpen}
+        onClose={() => setIsExternalModalOpen(false)}
+        onSuccess={() => fetchLiveRuns()}
+      />
     </div>
   );
 }

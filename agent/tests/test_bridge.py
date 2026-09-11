@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 from agent.api.runs import run_store
 from agent.bridge.models import FileIntentStore, IntentEvent
 from agent.main import app
+from conftest import AUTH_HEADERS
 
 
 @pytest.fixture
@@ -50,7 +51,7 @@ def test_intent_store_file_persistence(temp_intent_store: FileIntentStore) -> No
 
 
 def test_bridge_rest_endpoints() -> None:
-    client = TestClient(app)
+    client = TestClient(app, headers=AUTH_HEADERS)
     branch = "test-rest-branch"
 
     # Clean branch first
@@ -85,11 +86,13 @@ def test_bridge_rest_endpoints() -> None:
 
 
 def test_bridge_websocket_stream() -> None:
-    client = TestClient(app)
+    client = TestClient(app, headers=AUTH_HEADERS)
     branch = "test-ws-branch"
     client.delete(f"/bridge/intents/{branch}")
 
-    with client.websocket_connect(f"/bridge/ws/{branch}") as websocket:
+    from conftest import TEST_API_KEY
+
+    with client.websocket_connect(f"/bridge/ws/{branch}?token={TEST_API_KEY}") as websocket:
         payload = {
             "files": ["app/dashboard/layout.tsx"],
             "action": "edit",
@@ -112,12 +115,27 @@ def test_bridge_websocket_stream() -> None:
 
 
 def test_runs_freshness_dedup() -> None:
-    client = TestClient(app)
+    # This test exercises the /runs freshness/dedup API contract, not actual
+    # pipeline execution — patch run_pipeline out entirely so a real (now
+    # sandbox-aware) pipeline run can't race the assertions below or require
+    # Docker/a live app to be reachable.
+    from unittest.mock import AsyncMock, patch
+
+    client = TestClient(app, headers=AUTH_HEADERS)
     run_store.clear()
 
     branch = "main"
     sha1 = "a1b2c3d4e5f60000111122223333444455556666"
 
+    patcher = patch("agent.runner.pipeline.run_pipeline", new=AsyncMock(return_value={}))
+    patcher.start()
+    try:
+        _run_freshness_dedup_body(client, branch, sha1)
+    finally:
+        patcher.stop()
+
+
+def _run_freshness_dedup_body(client: TestClient, branch: str, sha1: str) -> None:
     # 1. First trigger for sha1 -> should queue fresh run
     res1 = client.post(
         "/runs",

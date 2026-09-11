@@ -1,4 +1,12 @@
-"""Supabase database client and store adapters with seamless fallback."""
+"""Supabase database client and store adapters.
+
+Falls back to in-memory/file storage ONLY when Supabase credentials are
+entirely absent (local development). If SUPABASE_URL is set but the client
+fails to initialize (bad key, unreachable host, etc.), that is treated as a
+misconfiguration and raised — not silently downgraded to a store that loses
+all data on restart, which would be surprising in a deployment that believed
+it had persistent storage configured.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +21,10 @@ from agent.bridge.models import FileIntentStore, IntentEvent, IntentStore
 logger = logging.getLogger("agent.db.supabase")
 
 
+class SupabaseConfigError(RuntimeError):
+    """Raised when SUPABASE_URL is set but the client cannot be initialized."""
+
+
 def get_supabase_client() -> Any | None:
     """Instantiate Supabase client if credentials exist in environment."""
     url = os.environ.get("SUPABASE_URL")
@@ -25,8 +37,9 @@ def get_supabase_client() -> Any | None:
         client: Client = create_client(url, key)
         return client
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to initialize Supabase client: %s", exc)
-        return None
+        raise SupabaseConfigError(
+            f"SUPABASE_URL is set but the Supabase client failed to initialize: {exc}"
+        ) from exc
 
 
 def is_supabase_enabled() -> bool:
@@ -39,8 +52,9 @@ class SupabaseIntentStore(IntentStore):
     def __init__(self, client: Any) -> None:
         self.client = client
 
-    def append(self, branch: str, event: IntentEvent) -> None:
+    def append(self, branch: str, event: IntentEvent, repo: str = "default") -> None:
         try:
+            effective_repo = event.repo if event.repo != "default" else repo
             payload = {
                 "branch": branch,
                 "sha": event.sha,
@@ -51,11 +65,12 @@ class SupabaseIntentStore(IntentStore):
                 "working_dir": event.working_dir,
                 "created_at": event.timestamp,
             }
+            # If project_id or repo tracking is available, query projects table for repo
             self.client.table("intent_logs").insert(payload).execute()
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to insert intent_log into Supabase: %s", exc)
 
-    def get(self, branch: str) -> list[IntentEvent]:
+    def get(self, branch: str, repo: str = "default") -> list[IntentEvent]:
         try:
             res = (
                 self.client.table("intent_logs")
@@ -73,6 +88,7 @@ class SupabaseIntentStore(IntentStore):
                         prompt_summary=row.get("prompt_summary", ""),
                         reasoning=row.get("reasoning", ""),
                         branch=row.get("branch", branch),
+                        repo=repo,
                         working_dir=row.get("working_dir"),
                         sha=row.get("sha"),
                         timestamp=row.get("created_at") or datetime.now(UTC).isoformat(),
@@ -83,7 +99,7 @@ class SupabaseIntentStore(IntentStore):
             logger.error("Failed to fetch intent_logs from Supabase: %s", exc)
             return []
 
-    def clear(self, branch: str) -> None:
+    def clear(self, branch: str, repo: str = "default") -> None:
         try:
             self.client.table("intent_logs").delete().eq("branch", branch).execute()
         except Exception as exc:  # noqa: BLE001
@@ -97,7 +113,12 @@ class SupabaseRunStore:
         self.client = client
 
     def find_latest_by_sha(
-        self, branch: str, sha: str, scope: str | None = None, test_type: str | None = None
+        self,
+        branch: str,
+        sha: str,
+        scope: str | None = None,
+        test_type: str | None = None,
+        repo: str | None = None,
     ) -> RunRecord | None:
         try:
             query = (
@@ -117,6 +138,7 @@ class SupabaseRunStore:
             row = rows[0]
             return RunRecord(
                 run_id=row["id"],
+                repo=repo or "default",
                 branch=row["branch"],
                 sha=row["sha"],
                 scope=row["scope"],
@@ -125,16 +147,26 @@ class SupabaseRunStore:
                 created_at=row.get("created_at") or datetime.now(UTC).isoformat(),
                 completed_at=row.get("completed_at"),
                 result=row.get("result"),
+                video_url=row.get("video_url"),
+                trace_url=row.get("trace_url"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to query run from Supabase: %s", exc)
             return None
 
-    def create(self, branch: str, sha: str, scope: str = "changed", test_type: str = "functional") -> RunRecord:
+    def create(
+        self,
+        branch: str,
+        sha: str,
+        scope: str = "changed",
+        test_type: str = "functional",
+        repo: str = "default",
+    ) -> RunRecord:
         import uuid
 
         record = RunRecord(
             run_id=f"run_{uuid.uuid4().hex[:12]}",
+            repo=repo,
             branch=branch,
             sha=sha,
             scope=scope,
@@ -184,11 +216,21 @@ class SupabaseRunStore:
         status: str,
         result: dict[str, Any] | None = None,
         completed: bool = False,
+        video_url: str | None = None,
+        trace_url: str | None = None,
     ) -> RunRecord | None:
         try:
             payload: dict[str, Any] = {"status": status}
             if result is not None:
                 payload["result"] = result
+                if video_url is None and "video_url" in result:
+                    video_url = result.get("video_url")
+                if trace_url is None and "trace_url" in result:
+                    trace_url = result.get("trace_url")
+            if video_url is not None:
+                payload["video_url"] = video_url
+            if trace_url is not None:
+                payload["trace_url"] = trace_url
             if completed:
                 payload["completed_at"] = datetime.now(UTC).isoformat()
             res = self.client.table("runs").update(payload).eq("id", run_id).execute()
@@ -205,6 +247,8 @@ class SupabaseRunStore:
                     created_at=row.get("created_at") or datetime.now(UTC).isoformat(),
                     completed_at=row.get("completed_at"),
                     result=row.get("result"),
+                    video_url=row.get("video_url"),
+                    trace_url=row.get("trace_url"),
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to update run in Supabase: %s", exc)

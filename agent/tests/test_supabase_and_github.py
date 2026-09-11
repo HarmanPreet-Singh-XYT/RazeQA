@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import os
+from unittest.mock import AsyncMock, patch
 
 from starlette.testclient import TestClient
 
@@ -17,6 +20,7 @@ from agent.db.supabase import (
 )
 from agent.github.app import verify_webhook_signature
 from agent.main import app
+from conftest import AUTH_HEADERS
 from agent.remediation.formatter import (
     generate_pr_summary_comment,
     generate_remediation_markdown,
@@ -99,7 +103,7 @@ def test_remediation_markdown_generator() -> None:
 
 
 def test_github_webhook_endpoint_pr_opened() -> None:
-    client = TestClient(app)
+    client = TestClient(app, headers=AUTH_HEADERS)
     branch = "feature/new-checkout-flow"
     sha = "7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"
 
@@ -132,15 +136,29 @@ def test_github_webhook_endpoint_pr_opened() -> None:
         },
     }
 
-    res = client.post(
-        "/webhooks/github",
-        json=payload,
-        headers={"X-GitHub-Event": "pull_request"},
-    )
+    body = json.dumps(payload).encode()
+    from conftest import TEST_GITHUB_WEBHOOK_SECRET
+
+    secret = os.environ.get("GITHUB_WEBHOOK_SECRET") or TEST_GITHUB_WEBHOOK_SECRET
+    signature = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+    with patch(
+        "agent.api.webhooks.github_client.create_check_run",
+        new=AsyncMock(return_value=123456),
+    ):
+        res = client.post(
+            "/webhooks/github",
+            content=body,
+            headers={
+                "X-GitHub-Event": "pull_request",
+                "X-Hub-Signature-256": signature,
+                "Content-Type": "application/json",
+            },
+        )
     assert res.status_code == 200
     data = res.json()
     assert data["status"] == "accepted"
     assert data["branch"] == branch
     assert data["pr_number"] == 42
     assert data["intents_found"] == 1
-    assert data["check_run_id"] is not None
+    assert data["check_run_id"] == 123456

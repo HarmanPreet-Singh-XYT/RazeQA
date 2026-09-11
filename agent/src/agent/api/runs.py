@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -10,26 +11,41 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger("agent.api.runs")
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
 class RunRequest(BaseModel):
     branch: str
     sha: str
+    repo: str = "default"
     scope: str = "changed"
     test_type: str = "functional"
+
+
+class ExternalRunRequest(BaseModel):
+    url: str
+    name: str = "external-site"
+    test_type: str = "functional"
+    routes: list[str] = Field(default_factory=lambda: ["/"])
+    credentials: dict[str, str] | None = None
+    actions: list[dict[str, Any]] | None = None
+    wait: bool = False
 
 
 class RunRecord(BaseModel):
     run_id: str
     branch: str
     sha: str
+    repo: str = "default"
     scope: str = "changed"
     test_type: str = "functional"
     status: str = "queued"  # queued, running, completed, failed, cached
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     completed_at: str | None = None
     result: dict[str, Any] | None = None
+    video_url: str | None = None
+    trace_url: str | None = None
 
 
 class RunStore:
@@ -40,13 +56,19 @@ class RunStore:
         self._lock = threading.Lock()
 
     def find_latest_by_sha(
-        self, branch: str, sha: str, scope: str | None = None, test_type: str | None = None
+        self,
+        branch: str,
+        sha: str,
+        scope: str | None = None,
+        test_type: str | None = None,
+        repo: str | None = None,
     ) -> RunRecord | None:
         with self._lock:
             matches = [
                 r
                 for r in self._runs.values()
-                if r.branch == branch
+                if (repo is None or r.repo == repo)
+                and r.branch == branch
                 and r.sha == sha
                 and (scope is None or r.scope == scope)
                 and (test_type is None or r.test_type == test_type)
@@ -55,10 +77,17 @@ class RunStore:
                 return None
             return max(matches, key=lambda x: x.created_at)
 
-
-    def create(self, branch: str, sha: str, scope: str = "changed", test_type: str = "functional") -> RunRecord:
+    def create(
+        self,
+        branch: str,
+        sha: str,
+        scope: str = "changed",
+        test_type: str = "functional",
+        repo: str = "default",
+    ) -> RunRecord:
         record = RunRecord(
             run_id=f"run_{uuid.uuid4().hex[:12]}",
+            repo=repo,
             branch=branch,
             sha=sha,
             scope=scope,
@@ -79,6 +108,8 @@ class RunStore:
         status: str,
         result: dict[str, Any] | None = None,
         completed: bool = False,
+        video_url: str | None = None,
+        trace_url: str | None = None,
     ) -> RunRecord | None:
         with self._lock:
             record = self._runs.get(run_id)
@@ -87,13 +118,29 @@ class RunStore:
             record.status = status
             if result is not None:
                 record.result = result
+                if video_url is None and "video_url" in result:
+                    video_url = result.get("video_url")
+                if trace_url is None and "trace_url" in result:
+                    trace_url = result.get("trace_url")
+            if video_url is not None:
+                record.video_url = video_url
+            if trace_url is not None:
+                record.trace_url = trace_url
             if completed:
                 record.completed_at = datetime.now(UTC).isoformat()
             return record
 
-    def list_all(self, branch: str | None = None, sha: str | None = None) -> list[RunRecord]:
+
+    def list_all(
+        self,
+        branch: str | None = None,
+        sha: str | None = None,
+        repo: str | None = None,
+    ) -> list[RunRecord]:
         with self._lock:
             items = list(self._runs.values())
+            if repo:
+                items = [r for r in items if r.repo == repo]
             if branch:
                 items = [r for r in items if r.branch == branch]
             if sha:
@@ -108,8 +155,16 @@ class RunStore:
 run_store = RunStore()
 
 
-def get_run_store() -> RunStore:
-    return run_store
+def _active_store() -> Any:
+    try:
+        from agent.db.supabase import default_run_store
+        return default_run_store
+    except (ImportError, AttributeError):
+        return run_store
+
+
+def get_run_store() -> Any:
+    return _active_store()
 
 
 @router.post("")
@@ -119,11 +174,13 @@ async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) ->
     If this exact commit SHA was already tested for this branch/scope,
     returns the cached run result without spinning up a redundant sandbox.
     """
-    existing = run_store.find_latest_by_sha(
+    store = _active_store()
+    existing = store.find_latest_by_sha(
         branch=payload.branch,
         sha=payload.sha,
         scope=payload.scope,
         test_type=payload.test_type,
+        repo=payload.repo,
     )
 
     if existing is not None:
@@ -132,6 +189,7 @@ async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) ->
                 "status": "cached",
                 "fresh": False,
                 "run_id": existing.run_id,
+                "repo": existing.repo,
                 "branch": existing.branch,
                 "sha": existing.sha,
                 "scope": existing.scope,
@@ -146,28 +204,30 @@ async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) ->
                 "status": existing.status,
                 "fresh": False,
                 "run_id": existing.run_id,
+                "repo": existing.repo,
                 "branch": existing.branch,
                 "sha": existing.sha,
                 "message": f"Run already {existing.status} for this commit SHA.",
                 "created_at": existing.created_at,
             }
 
-    record = run_store.create(
+    record = store.create(
         branch=payload.branch,
         sha=payload.sha,
         scope=payload.scope,
         test_type=payload.test_type,
+        repo=payload.repo,
     )
 
     from agent.db.supabase import default_intent_store
     from agent.runner.pipeline import run_pipeline
 
-    intents = default_intent_store.get(payload.branch)
+    intents = default_intent_store.get(payload.branch, repo=payload.repo)
 
     background_tasks.add_task(
         run_pipeline,
-        owner="local",
-        repo="web",
+        owner=payload.repo.split("/")[0] if "/" in payload.repo else "local",
+        repo=payload.repo.split("/")[1] if "/" in payload.repo else payload.repo,
         branch=payload.branch,
         base_branch="main",
         sha=payload.sha,
@@ -181,6 +241,7 @@ async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) ->
         "status": record.status,
         "fresh": True,
         "run_id": record.run_id,
+        "repo": record.repo,
         "branch": record.branch,
         "sha": record.sha,
         "scope": record.scope,
@@ -190,9 +251,61 @@ async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) ->
     }
 
 
+@router.post("/external")
+async def trigger_external_run(
+    payload: ExternalRunRequest, background_tasks: BackgroundTasks
+) -> dict[str, Any]:
+    """Trigger an autonomous test run against an external, staging, or non-GitHub website."""
+    store = _active_store()
+    record = store.create(
+        branch=payload.name,
+        sha=payload.url,
+        scope="external",
+        test_type=payload.test_type,
+        repo="external",
+    )
+
+    from agent.runner.external_runner import run_external_pipeline
+
+    if payload.wait:
+        result = await run_external_pipeline(
+            url=payload.url,
+            run_id=record.run_id,
+            name=payload.name,
+            routes=payload.routes,
+            test_type=payload.test_type,
+            credentials=payload.credentials,
+            actions=payload.actions,
+        )
+        updated = store.get(record.run_id)
+        return updated.model_dump() if updated else {"run_id": record.run_id, "result": result}
+
+    background_tasks.add_task(
+        run_external_pipeline,
+        url=payload.url,
+        run_id=record.run_id,
+        name=payload.name,
+        routes=payload.routes,
+        test_type=payload.test_type,
+        credentials=payload.credentials,
+        actions=payload.actions,
+    )
+
+    return {
+        "status": record.status,
+        "run_id": record.run_id,
+        "url": payload.url,
+        "name": payload.name,
+        "test_type": payload.test_type,
+        "message": "External website test enqueued and dispatched.",
+        "created_at": record.created_at,
+    }
+
+
 @router.get("/{run_id}")
 async def get_run(run_id: str) -> dict[str, Any]:
-    record = run_store.get(run_id)
+    store = _active_store()
+    record = store.get(run_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return record.model_dump()
@@ -202,6 +315,142 @@ async def get_run(run_id: str) -> dict[str, Any]:
 async def list_runs(
     branch: str | None = Query(None),
     sha: str | None = Query(None),
+    repo: str | None = Query(None),
 ) -> list[dict[str, Any]]:
-    records = run_store.list_all(branch=branch, sha=sha)
+    store = _active_store()
+    records = store.list_all(branch=branch, sha=sha, repo=repo)
     return [r.model_dump() for r in records]
+
+
+@router.post("/{run_id}/apply")
+async def apply_run_fix(run_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    """Apply synthesized code fix proposals from a run and trigger immediate re-verification.
+
+    Works in both GitHub App mode (committing directly to the PR branch via Contents API)
+    and Local mode (updating files directly in the repository working tree).
+    """
+    from pathlib import Path
+    from agent.db.supabase import default_intent_store
+    from agent.github.app import GitHubAppClient
+    from agent.remediation.fix_synthesizer import FilePatch, apply_patch_to_text
+    from agent.runner.pipeline import run_pipeline
+
+    store = _active_store()
+    record = store.get(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    result = record.result or {}
+    proposals = result.get("fix_proposals", [])
+    if not proposals:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No fix proposals found for run {run_id}. Only failed runs with synthesized patches can be applied.",
+        )
+
+    applied_files: list[str] = []
+    owner = result.get("owner", "local")
+    repo = result.get("repo", "web")
+    branch = record.branch
+    new_sha = record.sha
+
+    github_client = GitHubAppClient()
+    # Attempt GitHub Contents API apply if configured
+    is_github_ready = (
+        github_client.token is not None
+        or (github_client.app_id is not None and github_client.private_key is not None)
+    ) and owner != "local"
+
+    if is_github_ready:
+        for prop in proposals:
+            patches = prop.get("patches", [])
+            for p in patches:
+                try:
+                    patch = FilePatch(**p) if isinstance(p, dict) else p
+                except ValueError as exc:
+                    logger.warning("Skipping unsafe patch from run %s: %s", run_id, exc)
+                    continue
+                file_info = await github_client.get_file_content(owner, repo, patch.file_path, ref=branch)
+                if not file_info or "content" not in file_info:
+                    continue
+                updated_text, ok = apply_patch_to_text(file_info["content"], patch)
+                if ok:
+                    commit_res = await github_client.update_file_content(
+                        owner=owner,
+                        repo=repo,
+                        path=patch.file_path,
+                        message=f"fix({patch.file_path}): apply autonomous remediation [skip-pr-agent]",
+                        content=updated_text,
+                        sha=file_info["sha"],
+                        branch=branch,
+                    )
+                    if commit_res and "commit" in commit_res:
+                        new_sha = commit_res["commit"].get("sha", new_sha)
+                    applied_files.append(patch.file_path)
+    else:
+        # Local mode: apply to workspace files directly
+        # Determine base directory: workspace root or web directory
+        candidates = [
+            Path.cwd(),
+            Path.cwd() / "web",
+            Path.cwd().parent,
+            Path.cwd().parent / "web",
+        ]
+        for prop in proposals:
+            patches = prop.get("patches", [])
+            for p in patches:
+                try:
+                    patch = FilePatch(**p) if isinstance(p, dict) else p
+                except ValueError as exc:
+                    logger.warning("Skipping unsafe patch from run %s: %s", run_id, exc)
+                    continue
+                target_path = None
+                for c in candidates:
+                    base = c.resolve()
+                    candidate_file = (base / patch.file_path).resolve()
+                    # Defense in depth: FilePatch already rejects '..'/absolute
+                    # paths, but re-verify containment against the resolved
+                    # base here since this is the actual filesystem write site.
+                    if not candidate_file.is_relative_to(base):
+                        continue
+                    if candidate_file.exists():
+                        target_path = candidate_file
+                        break
+                if target_path and target_path.is_file():
+                    content = target_path.read_text(encoding="utf-8")
+                    updated, ok = apply_patch_to_text(content, patch)
+                    if ok:
+                        target_path.write_text(updated, encoding="utf-8")
+                        applied_files.append(patch.file_path)
+
+    # Dispatch re-verification run
+    new_record = store.create(
+        branch=record.branch,
+        sha=new_sha,
+        scope=record.scope,
+        test_type=record.test_type,
+    )
+
+    intents = default_intent_store.get(record.branch)
+    background_tasks.add_task(
+        run_pipeline,
+        owner=owner,
+        repo=repo,
+        branch=record.branch,
+        base_branch="main",
+        sha=new_sha,
+        intents=intents,
+        run_id=new_record.run_id,
+        scope=record.scope,
+        test_type=record.test_type,
+    )
+
+    return {
+        "status": "applied",
+        "message": f"Successfully applied fix across {len(applied_files)} file(s). Re-verification enqueued.",
+        "run_id": run_id,
+        "new_run_id": new_record.run_id,
+        "applied_files": applied_files,
+        "new_sha": new_sha,
+    }
+

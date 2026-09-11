@@ -24,6 +24,7 @@ import {
   Video,
   XCircle,
 } from "lucide-react";
+import { CustomVideoPlayer } from "@/components/custom-video-player";
 
 function GithubIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -481,17 +482,10 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               )}
 
               {activeTab === "video" && (
-                <div className="text-center py-8">
-                  <div className="mx-auto w-12 h-12 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 mb-3">
-                    <Play className="h-6 w-6 ml-0.5" />
-                  </div>
-                  <h4 className="font-bold text-slate-900 text-sm mb-1">Native CDP Video Recording</h4>
-                  <p className="text-xs text-slate-600 max-w-sm mx-auto mb-3">
-                    Frame-accurate WebM video synchronized with console events, stored directly in your run artifacts.
-                  </p>
-                  <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-mono text-slate-600">
-                    artifacts/runs/session.webm
-                  </span>
+                <div className="py-1">
+                  <CustomVideoPlayer
+                    src="/artifacts/runs/feat-quick-checkout_f1e2d3c4/video.webm"
+                  />
                 </div>
               )}
 

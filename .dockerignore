@@ -1,0 +1,17 @@
+# Root .dockerignore for Autonomous PR Testing Monorepo
+.git/
+.github/
+.claude/
+.cursor/
+node_modules/
+.next/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+artifacts/
+*.log
+.env
+.env.local
+.credential_key

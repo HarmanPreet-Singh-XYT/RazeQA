@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -92,6 +93,7 @@ class BridgeDaemon:
         self.platform_url = platform_url.rstrip("/")
         self.local_host = local_host
         self.local_port = local_port
+        self.api_key = os.environ.get("AGENT_API_KEY")
 
         # Derive ws base url
         if self.platform_url.startswith("https://"):
@@ -115,12 +117,20 @@ class BridgeDaemon:
 
     async def _ws_client_loop(self) -> None:
         """Maintains persistent WebSocket connection to backend."""
+        if not self.api_key:
+            logger.error(
+                "AGENT_API_KEY is not set; bridge daemon cannot authenticate to the platform. "
+                "Intent events will not be forwarded until it is configured."
+            )
+            return
+
         while self._running:
             branch = get_git_branch(self.project_dir)
             ws_url = f"{self.ws_base_url}/bridge/ws/{quote_plus(branch)}"
+            headers = {"Authorization": f"Bearer {self.api_key}"}
             try:
                 logger.info("Connecting to platform bridge: %s", ws_url)
-                async with websockets.connect(ws_url) as ws:
+                async with websockets.connect(ws_url, additional_headers=headers) as ws:
                     self._active_ws = ws
                     self._is_connected = True
                     logger.info("Connected to platform bridge on branch '%s'", branch)
@@ -201,9 +211,10 @@ class BridgeDaemon:
             "test_type": req.test_type,
         }
 
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
-                res = await client.post(f"{self.platform_url}/runs", json=payload)
+                res = await client.post(f"{self.platform_url}/runs", json=payload, headers=headers)
                 res.raise_for_status()
                 return res.json()
             except httpx.HTTPError as exc:

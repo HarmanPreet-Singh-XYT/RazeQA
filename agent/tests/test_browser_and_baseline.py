@@ -7,6 +7,7 @@ from starlette.testclient import TestClient
 from agent.journeys.browser_agent import PageObservation, ScrollableRegion
 from agent.main import app
 from agent.runner.baseline import BaselineStore, RegressionCategory
+from conftest import AUTH_HEADERS
 
 
 def test_baseline_comparison_categories() -> None:
@@ -53,7 +54,7 @@ def test_browser_agent_observation_structures() -> None:
 
 
 def test_dashboard_ui_endpoint() -> None:
-    client = TestClient(app)
+    client = TestClient(app, headers=AUTH_HEADERS)
     res = client.get("/dashboard")
     assert res.status_code == 200
     assert "text/html" in res.headers["content-type"]

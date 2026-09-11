@@ -10,6 +10,7 @@ from agent.api.runs import run_store
 from agent.bridge.models import IntentEvent
 from agent.main import app
 from agent.runner.pipeline import run_pipeline
+from conftest import AUTH_HEADERS
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +22,7 @@ def clean_store():
 
 def test_trigger_run_dispatches_background_task():
     """Verify POST /runs dispatches background pipeline execution and stores queued status."""
-    client = TestClient(app)
+    client = TestClient(app, headers=AUTH_HEADERS)
     payload = {
         "branch": "feature/test-checkout",
         "sha": "abc1234567890abcdef",

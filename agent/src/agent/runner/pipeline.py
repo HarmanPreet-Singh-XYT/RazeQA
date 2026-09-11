@@ -2,27 +2,156 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import re
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from agent.analyzer.diff_analyzer import AnalysisResult, DiffAnalyzer
 from agent.bridge.models import IntentEvent
 from agent.db.supabase import default_run_store
-from agent.github.app import GitHubAppClient
+from agent.github.app import GitHubAppClient, GitHubNotConfiguredError
 from agent.journeys.login import run_login_journey
+from agent.remediation.fix_synthesizer import FixProposal, FixSynthesizer
 from agent.remediation.formatter import (
     generate_pr_summary_comment,
     generate_remediation_markdown,
 )
+from agent.sandbox.checkout import CheckoutError, checkout_worktree
+from agent.sandbox.docker_sandbox import SandboxBootError, build_image, run_sandbox
 
 logger = logging.getLogger("agent.runner.pipeline")
 ARTIFACTS_BASE = Path(__file__).resolve().parents[3] / "artifacts" / "runs"
+WORKSPACES_BASE = Path(__file__).resolve().parents[3] / "artifacts" / "workspaces"
+
+
+_ADMIN_PATH_SEGMENT_RE = re.compile(r"(?:^|[/\\])admin(?:[/\\]|$)")
+
+
+def _touches_admin_path(file_path: str) -> bool:
+    """True only if 'admin' appears as its own path segment (a directory or
+    bare filename component), not merely as a substring anywhere in the path.
+    Rejects false positives like 'AdminBadge.tsx' or 'README-admin-notes.md'."""
+    normalized = str(file_path)
+    stem_no_ext = re.sub(r"\.[^./\\]+$", "", normalized)
+    return bool(_ADMIN_PATH_SEGMENT_RE.search(normalized)) or bool(
+        re.search(r"(?:^|[/\\])admin$", stem_no_ext)
+    )
+
+
+_UNSAFE_PATH_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_path_component(value: str, max_len: int = 100) -> str:
+    """Collapse a branch/sha value into a safe single path component.
+
+    branch names are attacker-controlled (a PR author picks their own head
+    ref), so this must not be used directly in a filesystem path or Docker
+    tag: a branch named e.g. "../../etc/foo" would otherwise let a crafted
+    PR write run artifacts outside ARTIFACTS_BASE.
+    """
+    collapsed = _UNSAFE_PATH_CHARS_RE.sub("-", value).strip("-.")
+    return (collapsed or "run")[:max_len]
+
+
+def _artifact_url_for_file(
+    local_path: str | Path | None,
+    run_id: str | None = None,
+    category: str = "video",
+) -> str | None:
+    """Returns the Supabase Storage public URL if uploaded, or local relative URL as fallback."""
+    if not local_path:
+        return None
+    p = Path(local_path)
+    if p.exists() and p.is_file():
+        try:
+            from agent.db.storage import default_artifact_storage
+
+            if default_artifact_storage.is_available():
+                prefix = f"runs/{run_id}" if run_id else "runs"
+                dest = f"{prefix}/{category}/{p.name}"
+                uploaded_url = default_artifact_storage.upload_artifact(p, dest)
+                if uploaded_url:
+                    return uploaded_url
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Supabase storage upload failed for %s: %s", p, exc)
+
+    from agent.api.artifacts import to_artifact_url
+
+    return to_artifact_url(local_path)
+
+
+# Directory containing the app-under-test's own git repo (must have a real
+# .git so `git worktree` / `git diff` work). In the Docker Compose stack this
+# is bind-mounted to /app/repo/web (docker-compose.yml); for bare local
+# development it defaults to the monorepo's own top-level web/ directory.
+APP_REPO_DIR = Path(
+    os.environ.get("APP_REPO_DIR", str(Path(__file__).resolve().parents[4] / "web"))
+)
+
+# Set SANDBOX_MODE=disabled to fall back to hitting a locally-running app
+# instance directly (useful for local development without Docker-in-Docker).
+# Any other value (or unset, in a real deployment) requires real per-run
+# container isolation — the pipeline refuses to silently test against
+# whatever happens to be on localhost:3000.
+SANDBOX_MODE = os.environ.get("SANDBOX_MODE", "docker")
+
+
+@contextmanager
+def _sandbox_for_sha(repo_dir: Path, sha: str, image_tag: str, env: dict[str, str], run_id: str | None = None):
+    """Checks out `sha` into an isolated worktree, builds an image from it,
+    boots a resource-constrained container, and yields its base_url. Always
+    tears down the worktree and container on exit."""
+    mode = os.environ.get("SANDBOX_MODE", SANDBOX_MODE)
+    if mode == "disabled":
+        logger.warning(
+            "SANDBOX_MODE=disabled: testing against http://localhost:3000 directly "
+            "instead of an isolated per-run container. Not safe for untrusted PR code."
+        )
+        yield "http://localhost:3000"
+        return
+
+    with checkout_worktree(repo_dir, sha, WORKSPACES_BASE) as worktree_path:
+        build_image(worktree_path, image_tag)
+        try:
+            with run_sandbox(image_tag, env=env) as handle:
+                if run_id:
+                    from agent.runner.queue import default_job_queue
+                    default_job_queue.register_container(run_id, handle.container_name)
+                try:
+                    yield handle.base_url
+                finally:
+                    if run_id:
+                        from agent.runner.queue import default_job_queue
+                        default_job_queue.unregister_container(run_id)
+        finally:
+            if os.environ.get("KEEP_SANDBOX_IMAGES", "false").lower() not in ("true", "1"):
+                from agent.sandbox.docker_sandbox import remove_image
+                remove_image(image_tag)
+
+
+class GitDiffError(RuntimeError):
+    """Raised when the actual diff for a run cannot be determined.
+
+    A prior version of this function silently substituted a hardcoded fake
+    diff when git commands failed, which meant a broken git ref/environment
+    would produce a plausible-looking but entirely synthetic risk analysis
+    instead of surfacing the failure. Fail the run instead.
+    """
 
 
 def _get_git_diff(cwd: Path, base_ref: str = "main", head_ref: str = "HEAD") -> str:
-    """Extract git diff between base and head refs with fallback."""
+    """Extract git diff between base and head refs.
+
+    An empty diff (base_ref == head_ref, nothing changed) is a legitimate
+    result and returned as such — only a git *failure* (bad ref, not a repo,
+    git missing) raises.
+    """
     try:
         res = subprocess.run(
             ["git", "diff", f"{base_ref}...{head_ref}"],
@@ -31,8 +160,7 @@ def _get_git_diff(cwd: Path, base_ref: str = "main", head_ref: str = "HEAD") -> 
             text=True,
             check=True,
         )
-        if res.stdout.strip():
-            return res.stdout
+        return res.stdout
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         pass
 
@@ -44,66 +172,43 @@ def _get_git_diff(cwd: Path, base_ref: str = "main", head_ref: str = "HEAD") -> 
             text=True,
             check=True,
         )
-        if res.stdout.strip():
-            return res.stdout
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        pass
+        return res.stdout
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as exc2:
+        raise GitDiffError(
+            f"Could not compute git diff in {cwd} for {base_ref}...{head_ref}: {exc2}"
+        ) from exc2
 
-    return "diff --git a/app/login/page.tsx b/app/login/page.tsx\n--- a/app/login/page.tsx\n+++ b/app/login/page.tsx\n@@ -10,3 +10,4 @@\n+ // Autonomous PR Testing change"
 
-
-async def run_pipeline(
-    owner: str,
-    repo: str,
-    branch: str,
-    base_branch: str,
-    sha: str,
-    pr_number: int | None = None,
-    check_run_id: int | None = None,
-    installation_id: int | None = None,
-    intents: list[IntentEvent] | None = None,
-    base_url: str = "http://localhost:3000",
-    test_user_email: str = "qa@example.com",
-    test_user_password: str = "changeme123",
+async def _run_journeys(
+    base_url: str,
+    test_user_email: str,
+    test_user_password: str,
+    artifacts_dir: Path,
+    analysis: AnalysisResult,
+    intents: list[IntentEvent],
+    test_type: str,
     run_id: str | None = None,
-    scope: str = "changed",
-    test_type: str = "functional",
 ) -> dict[str, Any]:
-    """Execute complete end-to-end verification pipeline."""
-    intents = intents or []
-    github_client = GitHubAppClient()
-    artifacts_dir = ARTIFACTS_BASE / f"{branch}_{sha[:8]}"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info("Starting pipeline for %s/%s branch=%s sha=%s (scope=%s, test_type=%s)", owner, repo, branch, sha[:8], scope, test_type)
-
-    # 1. Extract diff
-    repo_root = Path(__file__).resolve().parents[3]
-    diff = _get_git_diff(repo_root / "web", base_ref=base_branch)
-
-    # 2. AI Diff + Intent Analysis
-    analyzer = DiffAnalyzer()
-    analysis: AnalysisResult = analyzer.analyze(diff, intents)
-    logger.info("Analysis: risk=%s, affected=%s", analysis.risk_tag, analysis.affected_surfaces)
-
-    # 3. Create or fetch run record in store & set running
-    record = None
-    if run_id:
-        record = default_run_store.get(run_id)
-    if not record:
-        record = default_run_store.find_latest_by_sha(branch=branch, sha=sha, scope=scope, test_type=test_type)
-    if not record:
-        record = default_run_store.create(branch=branch, sha=sha, scope=scope, test_type=test_type)
-    default_run_store.update(run_id=record.run_id, status="running")
-
-    # 4. Execute Browser Journeys
+    """Runs the seeded login journey followed by exploratory journeys against
+    `base_url`, returning collected results. Shared between the PR-branch run
+    and (when refreshing the baseline) the base-branch run, so both use the
+    exact same journey logic against their own isolated sandbox."""
     passed_journeys: list[str] = []
     failed_journeys: list[dict[str, Any]] = []
+    additional_findings: list[str] = []
     remediation_prompts: list[str] = []
     raw_journeys: list[dict[str, Any]] = []
+    fix_proposals: list[FixProposal] = []
+    suggested_fixes: list[dict[str, Any]] = []
 
-    # Run seeded login journey in a worker thread so sync_playwright does not clash with event loop
-    import asyncio
+    # The real seeded test password (and any stored role credentials) are
+    # redacted verbatim in addition to the generic regex patterns — the
+    # regexes only catch conventional key=value/header shapes, and a real
+    # credential embedded in DOM/error output using an unrecognized format
+    # would otherwise slip into the LLM prompt and the public PR comment.
+    custom_secrets = [s for s in (test_user_email, test_user_password) if s]
+
+    fix_synthesizer = FixSynthesizer()
 
     login_result = await asyncio.to_thread(
         run_login_journey,
@@ -118,19 +223,47 @@ async def run_pipeline(
     if login_result.passed:
         passed_journeys.append("login")
     else:
-        failed_journeys.append({"name": "login", "error": login_result.error or "Login verification failed"})
-        prompt = generate_remediation_markdown(
+        login_err = login_result.error or "Login verification failed"
+        failed_journeys.append({
+            "name": "login",
+            "error": login_err,
+            "severity": "Critical",
+            "domain": "Authentication",
+        })
+        login_proposal = fix_synthesizer.synthesize(
             journey_name="login",
-            error=login_result.error or "Login verification failed",
+            error=login_err,
             analysis=analysis,
             intents=intents,
-            trace_path=str(login_result.trace_path) if login_result.trace_path else None,
-            video_path=str(login_result.video_path) if login_result.video_path else None,
+            source_root=APP_REPO_DIR,
+            custom_secrets=custom_secrets,
+        )
+        if login_proposal and login_proposal.patches:
+            fix_proposals.append(login_proposal)
+            for p in login_proposal.patches:
+                suggested_fixes.append(p.model_dump())
+
+        login_video_url = _artifact_url_for_file(login_result.video_path, run_id, "video")
+        login_trace_url = _artifact_url_for_file(login_result.trace_path, run_id, "traces")
+
+        prompt = generate_remediation_markdown(
+            journey_name="login",
+            error=login_err,
+            analysis=analysis,
+            intents=intents,
+            trace_path=login_trace_url or (str(login_result.trace_path) if login_result.trace_path else None),
+            video_path=login_video_url or (str(login_result.video_path) if login_result.video_path else None),
+            severity="Critical",
+            domain="Authentication",
+            fix_proposal=login_proposal,
+            custom_secrets=custom_secrets,
         )
         remediation_prompts.append(prompt)
 
-    # Execute exploratory journeys for affected downstream routes
     from agent.journeys.browser_agent import run_route_journey
+
+    storage_state_path = login_result.storage_state_path
+    journey_artifacts: list[dict[str, Any]] = []
 
     exploratory_routes: list[str] = []
     for surf in analysis.affected_surfaces:
@@ -150,29 +283,366 @@ async def run_pipeline(
             base_url=base_url,
             artifacts_dir=artifacts_dir,
             test_type=test_type,
+            storage_state=storage_state_path,
+            risk_tag=analysis.risk_tag,
         )
         j_name = exp_res.get("name", f"exploratory:{route}")
+        passed = exp_res.get("passed", False)
+        err = exp_res.get("error")
+
+        vis_inspection = exp_res.get("visual_inspection")
+        if vis_inspection and isinstance(vis_inspection, dict):
+            if vis_inspection.get("layout_issues"):
+                for issue in vis_inspection["layout_issues"]:
+                    additional_findings.append(f"Visual warning on {route}: {issue}")
+
+        # Per-element visual heuristic/vision findings from observe_page()
+        # (contrast, clipping, overlap, escalated Gemini checks) — a
+        # separate, cheaper, per-element signal from the full-page Gemini
+        # pass above, which only runs when test_type includes "visual".
+        for finding in exp_res.get("visual_findings", []) or []:
+            additional_findings.append(f"Visual defect on {route}: {finding}")
+
         raw_journeys.append({
             "name": j_name,
-            "passed": exp_res.get("passed", False),
-            "error": exp_res.get("error"),
+            "passed": passed,
+            "error": err,
         })
-        if exp_res.get("passed"):
+
+        v_url = _artifact_url_for_file(exp_res.get("video_path"), run_id, "video")
+        t_url = _artifact_url_for_file(exp_res.get("trace_path"), run_id, "traces")
+        annotated_path = exp_res.get("annotated_screenshot_path")
+        annotated_url = _artifact_url_for_file(annotated_path, run_id, "screenshots") if annotated_path else None
+
+        journey_artifacts.append({
+            "name": j_name,
+            "trace_url": t_url,
+            "video_url": v_url,
+            "annotated_screenshot_url": annotated_url,
+            "trace_path": exp_res.get("trace_path"),
+            "video_path": exp_res.get("video_path"),
+            "annotated_screenshot_path": annotated_path,
+        })
+
+        domain = "Checkout/Payments" if "checkout" in route else "Dashboard/Navigation" if "dashboard" in route else "UI/Features"
+        severity = "Critical" if "checkout" in route else "High"
+
+        if passed:
             passed_journeys.append(j_name)
         else:
-            failed_journeys.append({"name": j_name, "error": exp_res.get("error", f"Exploration on {route} failed")})
-            prompt = generate_remediation_markdown(
+            journey_err = err or f"Exploration on {route} failed"
+            failed_journeys.append({
+                "name": j_name,
+                "error": journey_err,
+                "severity": severity,
+                "domain": domain,
+            })
+            route_proposal = fix_synthesizer.synthesize(
                 journey_name=j_name,
-                error=exp_res.get("error", f"Exploration on {route} failed"),
+                error=journey_err,
                 analysis=analysis,
                 intents=intents,
-                trace_path=exp_res.get("trace_path"),
-                video_path=exp_res.get("video_path"),
+                dom_snapshot=exp_res.get("dom_snapshot"),
+                source_root=APP_REPO_DIR,
+                custom_secrets=custom_secrets,
+            )
+            if route_proposal and route_proposal.patches:
+                fix_proposals.append(route_proposal)
+                for p in route_proposal.patches:
+                    suggested_fixes.append(p.model_dump())
+
+            prompt = generate_remediation_markdown(
+                journey_name=j_name,
+                error=journey_err,
+                analysis=analysis,
+                intents=intents,
+                trace_path=t_url or exp_res.get("trace_path"),
+                video_path=v_url or exp_res.get("video_path"),
+                dom_snapshot=exp_res.get("dom_snapshot"),
+                severity=severity,
+                domain=domain,
+                additional_findings=additional_findings if additional_findings else None,
+                fix_proposal=route_proposal,
+                custom_secrets=custom_secrets,
             )
             remediation_prompts.append(prompt)
 
+    return {
+        "passed_journeys": passed_journeys,
+        "failed_journeys": failed_journeys,
+        "additional_findings": additional_findings,
+        "remediation_prompts": remediation_prompts,
+        "raw_journeys": raw_journeys,
+        "login_result": login_result,
+        "journey_artifacts": journey_artifacts,
+        "fix_proposals": fix_proposals,
+        "suggested_fixes": suggested_fixes,
+    }
+
+
+# Hard ceiling on a single pipeline run (checkout + image build + sandbox
+# boot + all journeys + baseline refresh). Runs are dispatched via
+# background_tasks.add_task with no external supervisor watching them — a
+# hung `docker build`, a wedged sandbox boot, or a stuck Playwright call
+# would otherwise leave the run at status="running" forever with no
+# indication anything is wrong.
+PIPELINE_TIMEOUT_S = float(os.environ.get("PIPELINE_TIMEOUT_S", "900"))
+
+
+async def run_pipeline(
+    owner: str,
+    repo: str,
+    branch: str,
+    base_branch: str,
+    sha: str,
+    pr_number: int | None = None,
+    check_run_id: int | None = None,
+    installation_id: int | None = None,
+    intents: list[IntentEvent] | None = None,
+    test_user_email: str = "qa@example.com",
+    test_user_password: str = "changeme123",
+    run_id: str | None = None,
+    scope: str = "changed",
+    test_type: str = "functional",
+) -> dict[str, Any]:
+    """Execute complete end-to-end verification pipeline, with a timeout and
+    catch-all failure handling so a run can never get stuck at "running"
+    forever — see _run_pipeline_inner for the actual pipeline steps."""
+    try:
+        return await asyncio.wait_for(
+            _run_pipeline_inner(
+                owner=owner,
+                repo=repo,
+                branch=branch,
+                base_branch=base_branch,
+                sha=sha,
+                pr_number=pr_number,
+                check_run_id=check_run_id,
+                installation_id=installation_id,
+                intents=intents,
+                test_user_email=test_user_email,
+                test_user_password=test_user_password,
+                run_id=run_id,
+                scope=scope,
+                test_type=test_type,
+            ),
+            timeout=PIPELINE_TIMEOUT_S,
+        )
+    except TimeoutError:
+        logger.error("Pipeline for %s/%s branch=%s sha=%s timed out after %ss", owner, repo, branch, sha[:8], PIPELINE_TIMEOUT_S)
+        _mark_run_failed_by_lookup(branch, sha, scope, test_type, run_id, f"Pipeline timed out after {PIPELINE_TIMEOUT_S:.0f}s")
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Catch-all: any error not already handled by a specific except
+        # clause inside _run_pipeline_inner still must not leave the run
+        # record stuck at "running" with no explanation.
+        logger.exception("Unhandled pipeline error for %s/%s branch=%s sha=%s", owner, repo, branch, sha[:8])
+        _mark_run_failed_by_lookup(branch, sha, scope, test_type, run_id, f"Unhandled pipeline error: {exc}")
+        raise
+
+
+def _mark_run_failed_by_lookup(
+    branch: str, sha: str, scope: str, test_type: str, run_id: str | None, error: str
+) -> None:
+    """Best-effort: find (or accept the given) run record and mark it failed.
+    Used by run_pipeline's outer timeout/catch-all, which may fire before
+    _run_pipeline_inner ever created or fetched a record itself."""
+    try:
+        record = default_run_store.get(run_id) if run_id else None
+        if not record:
+            record = default_run_store.find_latest_by_sha(branch=branch, sha=sha, scope=scope, test_type=test_type)
+        if record and record.status not in ("completed", "failed"):
+            default_run_store.update(
+                run_id=record.run_id,
+                status="failed",
+                result={"status": "error", "error": error},
+                completed=True,
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to mark run as failed after pipeline error")
+
+
+async def _run_pipeline_inner(
+    owner: str,
+    repo: str,
+    branch: str,
+    base_branch: str,
+    sha: str,
+    pr_number: int | None = None,
+    check_run_id: int | None = None,
+    installation_id: int | None = None,
+    intents: list[IntentEvent] | None = None,
+    test_user_email: str = "qa@example.com",
+    test_user_password: str = "changeme123",
+    run_id: str | None = None,
+    scope: str = "changed",
+    test_type: str = "functional",
+) -> dict[str, Any]:
+    """Execute complete end-to-end verification pipeline."""
+    intents = intents or []
+    github_client = GitHubAppClient()
+    artifacts_dir = ARTIFACTS_BASE / f"{_sanitize_path_component(branch)}_{sha[:8]}"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    # 0. Query project credentials from CredentialStore if available
+    try:
+        from agent.credentials.store import CredentialStore
+
+        cred_store = CredentialStore()
+        # If any intent touches an actual admin route/directory, prefer admin
+        # role. Matches a path *segment* named "admin" (e.g. "app/admin/page.tsx",
+        # "src/admin/Panel.tsx") rather than a bare substring — a naive
+        # substring check would grant elevated sandbox credentials to any PR
+        # that merely touches a benign file like "AdminBadge.tsx" or
+        # "README-admin-notes.md", widening the blast radius of admin
+        # credential exposure to untrusted PR code for no reason.
+        role = "admin" if any(_touches_admin_path(f) for it in intents for f in it.files) else "user"
+        role_cred = cred_store.get_role(f"{owner}/{repo}", role=role) or cred_store.get_role(repo, role=role)
+        if role_cred and role_cred.email:
+            test_user_email = role_cred.email
+            test_user_password = role_cred.password
+            logger.info("Injected stored credentials for project '%s/%s' (role=%s)", owner, repo, role_cred.role)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("CredentialStore lookup skipped: %s", exc)
+
+    logger.info("Starting pipeline for %s/%s branch=%s sha=%s (scope=%s, test_type=%s)", owner, repo, branch, sha[:8], scope, test_type)
+
+    # 1. Create or fetch run record in store & set running (before any step that
+    # can fail, so a failure always has a record to mark as failed rather than
+    # leaving the run stuck at "queued" with no explanation).
+    record = None
+    if run_id:
+        record = default_run_store.get(run_id)
+    if not record:
+        record = default_run_store.find_latest_by_sha(branch=branch, sha=sha, scope=scope, test_type=test_type)
+    if not record:
+        record = default_run_store.create(branch=branch, sha=sha, scope=scope, test_type=test_type)
+    default_run_store.update(run_id=record.run_id, status="running")
+
+    # 2. Extract diff
+    try:
+        diff = _get_git_diff(APP_REPO_DIR, base_ref=base_branch)
+    except GitDiffError as exc:
+        logger.error("Pipeline aborted for run %s: %s", record.run_id, exc)
+        default_run_store.update(
+            run_id=record.run_id,
+            status="failed",
+            result={"status": "error", "error": str(exc)},
+            completed=True,
+        )
+        raise
+
+    # 3. AI Diff + Intent Analysis with Dependency Graph
+    t_analysis = time.monotonic()
+    from agent.analyzer.dependency_graph import DependencyGraph
+
+    changed_files = [f for it in intents for f in it.files]
+    diff_file_matches = re.findall(r"^\+\+\+ b/(.+)$", diff, re.MULTILINE)
+    for df in diff_file_matches:
+        if df not in changed_files:
+            changed_files.append(df)
+
+    dep_graph = DependencyGraph(APP_REPO_DIR)
+    downstream_surfaces = dep_graph.find_affected_routes(changed_files)
+    if downstream_surfaces:
+        logger.info("Dependency graph found %d downstream route(s): %s", len(downstream_surfaces), downstream_surfaces)
+
+    analyzer = DiffAnalyzer()
+    analysis: AnalysisResult = analyzer.analyze(diff, intents, downstream_surfaces=downstream_surfaces)
+    timing: dict[str, float] = {"analysis_duration_s": round(time.monotonic() - t_analysis, 3)}
+    logger.info("Analysis: risk=%s, affected=%s", analysis.risk_tag, analysis.affected_surfaces)
+
+    # 4. Execute Browser Journeys inside an isolated, resource-constrained
+    # sandbox built from the exact SHA under test (never the host's own
+    # possibly-stale localhost:3000).
+    repo_dir_for_checkout = APP_REPO_DIR
+    image_tag = f"pr-testing-sandbox:{_sanitize_path_component(branch)}-{sha[:12]}"
+    sandbox_env = {
+        "TEST_USER_EMAIL": test_user_email,
+        "TEST_USER_PASSWORD": test_user_password,
+    }
+
+    t_journeys = time.monotonic()
+    try:
+        from agent.runner.queue import default_job_queue
+        if record and default_job_queue.is_job_cancelled(record.run_id):
+            logger.info("Run %s was cancelled/superseded before journeys started; terminating.", record.run_id)
+            return {"status": "superseded", "error": "Run was superseded by a newer commit"}
+
+        with _sandbox_for_sha(repo_dir_for_checkout, sha, image_tag, sandbox_env, run_id=record.run_id if record else None) as sandbox_base_url:
+            journeys = await _run_journeys(
+                base_url=sandbox_base_url,
+                test_user_email=test_user_email,
+                test_user_password=test_user_password,
+                artifacts_dir=artifacts_dir,
+                analysis=analysis,
+                intents=intents,
+                test_type=test_type,
+                run_id=record.run_id,
+            )
+        timing["journeys_duration_s"] = round(time.monotonic() - t_journeys, 3)
+    except (CheckoutError, SandboxBootError) as exc:
+        logger.error("Pipeline aborted for run %s: sandbox failure: %s", record.run_id, exc)
+        default_run_store.update(
+            run_id=record.run_id,
+            status="failed",
+            result={"status": "error", "error": f"Sandbox failure: {exc}"},
+            completed=True,
+        )
+        raise
+
+    passed_journeys = journeys["passed_journeys"]
+    failed_journeys = journeys["failed_journeys"]
+    additional_findings = journeys["additional_findings"]
+    remediation_prompts = journeys["remediation_prompts"]
+    raw_journeys = journeys["raw_journeys"]
+    login_result = journeys["login_result"]
+
     # 5. Baseline Comparison vs main
     from agent.runner.baseline import default_baseline_store
+
+    if branch == base_branch:
+        # This run IS the main/base branch — its own outcome becomes the new
+        # baseline that subsequent PR runs compare against, instead of the
+        # baseline staying frozen at its seeded defaults forever.
+        default_baseline_store.update_baseline_from_run(repo=repo, journeys=raw_journeys)
+        logger.info("Updated baseline for repo '%s' from base-branch run (%d journeys)", repo, len(raw_journeys))
+    elif not default_baseline_store.has_baseline(repo):
+        # No baseline recorded yet for this repo and this run is a PR (not
+        # main itself) — refresh it now by running the same journeys against
+        # an isolated sandbox built from base_branch, so the very first PR
+        # comparison is against a real main-branch run rather than seeded
+        # placeholder defaults.
+        try:
+            base_sha_res = subprocess.run(
+                ["git", "rev-parse", base_branch],
+                cwd=repo_dir_for_checkout,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            base_sha = base_sha_res.stdout.strip()
+            if base_sha_res.returncode == 0 and base_sha:
+                safe_base_branch = _sanitize_path_component(base_branch)
+                baseline_image_tag = f"pr-testing-sandbox:{safe_base_branch}-{base_sha[:12]}"
+                baseline_artifacts_dir = ARTIFACTS_BASE / f"{safe_base_branch}_{base_sha[:8]}_baseline"
+                with _sandbox_for_sha(repo_dir_for_checkout, base_sha, baseline_image_tag, sandbox_env) as baseline_url:
+                    baseline_journeys = await _run_journeys(
+                        base_url=baseline_url,
+                        test_user_email=test_user_email,
+                        test_user_password=test_user_password,
+                        artifacts_dir=baseline_artifacts_dir,
+                        analysis=analysis,
+                        intents=[],
+                        test_type=test_type,
+                        run_id=f"{record.run_id}_baseline",
+                    )
+                default_baseline_store.update_baseline_from_run(repo=repo, journeys=baseline_journeys["raw_journeys"])
+                logger.info("Refreshed baseline for repo '%s' from live %s run (%d journeys)", repo, base_branch, len(baseline_journeys["raw_journeys"]))
+            else:
+                logger.warning("Could not resolve base_branch '%s' to a SHA; baseline comparison uses seeded defaults.", base_branch)
+        except (CheckoutError, SandboxBootError, subprocess.SubprocessError) as exc:
+            logger.warning("Baseline refresh against '%s' failed, comparison uses seeded/stale defaults: %s", base_branch, exc)
 
     baseline_comparison = default_baseline_store.compare(repo=repo, pr_journeys=raw_journeys)
     has_new_regressions = baseline_comparison["has_new_regressions"]
@@ -180,7 +650,57 @@ async def run_pipeline(
     overall_status = "failure" if has_new_regressions or failed_journeys else "success"
     logger.info("Pipeline completed: overall_status=%s (new_regressions=%s)", overall_status, has_new_regressions)
 
-    # 6. Update Run Record
+    # 6. Update Run Record with persistent Supabase Storage artifact URLs
+    login_video_url = _artifact_url_for_file(login_result.video_path, record.run_id, "video")
+    login_trace_url = _artifact_url_for_file(login_result.trace_path, record.run_id, "traces")
+
+    journey_artifacts = [
+        {
+            "name": "login",
+            "trace_url": login_trace_url,
+            "video_url": login_video_url,
+        }
+    ]
+    for ja in journeys["journey_artifacts"]:
+        annotated_url = ja.get("annotated_screenshot_url") or _artifact_url_for_file(
+            ja.get("annotated_screenshot_path"), record.run_id, "screenshots"
+        )
+        entry = {
+            "name": ja["name"],
+            "trace_url": ja.get("trace_url"),
+            "video_url": ja.get("video_url"),
+        }
+        if annotated_url:
+            entry["annotated_screenshot_url"] = annotated_url
+        journey_artifacts.append(entry)
+
+    # Primary video & trace: prioritize the failing journey's recordings
+    primary_video_url = login_video_url
+    primary_trace_url = login_trace_url
+
+    primary_screenshot_url = None
+    for ja in journeys["journey_artifacts"]:
+        if any(fj["name"] == ja["name"] for fj in failed_journeys):
+            if ja.get("video_url"):
+                primary_video_url = ja["video_url"]
+            if ja.get("trace_url"):
+                primary_trace_url = ja["trace_url"]
+            if ja.get("annotated_screenshot_url") or ja.get("screenshot_url"):
+                primary_screenshot_url = ja.get("annotated_screenshot_url") or ja.get("screenshot_url")
+            break
+
+    if not primary_video_url:
+        for ja in journeys["journey_artifacts"]:
+            if ja.get("video_url"):
+                primary_video_url = ja["video_url"]
+                break
+
+    if not primary_screenshot_url:
+        for ja in journeys["journey_artifacts"]:
+            if ja.get("annotated_screenshot_url") or ja.get("screenshot_url"):
+                primary_screenshot_url = ja.get("annotated_screenshot_url") or ja.get("screenshot_url")
+                break
+
     run_result = {
         "status": overall_status,
         "risk_tag": analysis.risk_tag,
@@ -188,21 +708,28 @@ async def run_pipeline(
         "affected_surfaces": analysis.affected_surfaces,
         "passed_journeys": passed_journeys,
         "failed_journeys": failed_journeys,
+        "additional_findings": additional_findings,
         "baseline_comparison": baseline_comparison,
-        "trace_path": str(login_result.trace_path),
-        "video_path": str(login_result.video_path),
+        "trace_url": primary_trace_url,
+        "video_url": primary_video_url,
+        "screenshot_url": primary_screenshot_url,
+        "journey_artifacts": journey_artifacts,
         "remediation_prompts": remediation_prompts,
         "remediation_prompt": remediation_prompts[0] if remediation_prompts else None,
+        "suggested_fixes": journeys.get("suggested_fixes", []),
+        "fix_proposals": [fp.model_dump() for fp in journeys.get("fix_proposals", [])],
+        "timing": timing,
     }
     default_run_store.update(
         run_id=record.run_id,
         status="completed" if overall_status == "success" else "failed",
         result=run_result,
         completed=True,
+        video_url=primary_video_url,
+        trace_url=primary_trace_url,
     )
 
-
-    # 6. Notify GitHub Check Run
+    # 7. Notify GitHub Check Run
     if check_run_id:
         conclusion = "success" if overall_status == "success" else "failure"
         summary = (
@@ -210,18 +737,21 @@ async def run_pipeline(
             f"Risk: {analysis.risk_tag} | Passed: {len(passed_journeys)} | Failed: {len(failed_journeys)}"
         )
         detail_text = "\n\n".join(remediation_prompts) if remediation_prompts else "All user journeys verified clean."
-        await github_client.update_check_run(
-            owner=owner,
-            repo=repo,
-            check_run_id=check_run_id,
-            conclusion=conclusion,
-            title=f"Autonomous Verification: {conclusion.capitalize()}",
-            summary=summary,
-            text=detail_text,
-            installation_id=installation_id,
-        )
+        try:
+            await github_client.update_check_run(
+                owner=owner,
+                repo=repo,
+                check_run_id=check_run_id,
+                conclusion=conclusion,
+                title=f"Autonomous Verification: {conclusion.capitalize()}",
+                summary=summary,
+                text=detail_text,
+                installation_id=installation_id,
+            )
+        except GitHubNotConfiguredError as exc:
+            logger.error("Could not update Check Run %s: %s", check_run_id, exc)
 
-    # 7. Post PR Comment if PR number provided
+    # 8. Post PR Comment if PR number provided
     if pr_number:
         comment_body = generate_pr_summary_comment(
             status=overall_status,
@@ -229,13 +759,20 @@ async def run_pipeline(
             failed_journeys=failed_journeys,
             analysis=analysis,
             remediation_prompts=remediation_prompts,
+            additional_findings=additional_findings if additional_findings else None,
+            branch=branch,
+            fix_proposals=journeys.get("fix_proposals"),
+            custom_secrets=[s for s in (test_user_email, test_user_password) if s],
         )
-        await github_client.post_pr_comment(
-            owner=owner,
-            repo=repo,
-            pr_number=pr_number,
-            body=comment_body,
-            installation_id=installation_id,
-        )
+        try:
+            await github_client.post_pr_comment(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                body=comment_body,
+                installation_id=installation_id,
+            )
+        except GitHubNotConfiguredError as exc:
+            logger.error("Could not post PR comment on #%s: %s", pr_number, exc)
 
     return run_result

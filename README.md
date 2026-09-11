@@ -60,7 +60,7 @@ Every AI agent in the platform is powered through the **AWS Strands Agents SDK**
 │   │   ├── models/           # Strands SDK multi-model factory & role routing
 │   │   ├── remediation/      # Structured markdown fix prompt generator
 │   │   └── runner/           # Baseline comparator (new regression vs pre-existing bug) & pipeline
-│   └── tests/                # 20 automated unit & integration tests
+│   └── tests/                # 25 automated unit & integration tests
 │
 ├── web/                      # Next.js 16 Preview Application & Telemetry Dashboard
 │   ├── app/
@@ -100,6 +100,21 @@ npm install
 npm run build
 ```
 
+### 3. Docker Compose Setup (One-Command Launch)
+To boot both the Python Engine API (port 8000) and the Next.js Telemetry Dashboard (port 3000) inside Docker:
+```bash
+docker compose up --build -d
+```
+- **Control Center UI & API**: `http://localhost:8000/dashboard`
+- **Next.js Telemetry Dashboard**: `http://localhost:3000/dashboard`
+- **Forensic Artifacts**: Mounted locally at `./artifacts`
+
+To view logs or tear down:
+```bash
+docker compose logs -f
+docker compose down
+```
+
 ---
 
 ## 🎬 Running the Demos
@@ -131,7 +146,7 @@ uv run python scripts/full_loop_smoke.py
 
 ## 🧪 Running Automated Tests
 
-Run the full pytest suite (20 tests covering multi-model Strands routing, browser agents, element-targeted scroll, baseline comparator, and freshness dedup):
+Run the full pytest suite (25 tests covering multi-model Strands routing, browser agents, element-targeted scroll, baseline comparator, session persistence, credential redaction, and freshness dedup):
 
 ```bash
 cd agent

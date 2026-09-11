@@ -15,6 +15,11 @@ from agent.bridge.daemon import BridgeDaemon, get_git_branch, get_git_sha
 
 DEFAULT_PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://localhost:8000")
 DEFAULT_DAEMON_URL = os.environ.get("BRIDGE_DAEMON_URL", "http://127.0.0.1:8765")
+AGENT_API_KEY = os.environ.get("AGENT_API_KEY")
+
+
+def _platform_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {AGENT_API_KEY}"} if AGENT_API_KEY else {}
 
 
 def cmd_daemon(args: argparse.Namespace) -> None:
@@ -94,7 +99,12 @@ def cmd_emit(args: argparse.Namespace) -> None:
             "sha": sha,
             "working_dir": str(cwd),
         }
-        res = httpx.post(f"{args.platform_url}/bridge/events", json=direct_payload, timeout=3.0)
+        res = httpx.post(
+            f"{args.platform_url}/bridge/events",
+            json=direct_payload,
+            headers=_platform_headers(),
+            timeout=3.0,
+        )
         res.raise_for_status()
         data = res.json()
         print(f"[Bridge Direct] Intent logged -> branch '{branch}' (count: {data.get('count')})")
@@ -129,7 +139,12 @@ def cmd_check(args: argparse.Namespace) -> None:
     # 2. Fallback directly to platform API
     if data is None:
         try:
-            res = httpx.post(f"{args.platform_url}/runs", json=check_payload, timeout=10.0)
+            res = httpx.post(
+                f"{args.platform_url}/runs",
+                json=check_payload,
+                headers=_platform_headers(),
+                timeout=10.0,
+            )
             res.raise_for_status()
             data = res.json()
         except (httpx.HTTPError, OSError) as exc:
@@ -166,7 +181,11 @@ def cmd_check(args: argparse.Namespace) -> None:
             while time.monotonic() < deadline:
                 time.sleep(1.0)
                 try:
-                    poll_res = httpx.get(f"{args.platform_url}/runs/{run_id}", timeout=5.0)
+                    poll_res = httpx.get(
+                        f"{args.platform_url}/runs/{run_id}",
+                        headers=_platform_headers(),
+                        timeout=5.0,
+                    )
                     if poll_res.status_code == 200:
                         data = poll_res.json()
                         status = data.get("status")
@@ -187,7 +206,187 @@ def cmd_check(args: argparse.Namespace) -> None:
                     print("=" * 50)
                     print(result["remediation_prompt"])
                     print("=" * 50)
+
+                suggested_fixes = result.get("suggested_fixes", [])
+                if getattr(args, "autofix", False) and suggested_fixes:
+                    print("\n[Bridge] Autonomous fix available! Inspecting patches...")
+                    _apply_fixes_locally(suggested_fixes, auto_confirm=getattr(args, "yes", False))
+
     print("==================================================")
+
+
+def _apply_fixes_locally(fixes: list[dict[str, Any]], auto_confirm: bool = False) -> bool:
+    """Apply synthesized patches directly to local workspace files."""
+    from agent.remediation.fix_synthesizer import FilePatch, apply_patch_to_text
+
+    cwd = Path.cwd().resolve()
+    success_all = True
+
+    for f_dict in fixes:
+        try:
+            patch = FilePatch(**f_dict)
+        except ValueError as exc:
+            print(f"[Bridge Error] Skipping unsafe patch: {exc}")
+            success_all = False
+            continue
+
+        target_path = (cwd / patch.file_path).resolve()
+        web_target_path = (cwd / "web" / patch.file_path).resolve()
+        if not target_path.exists() and web_target_path.exists():
+            target_path = web_target_path
+
+        # Defense in depth: FilePatch already rejects '..'/absolute paths,
+        # but re-verify containment against the resolved cwd here since this
+        # is the actual filesystem write site.
+        if not (target_path.is_relative_to(cwd) or target_path.is_relative_to(cwd / "web")):
+            print(f"[Bridge Error] Refusing to write outside workspace: {patch.file_path}")
+            success_all = False
+            continue
+
+        if not target_path.exists():
+            print(f"[Bridge Error] Target file not found locally: {patch.file_path}")
+            success_all = False
+            continue
+
+        print(f"\n--- Proposed Patch for {patch.file_path} ---")
+        print(patch.unified_diff if patch.unified_diff else f"+ {patch.replacement_snippet}")
+        print(f"Explanation: {patch.explanation}")
+
+        if not auto_confirm:
+            try:
+                ans = input(f"Apply this patch to {target_path.name}? [y/N]: ").strip().lower()
+                if ans not in ("y", "yes"):
+                    print("[Bridge] Patch skipped by user.")
+                    continue
+            except (EOFError, KeyboardInterrupt):
+                print("\n[Bridge] Patch skipped.")
+                return False
+
+        try:
+            content = target_path.read_text(encoding="utf-8")
+            updated, ok = apply_patch_to_text(content, patch)
+            if not ok:
+                print(f"[Bridge Warning] Could not apply anchor-context patch to {target_path}. Target lines may have shifted.")
+                success_all = False
+                continue
+
+            target_path.write_text(updated, encoding="utf-8")
+            print(f"[Bridge ✅] Successfully patched {target_path.relative_to(cwd)}.")
+        except Exception as exc:
+            print(f"[Bridge Error] Failed to write patch to {target_path}: {exc}")
+            success_all = False
+
+    if success_all and fixes:
+        print("\n[Bridge] All patches applied. You can run 'git diff' to inspect changes.")
+    return success_all
+
+
+def cmd_apply_fix(args: argparse.Namespace) -> None:
+    """Fetch and apply suggested fixes for a specific run ID."""
+    run_id = args.run_id
+    print(f"Fetching verification results for run: {run_id} ...")
+    try:
+        res = httpx.get(
+            f"{args.platform_url}/runs/{run_id}",
+            headers=_platform_headers(),
+            timeout=10.0,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except (httpx.HTTPError, OSError) as exc:
+        print(f"Error fetching run {run_id}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    result = data.get("result") or {}
+    fixes = result.get("suggested_fixes", [])
+    if not fixes:
+        print(f"No suggested fixes found for run {run_id}. Status: {data.get('status')}")
+        return
+
+    _apply_fixes_locally(fixes, auto_confirm=getattr(args, "yes", False))
+
+
+def cmd_test_site(args: argparse.Namespace) -> None:
+    """Test an external, staging, or non-GitHub website directly."""
+    url = args.url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+
+    test_type = getattr(args, "test_type", "functional")
+    routes = [r.strip() for r in args.routes.split(",") if r.strip()] if getattr(args, "routes", None) else ["/"]
+    name = getattr(args, "name", None) or url.split("://")[-1].split("/")[0]
+
+    print("==================================================")
+    print("   AUTONOMOUS EXTERNAL SITE VERIFICATION")
+    print("==================================================")
+    print(f"Target URL: {url}")
+    print(f"Test Type:  {test_type}")
+    print(f"Routes:     {routes}")
+    print("--------------------------------------------------")
+
+    payload = {
+        "url": url,
+        "name": name,
+        "test_type": test_type,
+        "routes": routes,
+        "wait": getattr(args, "wait", False),
+    }
+
+    try:
+        res = httpx.post(
+            f"{args.platform_url}/runs/external",
+            json=payload,
+            headers=_platform_headers(),
+            timeout=180.0 if getattr(args, "wait", False) else 15.0,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except (httpx.HTTPError, OSError) as exc:
+        print(f"Error communicating with platform backend: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    run_id = data.get("run_id")
+    print(f"External Run ID: {run_id}")
+    print(f"Status:          {data.get('status')}")
+
+    if getattr(args, "wait", False):
+        if data.get("status") not in ("completed", "failed"):
+            print("\nWaiting for Playwright browser execution, scroll inspection & video recording...")
+            for _ in range(120):
+                time.sleep(1.0)
+                try:
+                    poll = httpx.get(
+                        f"{args.platform_url}/runs/{run_id}",
+                        headers=_platform_headers(),
+                        timeout=5.0,
+                    )
+                    if poll.status_code == 200:
+                        data = poll.json()
+                        if data.get("status") in ("completed", "failed"):
+                            break
+                except (httpx.HTTPError, OSError):
+                    pass
+
+        status = data.get("status", "unknown")
+        result = data.get("result") or {}
+        print("\n" + "=" * 50)
+        print(f"  VERIFICATION RESULT: {status.upper()}")
+        print("=" * 50)
+        print(f"Summary: {result.get('summary', 'Run completed')}")
+        print(f"Passed:  {result.get('passed_journeys', [])}")
+        if result.get("failed_journeys"):
+            print(f"Failed:  {result.get('failed_journeys')}")
+        if result.get("additional_findings"):
+            print("\nFindings:")
+            for f in result["additional_findings"]:
+                print(f"  • {f}")
+        v_url = data.get("video_url") or result.get("video_url")
+        t_url = data.get("trace_url") or result.get("trace_url")
+        if v_url:
+            print(f"Video Proof: {v_url}")
+        if t_url:
+            print(f"Trace Proof: {t_url}")
+        print("==================================================")
 
 
 def main() -> None:
@@ -220,6 +419,22 @@ def main() -> None:
     p_check.add_argument("--scope", default="changed", choices=["changed", "full"])
     p_check.add_argument("--test-type", default="functional", choices=["functional", "functional+visual"])
     p_check.add_argument("--wait", action="store_true", help="Wait for pipeline execution to complete and show results")
+    p_check.add_argument("--autofix", action="store_true", help="Prompt to apply synthesized fixes to local workspace")
+    p_check.add_argument("--yes", "-y", action="store_true", help="Auto-confirm applying patches")
+
+    # apply-fix
+    p_apply = subparsers.add_parser("apply-fix", help="Apply synthesized fix from a previous run to local workspace")
+    p_apply.add_argument("run_id", help="Verification run ID")
+    p_apply.add_argument("--yes", "-y", action="store_true", help="Auto-confirm applying patches")
+
+    # test-site / test-url
+    for sub_name in ("test-site", "test-url"):
+        p_ext = subparsers.add_parser(sub_name, help="Test an external, staging, or non-GitHub website")
+        p_ext.add_argument("url", help="URL of website to test (e.g. https://example.com)")
+        p_ext.add_argument("--name", help="Friendly name/label for site")
+        p_ext.add_argument("--test-type", default="functional", choices=["functional", "functional+visual"])
+        p_ext.add_argument("--routes", help="Comma-separated paths or URLs to test (default: /)")
+        p_ext.add_argument("--wait", action="store_true", help="Wait for browser execution to finish and print report")
 
     args = parser.parse_args()
     if args.subcommand == "daemon":
@@ -230,6 +445,10 @@ def main() -> None:
         cmd_emit(args)
     elif args.subcommand == "check":
         cmd_check(args)
+    elif args.subcommand == "apply-fix":
+        cmd_apply_fix(args)
+    elif args.subcommand in ("test-site", "test-url"):
+        cmd_test_site(args)
 
 
 if __name__ == "__main__":

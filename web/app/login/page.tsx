@@ -76,6 +76,11 @@ function AuthForm() {
     {}
   );
 
+  const [sandboxState, sandboxAction, sandboxPending] = useActionState<AuthState, FormData>(
+    loginWithSandbox,
+    {}
+  );
+
   const handleFillSandbox = () => {
     setEmailInput("qa@example.com");
     setPasswordInput("changeme123");
@@ -86,26 +91,18 @@ function AuthForm() {
     setOauthLoading(true);
     try {
       const supabase = createClient();
-      const isLive =
-        process.env.NEXT_PUBLIC_SUPABASE_URL &&
-        process.env.NEXT_PUBLIC_SUPABASE_URL !== "https://mock.supabase.co";
-
-      if (isLive) {
-        const { error } = await supabase.auth.signInWithOAuth({
-          provider: "github",
-          options: {
-            redirectTo: `${window.location.origin}/auth/callback`,
-          },
-        });
-        if (error) {
-          alert(`GitHub OAuth: ${error.message}`);
-          setOauthLoading(false);
-        }
-      } else {
-        // Local simulation fallback
-        window.location.href = "/dashboard";
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "github",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
+      if (error) {
+        alert(`GitHub OAuth: ${error.message}`);
+        setOauthLoading(false);
       }
-    } catch {
+    } catch (err: any) {
+      alert(err?.message ?? "GitHub OAuth is unavailable.");
       setOauthLoading(false);
     }
   };
@@ -418,15 +415,21 @@ function AuthForm() {
               >
                 Fill Credentials
               </button>
-              <form action={loginWithSandbox} className="flex-1">
+              <form action={sandboxAction} className="flex-1">
                 <button
                   type="submit"
-                  className="w-full rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800 transition-colors shadow-xs text-center"
+                  disabled={sandboxPending}
+                  className="w-full rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800 transition-colors shadow-xs text-center disabled:opacity-60"
                 >
-                  Instant 1-Click Login
+                  {sandboxPending ? "Authenticating…" : "Instant 1-Click Login"}
                 </button>
               </form>
             </div>
+            {sandboxState?.error ? (
+              <div className="mt-2 rounded-lg border border-red-200 bg-red-50/80 p-2 text-[11px] text-red-700 font-medium">
+                {sandboxState.error}
+              </div>
+            ) : null}
           </div>
         </CardContent>
       </Card>

@@ -8,21 +8,33 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
-from agent.bridge.models import FileIntentStore, IntentEvent
+from agent.api.auth import authorize_websocket
+from agent.bridge.models import IntentEvent
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bridge", tags=["bridge"])
-intent_store = FileIntentStore()
 
 
-def get_intent_store() -> FileIntentStore:
-    return intent_store
+def get_intent_store() -> Any:
+    # Resolved lazily (not at import time) so this always reflects the current
+    # Supabase-or-file-fallback backend from agent.db.supabase, matching what
+    # webhooks.py and pipeline.py read from. A previous version of this module
+    # held its own separate FileIntentStore() instance, so intent events
+    # captured here never reached Supabase even when it was configured, and
+    # the pipeline/webhook code read from an entirely different, always-empty
+    # store — a silent split-brain between intent capture and intent use.
+    from agent.db.supabase import default_intent_store
+
+    return default_intent_store
 
 
 @router.websocket("/ws/{branch:path}")
 async def intent_stream(websocket: WebSocket, branch: str) -> None:
     """Persistent WebSocket stream for real-time intent logging, keyed by branch."""
+    if not await authorize_websocket(websocket):
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
     await websocket.accept()
     logger.info("WebSocket connected for branch: %s", branch)
     try:
@@ -41,8 +53,8 @@ async def intent_stream(websocket: WebSocket, branch: str) -> None:
                 await websocket.send_json({"error": "Invalid IntentEvent schema", "details": exc.errors()})
                 continue
 
-            intent_store.append(branch, event)
-            events = intent_store.get(branch)
+            get_intent_store().append(branch, event)
+            events = get_intent_store().get(branch)
             await websocket.send_json(
                 {
                     "received": True,
@@ -61,14 +73,14 @@ async def intent_stream(websocket: WebSocket, branch: str) -> None:
 @router.get("/intents/{branch:path}")
 async def get_intents(branch: str) -> list[dict[str, Any]]:
     """Retrieve full intent timeline for a branch."""
-    events = intent_store.get(branch)
+    events = get_intent_store().get(branch)
     return [e.model_dump() for e in events]
 
 
 @router.delete("/intents/{branch:path}")
 async def clear_intents(branch: str) -> dict[str, str]:
     """Clear intent timeline for a branch."""
-    intent_store.clear(branch)
+    get_intent_store().clear(branch)
     return {"status": "cleared", "branch": branch}
 
 
@@ -76,8 +88,9 @@ async def clear_intents(branch: str) -> dict[str, str]:
 @router.post("/events")
 async def post_event(event: IntentEvent) -> dict[str, Any]:
     """HTTP endpoint to submit an intent event directly."""
-    intent_store.append(event.branch, event)
-    events = intent_store.get(event.branch)
+    store = get_intent_store()
+    store.append(event.branch, event)
+    events = store.get(event.branch)
     return {
         "received": True,
         "branch": event.branch,

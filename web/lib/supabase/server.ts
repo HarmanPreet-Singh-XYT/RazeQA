@@ -3,10 +3,15 @@ import { cookies } from "next/headers";
 
 export async function createClient() {
   const cookieStore = await cookies();
-  const supabaseUrl =
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "https://mock.supabase.co";
-  const supabaseAnonKey =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "mock-anon-key";
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY must be set — " +
+        "there is no mock/local-simulation auth mode. See web/.env.example."
+    );
+  }
 
   return createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {

@@ -1,0 +1,103 @@
+# ==============================================================================
+# Autonomous PR Testing & QA Engine — Docker Compose
+# ==============================================================================
+# Starts both the Python Testing Engine API (port 8000) and the Next.js Preview
+# & Telemetry Dashboard (port 3000) with persistent forensic artifact storage.
+#
+# Usage:
+#   docker compose up --build -d
+#   docker compose logs -f
+#   docker compose down
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Python Agent & Testing Engine (FastAPI + Playwright + AWS Strands SDK)
+  # ----------------------------------------------------------------------------
+  engine:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: pr-testing-engine
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: ./agent/.env
+        required: false
+      - path: ./.env
+        required: false
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - PLATFORM_URL=http://localhost:8000
+      - CREDENTIAL_STORE_PATH=/app/artifacts/credentials.enc
+      - PYTHONUNBUFFERED=1
+      # AGENT_API_KEY and SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY are REQUIRED —
+      # set them in ./agent/.env or ./.env (see agent/.env.example). The API
+      # refuses all requests without AGENT_API_KEY; without Supabase creds,
+      # run/intent history falls back to in-memory storage lost on restart.
+      # docker-outside-of-docker: the engine builds/runs/stops per-PR sandbox
+      # containers as siblings on the HOST's Docker daemon via the mounted
+      # socket below (see agent/Dockerfile for the privilege tradeoff this
+      # implies). Set SANDBOX_MODE=disabled to bypass sandboxing entirely for
+      # local development without Docker-in-Docker.
+      - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      - APP_REPO_DIR=/app/repo/web
+    volumes:
+      # Persistent forensic artifacts: videos, traces, DOM snapshots, and encrypted keys
+      - ./artifacts:/app/artifacts
+      # Host Docker socket so the engine can launch sibling sandbox containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The engine checks out PR/main SHAs from its own clone of the app repo
+      # to build sandbox images from — bind-mount the monorepo's web/ so `git
+      # worktree` has a real .git to work against.
+      - ./web:/app/repo/web
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ----------------------------------------------------------------------------
+  # 2. Next.js 16 Preview Application & Telemetry Dashboard
+  # ----------------------------------------------------------------------------
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: pr-testing-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - path: ./web/.env
+        required: false
+      - path: ./.env
+        required: false
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      # Route server-side proxy requests to the engine service in Docker network
+      - PLATFORM_URL=http://engine:8000
+      # Seeded test account for automated sandbox login (must be a real,
+      # pre-provisioned Supabase user — see README for the seed script).
+      - TEST_USER_EMAIL=qa@example.com
+      - TEST_USER_PASSWORD=changeme123
+      # REQUIRED — set in ./web/.env or ./.env (see web/.env.example). There
+      # is no mock/local-simulation auth mode; the app refuses to serve
+      # protected routes without these.
+    depends_on:
+      engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/', (r) => { if (r.statusCode < 500) process.exit(0); else process.exit(1); })\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  default:
+    name: pr-testing-network

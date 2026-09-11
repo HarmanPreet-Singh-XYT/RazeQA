@@ -1,12 +1,25 @@
 import { NextResponse } from "next/server";
 
 const ENGINE_URL = process.env.PLATFORM_URL || "http://localhost:8000";
+const ENGINE_API_KEY = process.env.AGENT_API_KEY;
+
+function engineHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (ENGINE_API_KEY) headers["Authorization"] = `Bearer ${ENGINE_API_KEY}`;
+  return headers;
+}
 
 export async function GET() {
+  if (!ENGINE_API_KEY) {
+    return NextResponse.json(
+      { runs: [], engineConnected: false, error: "Server misconfigured: AGENT_API_KEY is not set." },
+      { status: 200 }
+    );
+  }
   try {
     const res = await fetch(`${ENGINE_URL}/runs`, {
       method: "GET",
-      headers: { "Content-Type": "application/json" },
+      headers: engineHeaders(),
       cache: "no-store",
     });
 
@@ -28,11 +41,18 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  if (!ENGINE_API_KEY) {
+    return NextResponse.json(
+      { status: "failed", error: "Server misconfigured: AGENT_API_KEY is not set." },
+      { status: 503 }
+    );
+  }
   try {
     const body = await request.json();
-    const res = await fetch(`${ENGINE_URL}/runs`, {
+    const targetEndpoint = body.url ? `${ENGINE_URL}/runs/external` : `${ENGINE_URL}/runs`;
+    const res = await fetch(targetEndpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: engineHeaders(),
       body: JSON.stringify(body),
     });
 

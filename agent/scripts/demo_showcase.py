@@ -34,11 +34,16 @@ def print_step(step: int, title: str, subtitle: str) -> None:
     print("=" * 70)
 
 
+import os
+
 def main() -> None:
     demo_branch = "feature/strict-form-validation"
     initial_sha = "d3b07384d113edec49eaa6238ad5ff0000112233"
     fixed_sha = "e4c18495e224feef50fbb7349be6aa0000445566"
-    client = TestClient(app)
+    api_key = os.environ.get("AGENT_API_KEY") or "demo-key-1234567890"
+    os.environ["AGENT_API_KEY"] = api_key
+    os.environ["SANDBOX_MODE"] = "disabled"
+    client = TestClient(app, headers={"Authorization": f"Bearer {api_key}"})
 
     # ----------------------------------------------------
     # Step 1: Setup & Connection

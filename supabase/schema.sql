@@ -83,3 +83,18 @@ create policy "Users can view own projects" on projects for select using (auth.u
 create policy "Users can view runs for own projects" on runs for select using (
   exists (select 1 from projects where projects.id = runs.project_id and projects.user_id = auth.uid())
 );
+
+-- 6. Storage Bucket for Forensic Run Artifacts (Videos, Traces, Screenshots)
+-- Private: these may contain application UI/data captured from the PR under
+-- test, so they are never anonymously public. The backend (service role)
+-- issues short-lived signed URLs (see agent/db/storage.py) for the dashboard
+-- to embed/download, rather than exposing a permanent public URL per object.
+insert into storage.buckets (id, name, public)
+values ('run-artifacts', 'run-artifacts', false)
+on conflict (id) do update set public = false;
+
+-- Service role can upload, manage, and sign URLs for run artifacts
+create policy "Service Role Manage Run Artifacts"
+on storage.objects for all
+using ( bucket_id = 'run-artifacts' and auth.role() = 'service_role' );
+

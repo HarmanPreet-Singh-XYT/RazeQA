@@ -339,9 +339,39 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <div class="section-title">
       <span>Recent Verification Runs</span>
-      <button class="refresh-btn" onclick="fetchRuns()">
-        ↻ Refresh
-      </button>
+      <div style="display: flex; gap: 8px;">
+        <button class="refresh-btn" style="background: rgba(99, 102, 241, 0.25); border-color: rgba(99, 102, 241, 0.5);" onclick="openExternalModal()">
+          🌐 Test External Site
+        </button>
+        <button class="refresh-btn" onclick="fetchRuns()">
+          ↻ Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- External Site Modal -->
+    <div id="extModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); backdrop-filter:blur(8px); z-index:100; align-items:center; justify-content:center;">
+      <div style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:16px; padding:2rem; width:90%; max-width:520px; box-shadow:0 20px 40px rgba(0,0,0,0.5);">
+        <h3 style="margin-bottom:0.5rem; font-size:1.25rem;">🌐 Verify External Website</h3>
+        <p style="font-size:0.8125rem; color:var(--text-muted); margin-bottom:1.25rem;">Autonomous Playwright verification with element-targeted scroll, visual inspection, and video proof for any live or non-GitHub site.</p>
+        
+        <label style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:var(--text-muted); display:block; margin-bottom:4px;">Website URL</label>
+        <input id="extUrl" type="url" placeholder="https://example.com" style="width:100%; padding:10px 12px; background:rgba(0,0,0,0.4); border:1px solid var(--card-border); border-radius:8px; color:#fff; font-size:0.875rem; margin-bottom:1rem;" />
+
+        <label style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:var(--text-muted); display:block; margin-bottom:4px;">Test Type</label>
+        <select id="extTestType" style="width:100%; padding:10px 12px; background:rgba(0,0,0,0.4); border:1px solid var(--card-border); border-radius:8px; color:#fff; font-size:0.875rem; margin-bottom:1rem;">
+          <option value="functional">Functional (Exploratory + Scroll Containers)</option>
+          <option value="functional+visual">Functional + Visual (Gemini Multimodal Inspection)</option>
+        </select>
+
+        <label style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:var(--text-muted); display:block; margin-bottom:4px;">Routes / Paths (Comma separated)</label>
+        <input id="extRoutes" type="text" placeholder="/, /pricing" value="/" style="width:100%; padding:10px 12px; background:rgba(0,0,0,0.4); border:1px solid var(--card-border); border-radius:8px; color:#fff; font-size:0.875rem; margin-bottom:1.5rem;" />
+
+        <div style="display:flex; justify-content:flex-end; gap:10px;">
+          <button onclick="closeExternalModal()" class="btn-action" style="padding:8px 16px;">Cancel</button>
+          <button id="extSubmitBtn" onclick="submitExternalTest()" class="btn-action" style="background:linear-gradient(135deg, #6366f1, #a855f7); color:#fff; border:none; padding:8px 18px;">🚀 Launch Verification</button>
+        </div>
+      </div>
     </div>
 
     <div class="runs-list" id="runs-container">
@@ -350,6 +380,41 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+    function openExternalModal() {
+      document.getElementById('extModal').style.display = 'flex';
+    }
+    function closeExternalModal() {
+      document.getElementById('extModal').style.display = 'none';
+    }
+
+    async function submitExternalTest() {
+      const url = document.getElementById('extUrl').value.trim();
+      if (!url) { alert('Please provide a website URL'); return; }
+      const testType = document.getElementById('extTestType').value;
+      const rawRoutes = document.getElementById('extRoutes').value;
+      const routes = rawRoutes.split(',').map(s => s.trim()).filter(Boolean);
+
+      const btn = document.getElementById('extSubmitBtn');
+      btn.disabled = true;
+      btn.textContent = 'Enqueuing...';
+
+      try {
+        const res = await fetch('/runs/external', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, test_type: testType, routes: routes.length ? routes : ['/'] })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        closeExternalModal();
+        fetchRuns();
+      } catch (err) {
+        alert('Failed to launch verification: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🚀 Launch Verification';
+      }
+    }
+
     async function fetchRuns() {
       try {
         const res = await fetch('/runs');
@@ -376,32 +441,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       const container = document.getElementById('runs-container');
       if (!runs || runs.length === 0) {
-        container.innerHTML = '<div class="empty-state">No verification runs recorded yet. Trigger a run with <code>agent-bridge check</code> or a GitHub PR.</div>';
+        container.innerHTML = '<div class="empty-state">No verification runs recorded yet. Trigger a run with <code>agent-bridge check</code>, <code>agent-bridge test-site &lt;url&gt;</code>, or a GitHub PR.</div>';
         return;
       }
 
       container.innerHTML = runs.map(run => {
+        const isExternal = run.scope === 'external';
         const badgeClass = run.status === 'completed' ? 'badge-success' : 
                            run.status === 'failed' ? 'badge-danger' : 
                            run.status === 'cached' ? 'badge-cached' : 'badge-queued';
         
-        const risk = run.result?.risk_tag || 'Medium';
+        const risk = run.result?.risk_tag || (isExternal ? 'Live QA' : 'Medium');
         const riskClass = risk === 'High' ? 'badge-risk-high' : 
                           risk === 'Low' ? 'badge-risk-low' : 'badge-risk-medium';
         
-        const shaShort = run.sha.slice(0, 8);
-        const rationale = run.result?.rationale || 'Fresh commit change verified against Playwright user journeys.';
+        const targetLabel = isExternal ? run.sha : run.sha.slice(0, 8);
+        const branchLabel = isExternal ? `🌐 ${run.branch}` : `🌿 ${run.branch}`;
+        const rationale = run.result?.summary || run.result?.rationale || (isExternal ? 'Autonomous verification of external website.' : 'Fresh commit change verified against Playwright user journeys.');
         const passedCount = run.result?.passed_journeys?.length || (run.status === 'completed' ? 1 : 0);
         const failedCount = run.result?.failed_journeys?.length || (run.status === 'failed' ? 1 : 0);
+        const videoUrl = run.result?.video_url || run.video_url;
+        const traceUrl = run.result?.trace_url || run.trace_url;
 
         return `
           <div class="run-card">
             <div class="run-header">
               <div class="run-meta">
                 <span class="badge ${badgeClass}">${run.status}</span>
-                <span class="badge ${riskClass}">${risk} Risk</span>
-                <span class="branch-name">🌿 ${run.branch}</span>
-                <span class="sha">${shaShort}</span>
+                <span class="badge ${riskClass}">${risk}</span>
+                <span class="branch-name">${branchLabel}</span>
+                <span class="sha" title="${run.sha}">${targetLabel}</span>
               </div>
               <div style="font-size: 0.75rem; color: var(--text-muted);">
                 ${new Date(run.created_at).toLocaleTimeString()}
@@ -414,9 +483,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               </div>
             </div>
             <div class="run-actions">
+              ${!isExternal ? `
               <button class="btn-action btn-copy" onclick="copyRemediation('${run.run_id}')">
                 📋 Copy Remediation Prompt
-              </button>
+              </button>` : ''}
+              ${videoUrl ? `
+              <a class="btn-action" href="${videoUrl}" target="_blank">
+                🎬 Watch Video Proof
+              </a>` : ''}
+              ${traceUrl ? `
+              <a class="btn-action" href="${traceUrl}" target="_blank">
+                📦 Download Trace
+              </a>` : ''}
               <a class="btn-action" href="/runs/${run.run_id}" target="_blank">
                 🔍 Inspect Run JSON
               </a>

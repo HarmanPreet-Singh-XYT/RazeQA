@@ -14,9 +14,10 @@ export async function POST(request: Request) {
     details: string;
   }> = [];
 
-  const host = request.headers.get("host") || "localhost:3000";
-  const protocol = host.includes("localhost") ? "http" : "https";
-  const baseUrl = `${protocol}://${host}`;
+  // Use a server-configured origin rather than trusting the client-supplied
+  // Host header, which an attacker can set to an arbitrary value and cause
+  // this handler's own server-side fetch() calls to target it (SSRF).
+  const baseUrl = process.env.APP_ORIGIN || "http://localhost:3000";
 
   try {
     // Step 1: Healthcheck landing page

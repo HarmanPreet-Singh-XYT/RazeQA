@@ -1,0 +1,184 @@
+name: Manual Deployment
+
+# Triggered exclusively via manual dispatch (Run workflow button in GitHub UI)
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Component to deploy"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "agent"
+          - "web"
+      environment:
+        description: "Target Environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - "production"
+          - "staging"
+      deploy_target:
+        description: "AWS Compute Target"
+        required: true
+        default: "ecs"
+        type: choice
+        options:
+          - "ecs"
+          - "agentcore"
+          - "apprunner"
+          - "ecr_only"
+      aws_region:
+        description: "AWS Region"
+        required: true
+        default: "us-east-1"
+        type: string
+
+permissions:
+  id-token: write  # Required for AWS OIDC federation
+  contents: read
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Job 1: Build & Deploy Agent (FastAPI Backend / Bedrock Engine)
+  # ----------------------------------------------------------------------------
+  deploy-agent:
+    name: Build & Deploy Agent
+    if: ${{ github.event.inputs.component == 'all' || github.event.inputs.component == 'agent' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (Multi-Architecture Emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS Credentials (OIDC or Secret Keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.aws_region }}
+        continue-on-error: true
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        continue-on-error: true
+
+      - name: Determine Target Architecture
+        id: arch
+        run: |
+          # Bedrock AgentCore requires linux/arm64
+          if [ "${{ github.event.inputs.deploy_target }}" = "agentcore" ]; then
+            echo "platform=linux/arm64" >> $GITHUB_OUTPUT
+          else
+            echo "platform=linux/amd64,linux/arm64" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build & Push Agent Container Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./agent
+          file: ./agent/Dockerfile
+          platforms: ${{ steps.arch.outputs.platform }}
+          push: ${{ steps.login-ecr.outcome == 'success' }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_AGENT_REPO || 'pr-testing-agent' }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_AGENT_REPO || 'pr-testing-agent' }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Deployment dispatch: ECS Fargate
+      - name: Update ECS Service (Agent)
+        if: ${{ github.event.inputs.deploy_target == 'ecs' && steps.login-ecr.outcome == 'success' && secrets.ECS_CLUSTER != '' }}
+        run: |
+          echo "Updating ECS service for Agent..."
+          aws ecs update-service \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --service ${{ secrets.ECS_AGENT_SERVICE || 'pr-agent-service' }} \
+            --force-new-deployment \
+            --region ${{ github.event.inputs.aws_region }}
+
+      # Deployment dispatch: App Runner
+      - name: Trigger App Runner Deployment (Agent)
+        if: ${{ github.event.inputs.deploy_target == 'apprunner' && secrets.APPRUNNER_AGENT_ARN != '' }}
+        run: |
+          echo "Triggering AWS App Runner deployment for Agent..."
+          aws apprunner start-deployment \
+            --service-arn ${{ secrets.APPRUNNER_AGENT_ARN }} \
+            --region ${{ github.event.inputs.aws_region }}
+
+  # ----------------------------------------------------------------------------
+  # Job 2: Build & Deploy Web Dashboard (Next.js 16 Standalone)
+  # ----------------------------------------------------------------------------
+  deploy-web:
+    name: Build & Deploy Web
+    if: ${{ github.event.inputs.component == 'all' || github.event.inputs.component == 'web' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.aws_region }}
+        continue-on-error: true
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        continue-on-error: true
+
+      - name: Build & Push Web Container Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          push: ${{ steps.login-ecr.outcome == 'success' }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_WEB_REPO || 'pr-testing-web' }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_WEB_REPO || 'pr-testing-web' }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Deployment dispatch: ECS Fargate
+      - name: Update ECS Service (Web)
+        if: ${{ github.event.inputs.deploy_target == 'ecs' && steps.login-ecr.outcome == 'success' && secrets.ECS_CLUSTER != '' }}
+        run: |
+          echo "Updating ECS service for Web..."
+          aws ecs update-service \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --service ${{ secrets.ECS_WEB_SERVICE || 'pr-web-service' }} \
+            --force-new-deployment \
+            --region ${{ github.event.inputs.aws_region }}
+
+      # Deployment dispatch: App Runner
+      - name: Trigger App Runner Deployment (Web)
+        if: ${{ github.event.inputs.deploy_target == 'apprunner' && secrets.APPRUNNER_WEB_ARN != '' }}
+        run: |
+          echo "Triggering AWS App Runner deployment for Web..."
+          aws apprunner start-deployment \
+            --service-arn ${{ secrets.APPRUNNER_WEB_ARN }} \
+            --region ${{ github.event.inputs.aws_region }}

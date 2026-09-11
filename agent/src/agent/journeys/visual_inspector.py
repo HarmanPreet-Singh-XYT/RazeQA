@@ -38,7 +38,11 @@ class VisualInspectionResult(BaseModel):
     summary: str = "Visual presentation is healthy and aligned."
 
 
-def _heuristic_visual_check(screenshot_bytes: bytes, route: str) -> VisualInspectionResult:
+def _heuristic_visual_check(
+    screenshot_bytes: bytes,
+    route: str,
+    dom_defects: list[str] | None = None,
+) -> VisualInspectionResult:
     """Deterministic fallback check when Gemini API key is not configured."""
     if len(screenshot_bytes) < 500:
         return VisualInspectionResult(
@@ -48,11 +52,22 @@ def _heuristic_visual_check(screenshot_bytes: bytes, route: str) -> VisualInspec
             layout_issues=["Empty or corrupted screenshot file."],
             summary="Screenshot size was too small to represent a rendered page.",
         )
+
+    if dom_defects:
+        return VisualInspectionResult(
+            has_visual_defects=True,
+            is_visually_broken=True,
+            confidence_score=0.85,
+            layout_issues=dom_defects,
+            summary=f"DOM visual heuristics detected {len(dom_defects)} defect(s) on {route}.",
+        )
+
     return VisualInspectionResult(
         has_visual_defects=False,
         is_visually_broken=False,
-        confidence_score=0.95,
-        summary=f"Heuristic visual inspection on {route}: Screenshot rendered successfully ({len(screenshot_bytes)} bytes).",
+        confidence_score=0.0,
+        layout_issues=[],
+        summary=f"Gemini API unconfigured; visual inspection skipped on {route} (file size {len(screenshot_bytes)} bytes verified).",
     )
 
 
@@ -60,6 +75,7 @@ def inspect_screenshot_with_gemini(
     screenshot: Path | bytes,
     route: str = "/",
     context_description: str = "",
+    dom_defects: list[str] | None = None,
 ) -> VisualInspectionResult:
     """Inspect a browser screenshot using Google Gemini through the Strands SDK."""
     if isinstance(screenshot, (str, Path)):
@@ -79,7 +95,7 @@ def inspect_screenshot_with_gemini(
     # Fallback if Gemini credentials are not present in current environment
     if not has_api_key_for_role(ModelRole.VISUAL_INSPECTION):
         logger.info("No Gemini API key found; running deterministic visual check for %s", route)
-        return _heuristic_visual_check(screenshot_bytes, route)
+        return _heuristic_visual_check(screenshot_bytes, route, dom_defects=dom_defects)
 
     try:
         agent = create_strands_agent(
@@ -110,4 +126,4 @@ def inspect_screenshot_with_gemini(
         return res
     except Exception as exc:  # noqa: BLE001
         logger.warning("Gemini visual inspection via Strands failed (%s), using fallback.", exc)
-        return _heuristic_visual_check(screenshot_bytes, route)
+        return _heuristic_visual_check(screenshot_bytes, route, dom_defects=dom_defects)

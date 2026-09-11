@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -12,8 +13,19 @@ from typing import Any
 
 import httpx
 import jwt
+from urllib.parse import quote
 
 logger = logging.getLogger("agent.github.app")
+
+
+class GitHubNotConfiguredError(RuntimeError):
+    """Raised when GitHub App/PAT credentials are required but not configured.
+
+    A prior version of this client silently logged a "[Mock GitHub App]" line
+    and returned a fabricated success response when credentials were missing —
+    that made misconfiguration invisible (checks/comments looked like they
+    posted when nothing was ever sent to GitHub). Fail loudly instead.
+    """
 
 
 def verify_webhook_signature(payload_bytes: bytes, signature_header: str | None, secret: str) -> bool:
@@ -101,10 +113,11 @@ class GitHubAppClient:
         installation_id: int | None = None,
     ) -> int:
         """Create an in-progress Check Run on the commit."""
-        # If no GitHub credentials present, return simulated mock check_run_id
         if not self.token and not (self.app_id and self.private_key):
-            logger.info("[Mock GitHub App] Created Check Run for %s/%s at %s", owner, repo, head_sha[:8])
-            return 100000 + (hash(head_sha) % 900000)
+            raise GitHubNotConfiguredError(
+                "Cannot create Check Run: neither GITHUB_TOKEN nor "
+                "GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY are configured."
+            )
 
         headers = await self._get_auth_header(installation_id)
         url = f"https://api.github.com/repos/{owner}/{repo}/check-runs"
@@ -136,13 +149,10 @@ class GitHubAppClient:
     ) -> dict[str, Any]:
         """Update Check Run with final conclusion and forensic output."""
         if not self.token and not (self.app_id and self.private_key):
-            logger.info(
-                "[Mock GitHub App] Updated Check Run %s: conclusion=%s title=%s",
-                check_run_id,
-                conclusion,
-                title,
+            raise GitHubNotConfiguredError(
+                "Cannot update Check Run: neither GITHUB_TOKEN nor "
+                "GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY are configured."
             )
-            return {"status": "completed", "conclusion": conclusion, "check_run_id": check_run_id}
 
         headers = await self._get_auth_header(installation_id)
         url = f"https://api.github.com/repos/{owner}/{repo}/check-runs/{check_run_id}"
@@ -171,8 +181,10 @@ class GitHubAppClient:
     ) -> str:
         """Post a forensic summary comment directly to the Pull Request."""
         if not self.token and not (self.app_id and self.private_key):
-            logger.info("[Mock GitHub App] Posted comment to PR #%s on %s/%s", pr_number, owner, repo)
-            return f"https://github.com/{owner}/{repo}/issues/{pr_number}#issuecomment-mock"
+            raise GitHubNotConfiguredError(
+                "Cannot post PR comment: neither GITHUB_TOKEN nor "
+                "GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY are configured."
+            )
 
         headers = await self._get_auth_header(installation_id)
         url = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments"
@@ -180,3 +192,104 @@ class GitHubAppClient:
             res = await client.post(url, headers=headers, json={"body": body})
             res.raise_for_status()
             return res.json()["html_url"]
+
+    async def get_pr(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        installation_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Fetch details of a Pull Request (head SHA, ref branch, author)."""
+        if not self.token and not (self.app_id and self.private_key):
+            raise GitHubNotConfiguredError("GitHub credentials are required to fetch PR details.")
+
+        headers = await self._get_auth_header(installation_id)
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(url, headers=headers)
+            res.raise_for_status()
+            return res.json()
+
+    async def get_file_content(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        ref: str,
+        installation_id: int | None = None,
+    ) -> tuple[str, str]:
+        """Fetch file content and blob SHA from a repository at a given ref/branch.
+
+        Returns:
+            (decoded_utf8_text, blob_sha)
+        """
+        if not self.token and not (self.app_id and self.private_key):
+            raise GitHubNotConfiguredError("GitHub credentials are required to fetch file contents.")
+
+        headers = await self._get_auth_header(installation_id)
+        quoted_path = quote(path.lstrip("/"), safe="/")
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted_path}?ref={ref}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(url, headers=headers)
+            res.raise_for_status()
+            data = res.json()
+            raw_content = data.get("content", "")
+            encoding = data.get("encoding", "")
+            blob_sha = data.get("sha", "")
+
+            if encoding == "base64":
+                decoded = base64.b64decode(raw_content).decode("utf-8", errors="replace")
+            else:
+                decoded = raw_content
+
+            return decoded, blob_sha
+
+    async def update_file_content(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        message: str,
+        content: str,
+        sha: str,
+        branch: str,
+        installation_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically commit an updated file to a branch on GitHub."""
+        if not self.token and not (self.app_id and self.private_key):
+            raise GitHubNotConfiguredError("GitHub credentials are required to commit file updates.")
+
+        headers = await self._get_auth_header(installation_id)
+        quoted_path = quote(path.lstrip("/"), safe="/")
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted_path}"
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        payload = {
+            "message": message,
+            "content": encoded_content,
+            "sha": sha,
+            "branch": branch,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.put(url, headers=headers, json=payload)
+            res.raise_for_status()
+            return res.json()
+
+    async def create_reaction(
+        self,
+        owner: str,
+        repo: str,
+        comment_id: int,
+        reaction: str = "rocket",
+        installation_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Add an emoji reaction to an issue comment."""
+        if not self.token and not (self.app_id and self.private_key):
+            raise GitHubNotConfiguredError("GitHub credentials are required to create reactions.")
+
+        headers = await self._get_auth_header(installation_id)
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(url, headers=headers, json={"content": reaction})
+            res.raise_for_status()
+            return res.json()
