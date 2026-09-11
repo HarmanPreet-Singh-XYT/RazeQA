@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.analyzer.diff_analyzer import AnalysisResult, DiffAnalyzer
+from agent.analyzer.quality_dimensions import default_quality_evaluator
 from agent.bridge.models import IntentEvent
 from agent.db.supabase import default_run_store
 from agent.github.app import GitHubAppClient, GitHubNotConfiguredError
@@ -316,12 +317,18 @@ async def _run_journeys(
 
         journey_artifacts.append({
             "name": j_name,
+            "route": route,
             "trace_url": t_url,
             "video_url": v_url,
             "annotated_screenshot_url": annotated_url,
             "trace_path": exp_res.get("trace_path"),
             "video_path": exp_res.get("video_path"),
             "annotated_screenshot_path": annotated_path,
+            "dom_snapshot": exp_res.get("dom_snapshot", ""),
+            "network_requests": exp_res.get("network_requests", []),
+            "console_errors": exp_res.get("console_errors", []),
+            "response_headers": exp_res.get("response_headers", {}),
+            "duration_ms": exp_res.get("duration_ms", 1200.0),
         })
 
         domain = "Checkout/Payments" if "checkout" in route else "Dashboard/Navigation" if "dashboard" in route else "UI/Features"
@@ -667,8 +674,14 @@ async def _run_pipeline_inner(
         )
         entry = {
             "name": ja["name"],
+            "route": ja.get("route", ja["name"]),
             "trace_url": ja.get("trace_url"),
             "video_url": ja.get("video_url"),
+            "dom_snapshot": ja.get("dom_snapshot", ""),
+            "network_requests": ja.get("network_requests", []),
+            "console_errors": ja.get("console_errors", []),
+            "response_headers": ja.get("response_headers", {}),
+            "duration_ms": ja.get("duration_ms", 1200.0),
         }
         if annotated_url:
             entry["annotated_screenshot_url"] = annotated_url
@@ -701,6 +714,15 @@ async def _run_pipeline_inner(
                 primary_screenshot_url = ja.get("annotated_screenshot_url") or ja.get("screenshot_url")
                 break
 
+    # Calculate real quality dimensions & per-path analysis
+    quality_report_obj = default_quality_evaluator.evaluate_run(
+        run_record=record,
+        journeys=journey_artifacts,
+        repo_dir=str(repo_dir_for_checkout),
+        git_diff=diff if "diff" in locals() else None,
+    )
+    quality_report = quality_report_obj.to_dict()
+
     run_result = {
         "status": overall_status,
         "risk_tag": analysis.risk_tag,
@@ -719,6 +741,8 @@ async def _run_pipeline_inner(
         "suggested_fixes": journeys.get("suggested_fixes", []),
         "fix_proposals": [fp.model_dump() for fp in journeys.get("fix_proposals", [])],
         "timing": timing,
+        "quality_dimensions": quality_report,
+        "per_path_analysis": quality_report.get("per_path_analysis", {}),
     }
     default_run_store.update(
         run_id=record.run_id,

@@ -254,13 +254,21 @@ class SupabaseRunStore:
             logger.error("Failed to update run in Supabase: %s", exc)
         return None
 
-    def list_all(self, branch: str | None = None, sha: str | None = None) -> list[RunRecord]:
+    def list_all(
+        self,
+        branch: str | None = None,
+        sha: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[RunRecord]:
         try:
             query = self.client.table("runs").select("*").order("created_at", desc=True)
             if branch:
                 query = query.eq("branch", branch)
             if sha:
                 query = query.eq("sha", sha)
+            if limit is not None:
+                query = query.range(offset, offset + limit - 1)
             res = query.execute()
             records: list[RunRecord] = []
             for row in res.data or []:

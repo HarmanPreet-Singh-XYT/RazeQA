@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from agent.api.analytics import router as analytics_router
 from agent.api.artifacts import router as artifacts_router
 from agent.api.auth import BearerAuthMiddleware
 from agent.api.bridge import router as bridge_router
@@ -33,6 +34,7 @@ app.include_router(bridge_router)
 app.include_router(runs_router)
 app.include_router(webhooks_router)
 app.include_router(artifacts_router)
+app.include_router(analytics_router)
 
 
 

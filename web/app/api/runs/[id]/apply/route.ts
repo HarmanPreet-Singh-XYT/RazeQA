@@ -30,11 +30,11 @@ export async function POST(
 
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
-  } catch (err: any) {
+  } catch {
     return NextResponse.json(
       {
         status: "failed",
-        error: `Could not reach PR Testing Engine at ${ENGINE_URL}: ${err?.message}`,
+        error: "Could not reach PR Testing Engine. Please ensure the backend is running.",
       },
       { status: 503 }
     );

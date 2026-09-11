@@ -10,6 +10,13 @@ function engineHeaders(): Record<string, string> {
 }
 
 export async function POST(request: Request) {
+  if (!ENGINE_API_KEY) {
+    return NextResponse.json(
+      { status: "failed", error: "Server misconfigured: AGENT_API_KEY is not set." },
+      { status: 503 }
+    );
+  }
+
   try {
     const body = await request.json();
     const res = await fetch(`${ENGINE_URL}/runs/external`, {
@@ -20,11 +27,11 @@ export async function POST(request: Request) {
 
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
-  } catch (err: any) {
+  } catch {
     return NextResponse.json(
       {
         status: "failed",
-        error: `Could not reach PR Testing Engine at ${ENGINE_URL}: ${err?.message}`,
+        error: "Could not reach PR Testing Engine. Please ensure the backend is running.",
       },
       { status: 503 }
     );

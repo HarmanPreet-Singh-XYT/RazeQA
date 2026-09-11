@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from agent.analyzer.quality_dimensions import default_quality_evaluator
 from agent.db.supabase import default_run_store
 from agent.journeys.browser_agent import run_route_journey
 from agent.runner.pipeline import ARTIFACTS_BASE, _artifact_url_for_file
@@ -162,6 +163,7 @@ async def _run_external_pipeline_inner(
 
             journey_artifacts.append({
                 "route": target,
+                "base_url": url,
                 "passed": passed,
                 "title": exp_res.get("title", ""),
                 "interactive_count": exp_res.get("interactive_count", 0),
@@ -171,6 +173,10 @@ async def _run_external_pipeline_inner(
                 "screenshot_url": annotated_url or _artifact_url_for_file(exp_res.get("screenshot_path"), run_id, "screenshots"),
                 "trace_path": str(exp_res.get("trace_path")) if exp_res.get("trace_path") else None,
                 "video_path": str(exp_res.get("video_path")) if exp_res.get("video_path") else None,
+                "dom_snapshot": exp_res.get("dom_snapshot", ""),
+                "network_requests": exp_res.get("network_requests", []),
+                "console_errors": exp_res.get("console_errors", []),
+                "response_headers": exp_res.get("response_headers", {}),
             })
 
             if passed:
@@ -198,6 +204,14 @@ async def _run_external_pipeline_inner(
         f"across {len(test_routes)} route(s) in {duration_s}s."
     )
 
+    # Calculate real quality dimensions & per-path analysis for external site
+    quality_report_obj = default_quality_evaluator.evaluate_run(
+        run_record=record,
+        journeys=journey_artifacts,
+        repo_dir=None,
+    )
+    quality_report = quality_report_obj.to_dict()
+
     final_result = {
         "status": overall_status,
         "url": url,
@@ -211,6 +225,8 @@ async def _run_external_pipeline_inner(
         "artifacts": journey_artifacts,
         "video_url": primary_video_url,
         "trace_url": primary_trace_url,
+        "quality_dimensions": quality_report,
+        "per_path_analysis": quality_report.get("per_path_analysis", {}),
     }
 
     default_run_store.update(

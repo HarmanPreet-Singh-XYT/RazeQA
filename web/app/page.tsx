@@ -94,9 +94,18 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
             <a href="#forensics" className="hover:text-slate-950 transition-colors">Forensics</a>
             <a href="#comparison" className="hover:text-slate-950 transition-colors">Comparison</a>
             <a href="#architecture" className="hover:text-slate-950 transition-colors">Architecture</a>
+            <Link href="/tools" className="text-indigo-600 hover:text-indigo-900 transition-colors font-bold">
+              Dev Tools Hub
+            </Link>
           </nav>
 
           <div className="flex items-center gap-3">
+            <Link
+              href="/tools"
+              className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2 py-1.5 transition-colors hidden sm:inline-block"
+            >
+              Tools
+            </Link>
             <Link
               href="/dashboard"
               className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-3 py-1.5 transition-colors"
@@ -732,6 +741,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
           </div>
 
           <div className="flex items-center gap-5 font-medium">
+            <Link href="/tools" className="text-indigo-600 hover:text-indigo-900 transition-colors font-semibold">Dev Tools Hub</Link>
             <Link href="/dashboard" className="hover:text-slate-900 transition-colors">Console</Link>
             <Link href="/design-system" className="hover:text-slate-900 transition-colors">Design System</Link>
             <a href="https://github.com" target="_blank" rel="noreferrer" className="hover:text-slate-900 transition-colors">GitHub</a>

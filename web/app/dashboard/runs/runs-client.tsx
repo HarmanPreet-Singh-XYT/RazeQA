@@ -43,11 +43,13 @@ import {
   X,
   XCircle,
   Globe,
+  Compass,
 } from "lucide-react";
 import { logout } from "@/app/login/actions";
 import { FixProposalViewer } from "@/components/fix-proposal-viewer";
 import { CustomVideoPlayer } from "@/components/custom-video-player";
 import { ExternalTestModal } from "@/components/external-test-modal";
+import { LanguageSwitcher } from "@/components/language-switcher";
 
 // High-fidelity Run Model matching idea.md Section 3 & 4
 export type TestStep = {
@@ -537,6 +539,18 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
             >
               Projects & Settings
             </Link>
+            <Link
+              href="/dashboard/analytics"
+              className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+            >
+              Analytics & AI Insights
+            </Link>
+            <Link
+              href="/dashboard/tools"
+              className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+            >
+              Dev Tools
+            </Link>
           </nav>
 
           {/* Daemon Status Pill */}
@@ -548,6 +562,8 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
 
         {/* Right Action & User Identity */}
         <div className="flex items-center gap-3">
+          <LanguageSwitcher />
+
           <button
             onClick={() => setIsExternalModalOpen(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-1.5 text-xs font-semibold text-indigo-700 shadow-xs hover:bg-indigo-100 active:scale-95 transition-all"
@@ -762,26 +778,36 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
               </div>
             </div>
 
-            {/* Quick Action Button */}
-            {selectedRun.status === "failed" && (
-              <Button
-                onClick={handleApplyFix}
-                disabled={isApplyingFix}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold h-9 shadow-sm shrink-0 gap-1.5"
+            {/* Quick Action Button & Path Analytics */}
+            <div className="flex items-center gap-2">
+              <Link
+                href={`/dashboard/runs/${selectedRun.id}/analytics`}
+                className="rounded-lg border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 px-3 py-2 text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-2xs shrink-0"
               >
-                {isApplyingFix ? (
-                  <>
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                    <span>Applying Fix to PR…</span>
-                  </>
-                ) : (
-                  <>
-                    <GitPullRequest className="h-3.5 w-3.5" />
-                    <span>Apply Fix to PR</span>
-                  </>
-                )}
-              </Button>
-            )}
+                <Compass className="h-3.5 w-3.5 text-indigo-600" />
+                <span>Quality &amp; Path Analytics</span>
+              </Link>
+
+              {selectedRun.status === "failed" && (
+                <Button
+                  onClick={handleApplyFix}
+                  disabled={isApplyingFix}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold h-9 shadow-sm shrink-0 gap-1.5"
+                >
+                  {isApplyingFix ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      <span>Applying Fix to PR…</span>
+                    </>
+                  ) : (
+                    <>
+                      <GitPullRequest className="h-3.5 w-3.5" />
+                      <span>Apply Fix to PR</span>
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Step Timeline Ribbon */}

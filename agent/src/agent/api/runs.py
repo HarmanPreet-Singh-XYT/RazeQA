@@ -136,6 +136,8 @@ class RunStore:
         branch: str | None = None,
         sha: str | None = None,
         repo: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[RunRecord]:
         with self._lock:
             items = list(self._runs.values())
@@ -145,7 +147,10 @@ class RunStore:
                 items = [r for r in items if r.branch == branch]
             if sha:
                 items = [r for r in items if r.sha == sha]
-            return sorted(items, key=lambda x: x.created_at, reverse=True)
+            sorted_items = sorted(items, key=lambda x: x.created_at, reverse=True)
+            if limit is not None:
+                return sorted_items[offset : offset + limit]
+            return sorted_items[offset:]
 
     def clear(self) -> None:
         with self._lock:

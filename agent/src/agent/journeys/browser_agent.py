@@ -434,11 +434,48 @@ def run_route_journey(
         # setup failure here orphaned the browser and its video recorder.
         browser = None
         context = None
+        captured_network_requests: list[dict[str, Any]] = []
+        captured_console_errors: list[str] = []
+        captured_response_headers: dict[str, str] = {}
         try:
             browser = p.chromium.launch()
             context = browser.new_context(**context_kwargs)
             context.tracing.start(screenshots=True, snapshots=True, sources=True)
             page = context.new_page()
+
+            def _on_response(resp: Any) -> None:
+                try:
+                    h_dict = resp.headers
+                    req_info: dict[str, Any] = {
+                        "url": resp.url,
+                        "status": resp.status,
+                        "headers": h_dict,
+                    }
+                    content_length = h_dict.get("content-length")
+                    if content_length and content_length.isdigit():
+                        req_info["size"] = int(content_length)
+                    captured_network_requests.append(req_info)
+                    if resp.url == page.url or resp.url.rstrip("/") == route.rstrip("/"):
+                        captured_response_headers.update(h_dict)
+                except Exception:
+                    pass
+
+            def _on_console(msg: Any) -> None:
+                try:
+                    if msg.type == "error":
+                        captured_console_errors.append(msg.text)
+                except Exception:
+                    pass
+
+            def _on_pageerror(err: Any) -> None:
+                try:
+                    captured_console_errors.append(str(err))
+                except Exception:
+                    pass
+
+            page.on("response", _on_response)
+            page.on("console", _on_console)
+            page.on("pageerror", _on_pageerror)
         except Exception:
             if context is not None:
                 try:
@@ -456,6 +493,15 @@ def run_route_journey(
         video_path: str | None = None
         try:
             res = run_exploratory_journey(page, route=route, base_url=base_url, actions=actions, risk_tag=risk_tag)
+
+            # Capture live DOM snapshot and runtime forensic data
+            try:
+                res["dom_snapshot"] = page.content()
+            except Exception:
+                res["dom_snapshot"] = ""
+            res["network_requests"] = captured_network_requests
+            res["console_errors"] = captured_console_errors
+            res["response_headers"] = captured_response_headers
 
             # Visual check using Gemini through Strands SDK
             if "visual" in test_type and res.get("passed"):
