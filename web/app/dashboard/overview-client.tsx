@@ -50,7 +50,6 @@ import { FixProposalViewer } from "@/components/fix-proposal-viewer";
 import { CustomVideoPlayer } from "@/components/custom-video-player";
 import { logout } from "@/app/login/actions";
 import { ExternalTestModal } from "@/components/external-test-modal";
-import { LanguageSwitcher } from "@/components/language-switcher";
 
 // --- Domain Models based on Specification ---
 
@@ -523,10 +522,8 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
             </nav>
           </div>
 
-          {/* Account Profile, Language Switcher & Sign Out */}
+          {/* Account Profile & Sign Out */}
           <div className="flex items-center gap-3">
-            <LanguageSwitcher />
-
             <div className="flex items-center gap-2 border-l border-slate-200 pl-3">
               <div className="h-6 w-6 rounded-full bg-slate-900 text-white font-bold text-[10px] flex items-center justify-center">
                 QA

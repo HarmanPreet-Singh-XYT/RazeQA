@@ -36,8 +36,6 @@ import {
   Zap,
 } from "lucide-react";
 import { logout } from "@/app/login/actions";
-import { useTranslation } from "@/lib/i18n";
-import { LanguageSwitcher } from "@/components/language-switcher";
 
 export default function JobAnalyticsClient({
   runId,
@@ -46,7 +44,6 @@ export default function JobAnalyticsClient({
   runId: string;
   userEmail: string;
 }) {
-  const { t, locale, formatNumber } = useTranslation();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -189,32 +186,30 @@ export default function JobAnalyticsClient({
                 href="/dashboard"
                 className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
               >
-                {t("nav.overview")}
+                Overview
               </Link>
               <Link
                 href="/dashboard/runs"
                 className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
               >
-                {t("nav.forensics")}
+                PR Forensics
               </Link>
               <Link
                 href="/dashboard/projects"
                 className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
               >
-                {t("nav.projects")}
+                Projects & Settings
               </Link>
               <Link
                 href="/dashboard/analytics"
                 className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
               >
-                {t("nav.analytics")}
+                Fleet Analytics
               </Link>
             </nav>
           </div>
 
           <div className="flex items-center gap-3">
-            <LanguageSwitcher />
-
             <div className="flex items-center gap-2 border-l border-slate-200 pl-3">
               <div className="h-6 w-6 rounded-full bg-slate-900 text-white font-bold text-[10px] flex items-center justify-center">
                 QA
@@ -229,7 +224,7 @@ export default function JobAnalyticsClient({
                 type="submit"
                 className="text-xs text-slate-500 hover:text-slate-900 font-medium transition-colors"
               >
-                {t("nav.signout")}
+                Sign out
               </button>
             </form>
           </div>
@@ -259,12 +254,12 @@ export default function JobAnalyticsClient({
                 {isExternal ? (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 px-2.5 py-0.5 text-xs font-bold text-sky-700 border border-sky-200">
                     <Globe className="h-3.5 w-3.5" />
-                    {t("badge.external")}
+                    External Site (Zero Code Access)
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-purple-50 px-2.5 py-0.5 text-xs font-bold text-purple-700 border border-purple-200">
                     <Code2 className="h-3.5 w-3.5" />
-                    {t("badge.full_code")}
+                    GitHub PR (Full Code Access)
                   </span>
                 )}
               </div>
@@ -323,7 +318,7 @@ export default function JobAnalyticsClient({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
             <div>
               <h2 className="text-base font-bold text-slate-950 tracking-tight">
-                {t("analytics.per_path_title")}
+                Per-Path Analysis & Quality Scorecard
               </h2>
               <p className="text-xs text-slate-500">
                 Isolated evaluation for each tested route across Performance, Usability, i18n, Security, and SEO.
@@ -458,7 +453,7 @@ export default function JobAnalyticsClient({
             <div>
               <h2 className="text-base font-bold text-slate-950 tracking-tight flex items-center gap-2">
                 <Workflow className="h-4 w-4 text-indigo-600" />
-                {isExternal ? t("remediation.advisory") : t("remediation.apply")}
+                {isExternal ? "Server / Edge Advisory" : "Apply Synthesized Patch to PR"}
               </h2>
               <p className="text-xs text-slate-500">
                 {isExternal

@@ -49,7 +49,6 @@ import { logout } from "@/app/login/actions";
 import { FixProposalViewer } from "@/components/fix-proposal-viewer";
 import { CustomVideoPlayer } from "@/components/custom-video-player";
 import { ExternalTestModal } from "@/components/external-test-modal";
-import { LanguageSwitcher } from "@/components/language-switcher";
 
 // High-fidelity Run Model matching idea.md Section 3 & 4
 export type TestStep = {
@@ -575,8 +574,6 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
 
         {/* Right Action & User Identity */}
         <div className="flex items-center gap-3">
-          <LanguageSwitcher />
-
           <button
             onClick={() => setIsExternalModalOpen(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-1.5 text-xs font-semibold text-indigo-700 shadow-xs hover:bg-indigo-100 active:scale-95 transition-all"

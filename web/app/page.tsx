@@ -25,7 +25,6 @@ import {
   XCircle,
 } from "lucide-react";
 import { CustomVideoPlayer } from "@/components/custom-video-player";
-import { LanguageSwitcher } from "@/components/language-switcher";
 
 function GithubIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -101,7 +100,6 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
           </nav>
 
           <div className="flex items-center gap-3">
-            <LanguageSwitcher />
             <Link
               href="/tools"
               className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2 py-1.5 transition-colors hidden sm:inline-block"

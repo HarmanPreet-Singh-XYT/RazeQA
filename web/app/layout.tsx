@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
-import { I18nProvider } from "@/lib/i18n";
 import { OfflineIndicator } from "@/components/offline-indicator";
 import { CookieConsent } from "@/components/cookie-consent";
 import "./globals.css";
@@ -85,14 +84,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="min-h-full flex flex-col font-sans">
-        <I18nProvider>
-          <OfflineIndicator />
-          <TooltipProvider>
-            {children}
-            <Toaster />
-          </TooltipProvider>
-          <CookieConsent />
-        </I18nProvider>
+        <OfflineIndicator />
+        <TooltipProvider>
+          {children}
+          <Toaster />
+        </TooltipProvider>
+        <CookieConsent />
       </body>
     </html>
   );

@@ -31,7 +31,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { LanguageSwitcher } from "@/components/language-switcher";
+import { logout } from "@/app/login/actions";
 
 function GithubIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
@@ -221,8 +221,6 @@ export default function ProjectsClient() {
         </div>
 
         <div className="flex items-center gap-3">
-          <LanguageSwitcher />
-
           <div className="hidden sm:flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50/80 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700">
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
             <span>GitHub App: Active</span>

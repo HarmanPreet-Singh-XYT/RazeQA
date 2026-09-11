@@ -37,7 +37,6 @@ import {
   type AuthState,
 } from "./actions";
 import { createClient } from "@/lib/supabase/client";
-import { LanguageSwitcher } from "@/components/language-switcher";
 
 function GithubIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -621,7 +620,6 @@ export default function LoginPage() {
         </Link>
 
         <div className="flex items-center gap-3">
-          <LanguageSwitcher />
           <div className="hidden sm:flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 backdrop-blur-xs px-3 py-1 text-xs text-slate-600 shadow-xs">
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
             <span className="font-mono text-[11px] font-semibold text-slate-700">

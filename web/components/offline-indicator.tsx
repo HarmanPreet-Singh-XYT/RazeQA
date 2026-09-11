@@ -2,10 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import { WifiOff, RefreshCw } from "lucide-react";
-import { useTranslation } from "@/lib/i18n";
 
 export function OfflineIndicator() {
-  const { t } = useTranslation();
   const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
@@ -33,9 +31,9 @@ export function OfflineIndicator() {
     >
       <div className="flex items-center gap-2">
         <WifiOff className="h-4 w-4 text-slate-950 animate-pulse" />
-        <span>{t("offline.title")}</span>
+        <span>You are currently offline</span>
         <span className="font-normal opacity-90 hidden sm:inline">
-          — {t("offline.subtitle")}
+          — Connecting to AutoQA network when connection restores.
         </span>
       </div>
       <button

@@ -39,11 +39,8 @@ import {
   Zap,
 } from "lucide-react";
 import { logout } from "@/app/login/actions";
-import { useTranslation } from "@/lib/i18n";
-import { LanguageSwitcher } from "@/components/language-switcher";
 
 export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
-  const { t, locale, formatNumber } = useTranslation();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [userQuery, setUserQuery] = useState("");
@@ -130,7 +127,6 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <LanguageSwitcher />
               <Link
                 href="/dashboard"
                 className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
@@ -215,25 +211,25 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
                 href="/dashboard"
                 className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
               >
-                {t("nav.overview")}
+                Overview
               </Link>
               <Link
                 href="/dashboard/runs"
                 className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
               >
-                {t("nav.forensics")}
+                PR Forensics
               </Link>
               <Link
                 href="/dashboard/projects"
                 className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
               >
-                {t("nav.projects")}
+                Projects & Settings
               </Link>
               <Link
                 href="/dashboard/analytics"
                 className="rounded-md px-2.5 py-1 text-xs font-bold text-slate-950 bg-slate-100 transition-colors"
               >
-                {t("nav.analytics")}
+                Fleet Analytics
               </Link>
               <Link
                 href="/dashboard/tools"
@@ -245,8 +241,6 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
           </div>
 
           <div className="flex items-center gap-3">
-            <LanguageSwitcher />
-
             <div className="flex items-center gap-2 border-l border-slate-200 pl-3">
               <div className="h-6 w-6 rounded-full bg-slate-900 text-white font-bold text-[10px] flex items-center justify-center">
                 QA
@@ -261,7 +255,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
                 type="submit"
                 className="text-xs text-slate-500 hover:text-slate-900 font-medium transition-colors"
               >
-                {t("nav.signout")}
+                Sign out
               </button>
             </form>
           </div>
@@ -275,7 +269,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
           <div>
             <div className="flex items-center gap-2.5 mb-1.5">
               <h1 className="text-2xl font-extrabold text-slate-950 tracking-tight">
-                {t("analytics.title")}
+                Fleet Quality Dimensions & AI Intelligence
               </h1>
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 border border-emerald-200">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -283,7 +277,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               </span>
             </div>
             <p className="text-xs text-slate-600 max-w-2xl leading-relaxed">
-              {t("analytics.subtitle")}
+              Autonomous calculation of Non-Functional Quality Attributes, regression forecasting, and per-path performance.
             </p>
           </div>
 
@@ -299,7 +293,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               href="/dashboard/runs"
               className="inline-flex items-center gap-1.5 rounded-lg bg-slate-950 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 shadow-xs transition-colors"
             >
-              {t("job.view_analytics")}
+              View Quality & Path Analytics
               <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           </div>
@@ -317,7 +311,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
                   Composite Index
                 </span>
                 <h2 className="text-base font-bold text-slate-900 mt-0.5">
-                  {t("analytics.health_index")}
+                  Fleet Quality Health Index
                 </h2>
               </div>
               <div className="h-10 w-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-mono font-bold text-sm">
@@ -353,7 +347,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
           {/* Metric: Pass Rate */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs flex flex-col justify-between">
             <div className="flex items-center justify-between text-slate-500">
-              <span className="text-xs font-semibold">{t("analytics.pass_rate")}</span>
+              <span className="text-xs font-semibold">Pass Rate</span>
               <CheckCircle2 className="h-4 w-4 text-emerald-500" />
             </div>
             <div className="my-2">
@@ -372,7 +366,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
           {/* Metric: MTTD */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs flex flex-col justify-between">
             <div className="flex items-center justify-between text-slate-500">
-              <span className="text-xs font-semibold">{t("analytics.mttd")}</span>
+              <span className="text-xs font-semibold">Mean Time to Detect (MTTD)</span>
               <Zap className="h-4 w-4 text-amber-500" />
             </div>
             <div className="my-2">
@@ -391,7 +385,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
           {/* Metric: Flakiness */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs flex flex-col justify-between">
             <div className="flex items-center justify-between text-slate-500">
-              <span className="text-xs font-semibold">{t("analytics.flakiness")}</span>
+              <span className="text-xs font-semibold">Flakiness Index</span>
               <Flame className="h-4 w-4 text-rose-500" />
             </div>
             <div className="my-2">
@@ -430,7 +424,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
             {[
               {
                 id: "perf",
-                name: t("analytics.dimension.perf"),
+                name: "Performance & Speed",
                 score: dimensions.performance || 91,
                 desc: "p95 latency < 2s, transfer payload < 500KB, TTFB optimization.",
                 icon: Zap,
@@ -439,7 +433,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               },
               {
                 id: "usability",
-                name: t("analytics.dimension.usability"),
+                name: "Usability & Learnability",
                 score: dimensions.usability || 94,
                 desc: "WCAG contrast heuristics, form label associations, missing aria-label scan.",
                 icon: Compass,
@@ -448,7 +442,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               },
               {
                 id: "i18n",
-                name: t("analytics.dimension.i18n"),
+                name: "Internationalization (i18n)",
                 score: dimensions.i18n || 88,
                 desc: "Hardcoded strings detection, RTL layout compliance, dynamic currency/date formatting.",
                 icon: Globe,
@@ -457,7 +451,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               },
               {
                 id: "security",
-                name: t("analytics.dimension.security"),
+                name: "Security & Privacy",
                 score: dimensions.security || 96,
                 desc: "CSP, HSTS, X-Frame-Options headers, credential redaction, cookie security flags.",
                 icon: Lock,
@@ -466,7 +460,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               },
               {
                 id: "reliability",
-                name: t("analytics.dimension.reliability"),
+                name: "Reliability & Uptime",
                 score: dimensions.reliability || 93,
                 desc: "Uptime SLA, 0 uncaught JavaScript errors, automated retry recovery.",
                 icon: ShieldCheck,
@@ -475,7 +469,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               },
               {
                 id: "seo",
-                name: t("analytics.dimension.seo"),
+                name: "Search Engine Optimization (SEO)",
                 score: dimensions.seo || 92,
                 desc: "Title/meta description character limits, single h1, JSON-LD schema, alt text.",
                 icon: Search,
@@ -484,7 +478,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               },
               {
                 id: "maintainability",
-                name: t("analytics.dimension.maintainability"),
+                name: "Maintainability & Scalability",
                 score: dimensions.maintainability || 90,
                 desc: "AST dependency coupling, circular import prevention, diff churn limits.",
                 icon: Layers,
@@ -493,7 +487,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               },
               {
                 id: "observability",
-                name: t("analytics.dimension.observability"),
+                name: "Observability & Telemetry",
                 score: dimensions.observability || 95,
                 desc: "Playwright video/trace artifacts, network waterfall logging, Core Web Vitals.",
                 icon: Activity,
@@ -630,7 +624,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-900 tracking-tight">
-                {t("analytics.ask_analyst")}
+                Ask AI QA Analyst
               </h2>
               <p className="text-xs text-slate-600">
                 Interactive natural language diagnostic engine querying real fleet run artifacts.
@@ -643,7 +637,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               type="text"
               value={userQuery}
               onChange={(e) => setUserQuery(e.target.value)}
-              placeholder={t("analytics.ask_placeholder")}
+              placeholder="Ask about checkout regressions, CSP compliance, flaky test timing, or i18n..."
               className="flex-1 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-600 shadow-2xs"
             />
             <button

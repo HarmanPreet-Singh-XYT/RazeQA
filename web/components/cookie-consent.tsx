@@ -2,10 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import { ShieldCheck, X } from "lucide-react";
-import { useTranslation } from "@/lib/i18n";
 
 export function CookieConsent() {
-  const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
@@ -38,16 +36,16 @@ export function CookieConsent() {
           <ShieldCheck className="h-5 w-5" />
         </div>
         <div className="flex-1 text-xs">
-          <h2 className="font-bold text-slate-900 mb-1">{t("cookie.title")}</h2>
+          <h2 className="font-bold text-slate-900 mb-1">Privacy & Data Preferences</h2>
           <p className="text-slate-600 leading-relaxed mb-3">
-            {t("cookie.description")}
+            We use essential session tokens and performance telemetry to detect test regressions and ensure security compliance.
           </p>
           <div className="flex items-center gap-2">
             <button
               onClick={handleAccept}
               className="rounded-lg bg-slate-950 px-3 py-1.5 font-semibold text-white hover:bg-slate-800 transition-colors shadow-xs"
             >
-              {t("cookie.accept")}
+              Accept Essential & Telemetry
             </button>
             <button
               onClick={handleDismiss}
