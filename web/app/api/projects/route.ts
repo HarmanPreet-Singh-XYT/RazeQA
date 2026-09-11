@@ -9,41 +9,49 @@ export async function GET() {
       .select("*")
       .order("created_at", { ascending: false });
 
-    if (error || !projects || projects.length === 0) {
-      // Return default connected project for the active workspace demo
-      return NextResponse.json({
-        projects: [
-          {
-            id: "proj-default-ecommerce",
-            repo_full_name: "acme-corp/ecommerce-web",
-            settings: {
-              framework: "nextjs",
-              package_manager: "npm",
-              build_command: "npm run build",
-              start_command: "npm start",
-              port: 3000,
-              scope: "changed",
-              test_type: "functional",
-              enable_on_push: true,
-              enable_on_pr: true,
-              roles: {
-                user: { email: "qa@example.com", password: "••••••••••••" },
-                admin: { email: "admin@example.com", password: "••••••••••••" },
-              },
-            },
-          },
-        ],
-      });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ projects });
+    return NextResponse.json({ projects: projects || [] });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 
+const SAFE_BUILD_BINARIES = [
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "npx",
+  "pytest",
+  "python",
+  "python3",
+  "cargo",
+  "go",
+  "make",
+];
+
 export async function POST(request: Request) {
   try {
+    const supabase = await createClient();
+
+    // 1. Authenticate user session (Fix Finding #5)
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    // In local dev without Supabase Auth keys, allow bypass only if explicitly disabled
+    const isDevNoAuth = process.env.NODE_ENV === "development" && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!user && !isDevNoAuth) {
+      return NextResponse.json(
+        { error: "Unauthorized: You must be logged in to modify project settings." },
+        { status: 401 }
+      );
+    }
+
     const body = await request.json();
     const { repo_full_name, settings } = body;
 
@@ -51,13 +59,53 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "repo_full_name is required" }, { status: 400 });
     }
 
-    const supabase = await createClient();
+    // 2. Server-side command-injection validation (Fix Finding #4)
+    const buildCmd = (settings?.auto_repair?.build_command || "").trim();
+    if (buildCmd) {
+      for (const op of [";", "&&", "||", "|", "`", "$", "\n", "\r", ">", "<"]) {
+        if (buildCmd.includes(op)) {
+          return NextResponse.json(
+            { error: `Invalid build_command: contains disallowed operator '${op}'` },
+            { status: 400 }
+          );
+        }
+      }
+      const binary = buildCmd.split(/\s+/)[0]?.replace(/^.*\//, "");
+      if (binary && !SAFE_BUILD_BINARIES.includes(binary)) {
+        return NextResponse.json(
+          { error: `Invalid build_command: binary '${binary}' is not permitted.` },
+          { status: 400 }
+        );
+      }
+    }
+
+    // 3. Credential-clobbering protection (Fix Finding #2)
+    // Fetch existing settings to preserve real passwords when the UI submits masked "••••••••••••"
+    const { data: existingProject } = await supabase
+      .from("projects")
+      .select("settings")
+      .eq("repo_full_name", repo_full_name)
+      .maybeSingle();
+
+    const mergedSettings = { ...(settings || {}) };
+    if (existingProject?.settings?.roles && mergedSettings.roles) {
+      const existingRoles = existingProject.settings.roles;
+      for (const [rKey, rVal] of Object.entries(mergedSettings.roles as Record<string, any>)) {
+        if (!rVal.password || rVal.password === "••••••••••••") {
+          const preserved = existingRoles[rKey]?.password;
+          if (preserved && preserved !== "••••••••••••") {
+            rVal.password = preserved;
+          }
+        }
+      }
+    }
+
     const { data, error } = await supabase
       .from("projects")
       .upsert(
         {
           repo_full_name,
-          settings: settings || {},
+          settings: mergedSettings,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "repo_full_name" }
@@ -73,3 +121,4 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
+

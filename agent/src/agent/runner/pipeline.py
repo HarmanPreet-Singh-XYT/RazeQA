@@ -9,6 +9,7 @@ import re
 import subprocess
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -104,10 +105,22 @@ APP_REPO_DIR = Path(
 SANDBOX_MODE = os.environ.get("SANDBOX_MODE", "docker")
 
 
+@dataclass
+class SandboxInfo:
+    base_url: str
+    worktree_path: Path
+
+    def __iter__(self):
+        return iter((self.base_url, self.worktree_path))
+
+    def __str__(self) -> str:
+        return self.base_url
+
+
 @contextmanager
 def _sandbox_for_sha(repo_dir: Path, sha: str, image_tag: str, env: dict[str, str], run_id: str | None = None):
     """Checks out `sha` into an isolated worktree, builds an image from it,
-    boots a resource-constrained container, and yields its base_url. Always
+    boots a resource-constrained container, and yields a SandboxInfo handle. Always
     tears down the worktree and container on exit."""
     mode = os.environ.get("SANDBOX_MODE", SANDBOX_MODE)
     if mode == "disabled":
@@ -115,7 +128,7 @@ def _sandbox_for_sha(repo_dir: Path, sha: str, image_tag: str, env: dict[str, st
             "SANDBOX_MODE=disabled: testing against http://localhost:3000 directly "
             "instead of an isolated per-run container. Not safe for untrusted PR code."
         )
-        yield "http://localhost:3000"
+        yield SandboxInfo(base_url="http://localhost:3000", worktree_path=repo_dir)
         return
 
     with checkout_worktree(repo_dir, sha, WORKSPACES_BASE) as worktree_path:
@@ -126,7 +139,7 @@ def _sandbox_for_sha(repo_dir: Path, sha: str, image_tag: str, env: dict[str, st
                     from agent.runner.queue import default_job_queue
                     default_job_queue.register_container(run_id, handle.container_name)
                 try:
-                    yield handle.base_url
+                    yield SandboxInfo(base_url=handle.base_url, worktree_path=worktree_path)
                 finally:
                     if run_id:
                         from agent.runner.queue import default_job_queue
@@ -282,6 +295,7 @@ async def _run_journeys(
     test_type: str,
     run_id: str | None = None,
     auto_repair_config: AutoRepairConfig | None = None,
+    source_root: Path | None = None,
 ) -> dict[str, Any]:
     """Runs the seeded login journey followed by exploratory journeys against
     `base_url`, returning collected results. Shared between the PR-branch run
@@ -324,7 +338,7 @@ async def _run_journeys(
             error=login_err,
             analysis=analysis,
             intents=intents,
-            source_root=APP_REPO_DIR,
+            source_root=source_root or APP_REPO_DIR,
             custom_secrets=custom_secrets,
             fix_synthesizer=fix_synthesizer,
             auto_repair_config=auto_repair_config,
@@ -440,7 +454,7 @@ async def _run_journeys(
                 analysis=analysis,
                 intents=intents,
                 dom_snapshot=exp_res.get("dom_snapshot"),
-                source_root=APP_REPO_DIR,
+                source_root=source_root or APP_REPO_DIR,
                 custom_secrets=custom_secrets,
                 fix_synthesizer=fix_synthesizer,
                 auto_repair_config=auto_repair_config,
@@ -679,12 +693,15 @@ async def _run_pipeline_inner(
             test_command=auto_repair_raw.get("test_command", project_settings.get("test_command", "npm test")),
             max_steps=int(auto_repair_raw.get("max_steps", 10)),
             cost_limit_usd=float(auto_repair_raw.get("cost_limit_usd", 1.0)),
+            wall_time_limit_seconds=int(auto_repair_raw.get("wall_time_limit_seconds", 180)),
             custom_instructions=auto_repair_raw.get("custom_instructions", ""),
+            model_name=auto_repair_raw.get("model_name"),
+            env_vars=auto_repair_raw.get("env_vars", {}),
         )
 
-        with _sandbox_for_sha(repo_dir_for_checkout, sha, image_tag, sandbox_env, run_id=record.run_id if record else None) as sandbox_base_url:
+        with _sandbox_for_sha(repo_dir_for_checkout, sha, image_tag, sandbox_env, run_id=record.run_id if record else None) as sandbox_info:
             journeys = await _run_journeys(
-                base_url=sandbox_base_url,
+                base_url=str(sandbox_info),
                 test_user_email=test_user_email,
                 test_user_password=test_user_password,
                 artifacts_dir=artifacts_dir,
@@ -693,6 +710,7 @@ async def _run_pipeline_inner(
                 test_type=test_type,
                 run_id=record.run_id,
                 auto_repair_config=auto_repair_config,
+                source_root=getattr(sandbox_info, "worktree_path", None) or APP_REPO_DIR,
             )
         timing["journeys_duration_s"] = round(time.monotonic() - t_journeys, 3)
     except (CheckoutError, SandboxBootError) as exc:
@@ -740,9 +758,9 @@ async def _run_pipeline_inner(
                 safe_base_branch = _sanitize_path_component(base_branch)
                 baseline_image_tag = f"pr-testing-sandbox:{safe_base_branch}-{base_sha[:12]}"
                 baseline_artifacts_dir = ARTIFACTS_BASE / f"{safe_base_branch}_{base_sha[:8]}_baseline"
-                with _sandbox_for_sha(repo_dir_for_checkout, base_sha, baseline_image_tag, sandbox_env) as baseline_url:
+                with _sandbox_for_sha(repo_dir_for_checkout, base_sha, baseline_image_tag, sandbox_env) as baseline_info:
                     baseline_journeys = await _run_journeys(
-                        base_url=baseline_url,
+                        base_url=str(baseline_info),
                         test_user_email=test_user_email,
                         test_user_password=test_user_password,
                         artifacts_dir=baseline_artifacts_dir,
@@ -750,6 +768,7 @@ async def _run_pipeline_inner(
                         intents=[],
                         test_type=test_type,
                         run_id=f"{record.run_id}_baseline",
+                        source_root=getattr(baseline_info, "worktree_path", None) or APP_REPO_DIR,
                     )
                 default_baseline_store.update_baseline_from_run(repo=repo, journeys=baseline_journeys["raw_journeys"])
                 logger.info("Refreshed baseline for repo '%s' from live %s run (%d journeys)", repo, base_branch, len(baseline_journeys["raw_journeys"]))

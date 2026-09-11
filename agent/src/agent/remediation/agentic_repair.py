@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent.analyzer.diff_analyzer import AnalysisResult
 from agent.bridge.models import IntentEvent
@@ -130,6 +130,14 @@ class AutoRepairConfig(BaseModel):
     cost_limit_usd: float = Field(default=1.0, ge=0.05, le=10.0)
     wall_time_limit_seconds: int = Field(default=180, ge=10, le=600)
     custom_instructions: str = Field(default="", max_length=1000)
+    model_name: str | None = None
+    env_vars: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("build_command")
+    @classmethod
+    def validate_build_cmd(cls, v: str) -> str:
+        validate_build_command(v)
+        return v
 
 
 def check_command_guardrails(command: str, custom_secrets: list[str] | None = None) -> tuple[bool, str]:
@@ -369,14 +377,14 @@ Important rules:
 
         instance_template = "{{task}}\n\nWorking Directory: {{cwd}}"
 
-        model_name = resolve_model_name()
+        model_name = self.config.model_name or resolve_model_name()
         logger.info("Instantiating AgenticRepairEngine with model: %s", model_name)
 
         try:
             model = LitellmModel(
                 model_name=model_name,
                 model_kwargs={"drop_params": True},
-                cost_tracking=True,
+                cost_tracking="default",
             )
         except Exception as exc:
             logger.error("Failed to initialize LiteLLM model '%s': %s", model_name, exc)

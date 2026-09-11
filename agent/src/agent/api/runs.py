@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -21,6 +22,9 @@ class RunRequest(BaseModel):
     repo: str = "default"
     scope: str = "changed"
     test_type: str = "functional"
+    force: bool = False
+    pr_number: int | None = None
+    commit_range: str | None = None
 
 
 class ExternalRunRequest(BaseModel):
@@ -172,49 +176,71 @@ def get_run_store() -> Any:
     return _active_store()
 
 
+_force_runs_lock = threading.Lock()
+_force_runs_history: dict[str, list[float]] = {}
+
+
 @router.post("")
 async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     """Trigger an on-demand test run with SHA-based freshness checking.
 
-    If this exact commit SHA was already tested for this branch/scope,
-    returns the cached run result without spinning up a redundant sandbox.
+    If this exact commit SHA was already tested for this branch/scope and force is False,
+    returns the cached run result without spinning up a redundant sandbox or spending AI tokens.
     """
-    store = _active_store()
-    existing = store.find_latest_by_sha(
-        branch=payload.branch,
-        sha=payload.sha,
-        scope=payload.scope,
-        test_type=payload.test_type,
-        repo=payload.repo,
-    )
+    # Rate limit forced test runs (Finding #7)
+    if payload.force:
+        now = time.time()
+        with _force_runs_lock:
+            history = _force_runs_history.setdefault(payload.repo, [])
+            # Keep only timestamps from the last 60 seconds
+            history = [t for t in history if now - t < 60]
+            if len(history) >= 10:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Rate limit exceeded: At most 10 forced test runs per minute allowed per repository.",
+                )
+            history.append(now)
+            _force_runs_history[payload.repo] = history
 
-    if existing is not None:
-        if existing.status in ("completed", "cached"):
-            return {
-                "status": "cached",
-                "fresh": False,
-                "run_id": existing.run_id,
-                "repo": existing.repo,
-                "branch": existing.branch,
-                "sha": existing.sha,
-                "scope": existing.scope,
-                "test_type": existing.test_type,
-                "message": "Result returned from cache for this exact commit SHA.",
-                "created_at": existing.created_at,
-                "completed_at": existing.completed_at,
-                "result": existing.result,
-            }
-        if existing.status in ("queued", "running"):
-            return {
-                "status": existing.status,
-                "fresh": False,
-                "run_id": existing.run_id,
-                "repo": existing.repo,
-                "branch": existing.branch,
-                "sha": existing.sha,
-                "message": f"Run already {existing.status} for this commit SHA.",
-                "created_at": existing.created_at,
-            }
+    store = _active_store()
+    if not payload.force:
+        existing = store.find_latest_by_sha(
+            branch=payload.branch,
+            sha=payload.sha,
+            scope=payload.scope,
+            test_type=payload.test_type,
+            repo=payload.repo,
+        )
+
+        if existing is not None:
+            if existing.status in ("completed", "cached"):
+                return {
+                    "status": "cached",
+                    "fresh": False,
+                    "run_id": existing.run_id,
+                    "repo": existing.repo,
+                    "branch": existing.branch,
+                    "sha": existing.sha,
+                    "scope": existing.scope,
+                    "test_type": existing.test_type,
+                    "message": "Result returned from cache for this exact commit SHA.",
+                    "tokens_saved_estimate": 15000,
+                    "cost_saved_usd_estimate": 0.45,
+                    "created_at": existing.created_at,
+                    "completed_at": existing.completed_at,
+                    "result": existing.result,
+                }
+            if existing.status in ("queued", "running"):
+                return {
+                    "status": existing.status,
+                    "fresh": False,
+                    "run_id": existing.run_id,
+                    "repo": existing.repo,
+                    "branch": existing.branch,
+                    "sha": existing.sha,
+                    "message": f"Run already {existing.status} for this commit SHA.",
+                    "created_at": existing.created_at,
+                }
 
     record = store.create(
         branch=payload.branch,
@@ -240,6 +266,7 @@ async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) ->
         run_id=record.run_id,
         scope=payload.scope,
         test_type=payload.test_type,
+        pr_number=payload.pr_number,
     )
 
     return {

@@ -9,7 +9,7 @@ function engineHeaders(): Record<string, string> {
   return headers;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   if (!ENGINE_API_KEY) {
     return NextResponse.json(
       { runs: [], engineConnected: false, error: "Server misconfigured: AGENT_API_KEY is not set." },
@@ -17,7 +17,11 @@ export async function GET() {
     );
   }
   try {
-    const res = await fetch(`${ENGINE_URL}/runs`, {
+    const { searchParams } = new URL(request.url);
+    const queryString = searchParams.toString();
+    const targetUrl = queryString ? `${ENGINE_URL}/runs?${queryString}` : `${ENGINE_URL}/runs`;
+
+    const res = await fetch(targetUrl, {
       method: "GET",
       headers: engineHeaders(),
       cache: "no-store",

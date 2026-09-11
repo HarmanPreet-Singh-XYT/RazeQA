@@ -277,3 +277,101 @@ def test_agentic_repair_engine_handles_missing_workspace():
     )
     assert not result.success
     assert result.exit_status == "workspace_not_found"
+
+
+def test_litellm_model_cost_tracking_literal_contract():
+    """Regression test for Issue #1: Verify mini-swe-agent LitellmModel rejects bool and requires Literal."""
+    from pydantic import ValidationError
+    from minisweagent.models.litellm_model import LitellmModel
+
+    # cost_tracking="default" must be accepted
+    model = LitellmModel(
+        model_name="anthropic/claude-sonnet-4.6",
+        model_kwargs={"drop_params": True},
+        cost_tracking="default",
+    )
+    assert model.config.cost_tracking == "default"
+
+    # cost_tracking=True (the old bug) must fail Pydantic validation
+    with pytest.raises(ValidationError) as exc_info:
+        LitellmModel(
+            model_name="anthropic/claude-sonnet-4.6",
+            model_kwargs={"drop_params": True},
+            cost_tracking=True,  # type: ignore
+        )
+    assert "literal_error" in str(exc_info.value) or "cost_tracking" in str(exc_info.value)
+
+
+def test_auto_repair_config_command_injection_validation():
+    """Regression test for Issue #4: Verify AutoRepairConfig rejects shell operators during Pydantic init."""
+    from pydantic import ValidationError
+
+    # Legitimate single commands should be valid
+    cfg = AutoRepairConfig(build_command="npm run build")
+    assert cfg.build_command == "npm run build"
+
+    # Shell chaining or redirection should raise ValidationError
+    for evil_cmd in [
+        "npm run build; rm -rf /",
+        "npm run build && cat /etc/passwd",
+        "npm run build | bash",
+        "npm run build > /tmp/evil",
+        "npm run build `id`",
+    ]:
+        with pytest.raises(ValidationError) as exc_info:
+            AutoRepairConfig(build_command=evil_cmd)
+        assert "disallowed operator" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_run_journeys_uses_worktree_source_root(tmp_path):
+    """Regression test for Issue #3: Verify _run_journeys passes isolated worktree source_root to repair."""
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from agent.runner.pipeline import _run_journeys
+    from agent.analyzer.diff_analyzer import AnalysisResult
+
+    worktree = tmp_path / "isolated_worktree_sha123"
+    worktree.mkdir(parents=True, exist_ok=True)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    with patch("agent.runner.pipeline._synthesize_or_repair", new_callable=AsyncMock) as mock_repair, \
+         patch("agent.runner.pipeline.run_login_journey") as mock_login:
+
+        # Mock login failure to trigger _synthesize_or_repair
+        mock_login_res = MagicMock()
+        mock_login_res.passed = False
+        mock_login_res.error = "Login failed"
+        mock_login.return_value = mock_login_res
+
+        mock_repair.return_value = None
+
+        cfg = AutoRepairConfig(enabled=True, trigger_mode="automatic")
+        analysis = AnalysisResult(
+            intents=[],
+            framework="nextjs",
+            package_manager="npm",
+            has_db_migrations=False,
+            risk_score=0.1,
+            suggested_journeys=[],
+        )
+
+        await _run_journeys(
+            base_url="http://localhost:3000",
+            test_user_email="user@test.com",
+            test_user_password="password",
+            artifacts_dir=artifacts,
+            analysis=analysis,
+            intents=[],
+            test_type="functional",
+            run_id="run_123",
+            auto_repair_config=cfg,
+            source_root=worktree,
+        )
+
+        # Ensure _synthesize_or_repair was called with source_root set to the isolated worktree
+        assert mock_repair.called
+        call_kwargs = mock_repair.call_args.kwargs
+        assert call_kwargs.get("source_root") == worktree
+
+
