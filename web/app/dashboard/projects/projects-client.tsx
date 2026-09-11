@@ -95,7 +95,7 @@ export default function ProjectsClient() {
     enable_on_push: true,
     enable_on_pr: true,
     auto_repair: {
-      enabled: true,
+      enabled: false,
       trigger_mode: "automatic",
       build_command: "npm run build",
       test_command: "npm test",
@@ -602,13 +602,13 @@ export default function ProjectsClient() {
                   <span className="text-xs font-semibold text-slate-700">Auto-Repair Active</span>
                   <input
                     type="checkbox"
-                    checked={settings.auto_repair?.enabled ?? true}
+                    checked={settings.auto_repair?.enabled ?? false}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
                         auto_repair: {
                           ...(settings.auto_repair || {
-                            enabled: true,
+                            enabled: false,
                             trigger_mode: "automatic",
                             build_command: "npm run build",
                             test_command: "npm test",
@@ -761,15 +761,17 @@ export default function ProjectsClient() {
                         max={20}
                         step={1}
                         value={settings.auto_repair?.max_steps || 10}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          const clamped = isNaN(val) ? 10 : Math.min(30, Math.max(1, val));
                           setSettings({
                             ...settings,
                             auto_repair: {
                               ...(settings.auto_repair!),
-                              max_steps: parseInt(e.target.value),
+                              max_steps: clamped,
                             },
-                          })
-                        }
+                          });
+                        }}
                         className="w-full accent-indigo-600"
                       />
                       <p className="text-[10px] text-slate-500 mt-0.5">
@@ -792,15 +794,17 @@ export default function ProjectsClient() {
                         max={10.0}
                         step={0.25}
                         value={settings.auto_repair?.cost_limit_usd || 1.0}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          const clamped = isNaN(val) ? 1.0 : Math.min(10.0, Math.max(0.05, val));
                           setSettings({
                             ...settings,
                             auto_repair: {
                               ...(settings.auto_repair!),
-                              cost_limit_usd: parseFloat(e.target.value) || 1.0,
+                              cost_limit_usd: clamped,
                             },
-                          })
-                        }
+                          });
+                        }}
                         className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-mono text-slate-800"
                       />
                       <p className="text-[10px] text-slate-500 mt-0.5">

@@ -19,7 +19,7 @@ from agent.db.supabase import default_run_store
 from agent.github.app import GitHubAppClient, GitHubNotConfiguredError
 from agent.journeys.login import run_login_journey
 from agent.remediation.agentic_repair import AgenticRepairEngine, AutoRepairConfig
-from agent.remediation.fix_synthesizer import FilePatch, FixProposal, FixSynthesizer
+from agent.remediation.fix_synthesizer import FilePatch, FixProposal, FixSynthesizer, apply_patch_to_text
 from agent.remediation.formatter import (
     generate_pr_summary_comment,
     generate_remediation_markdown,
@@ -233,8 +233,8 @@ async def _synthesize_or_repair(
                                 explanation=f"Verified with '{repair_res.build_command}'",
                             )
                         )
-                    except Exception:
-                        pass
+                    except Exception as patch_exc:
+                        logger.warning("Failed to construct FilePatch for target file '%s': %s", tf, patch_exc)
                 logger.info(
                     "AgenticRepairEngine completed with success=%s (build_passed=%s, diff_len=%d)",
                     repair_res.success,
@@ -673,11 +673,11 @@ async def _run_pipeline_inner(
         project_settings = (project_rec.settings if project_rec else {}) or {}
         auto_repair_raw = project_settings.get("auto_repair", {})
         auto_repair_config = AutoRepairConfig(
-            enabled=auto_repair_raw.get("enabled", True),
+            enabled=auto_repair_raw.get("enabled", False),
             trigger_mode=auto_repair_raw.get("trigger_mode", "automatic"),
             build_command=auto_repair_raw.get("build_command", project_settings.get("build_command", "npm run build")),
             test_command=auto_repair_raw.get("test_command", project_settings.get("test_command", "npm test")),
-            max_steps=auto_repair_raw.get("max_steps", 10),
+            max_steps=int(auto_repair_raw.get("max_steps", 10)),
             cost_limit_usd=float(auto_repair_raw.get("cost_limit_usd", 1.0)),
             custom_instructions=auto_repair_raw.get("custom_instructions", ""),
         )
@@ -882,7 +882,51 @@ async def _run_pipeline_inner(
         except GitHubNotConfiguredError as exc:
             logger.error("Could not update Check Run %s: %s", check_run_id, exc)
 
-    # 8. Post PR Comment if PR number provided
+    # 8. Automatic Commit on Green Build if enabled and verified
+    auto_committed = False
+    if (
+        auto_repair_config
+        and auto_repair_config.enabled
+        and auto_repair_config.trigger_mode == "automatic"
+        and overall_status != "success"
+        and pr_number
+    ):
+        proposals = journeys.get("fix_proposals", [])
+        has_green_build = any(getattr(fp, "build_passed", False) for fp in proposals)
+        suggested_fixes = journeys.get("suggested_fixes", [])
+        if has_green_build and suggested_fixes:
+            try:
+                applied_files: list[str] = []
+                for raw_fix in suggested_fixes:
+                    patch = FilePatch(**raw_fix)
+                    current_text, blob_sha = await github_client.get_file_content(
+                        owner=owner,
+                        repo=repo,
+                        path=patch.file_path,
+                        ref=branch,
+                        installation_id=installation_id,
+                    )
+                    updated_text, ok = apply_patch_to_text(current_text, patch)
+                    if ok:
+                        commit_msg = f"fix(pr-agent): {patch.explanation} [skip-pr-agent]"
+                        await github_client.update_file_content(
+                            owner=owner,
+                            repo=repo,
+                            path=patch.file_path,
+                            message=commit_msg,
+                            content=updated_text,
+                            sha=blob_sha,
+                            branch=branch,
+                            installation_id=installation_id,
+                        )
+                        applied_files.append(patch.file_path)
+                if applied_files:
+                    auto_committed = True
+                    logger.info("Automatic commit on green build applied to: %s", applied_files)
+            except Exception as auto_commit_exc:
+                logger.warning("Automatic commit on green build could not complete: %s", auto_commit_exc)
+
+    # 9. Post PR Comment if PR number provided
     if pr_number:
         comment_body = generate_pr_summary_comment(
             status=overall_status,
@@ -894,6 +938,8 @@ async def _run_pipeline_inner(
             branch=branch,
             fix_proposals=journeys.get("fix_proposals"),
             custom_secrets=[s for s in (test_user_email, test_user_password) if s],
+            trigger_mode=auto_repair_config.trigger_mode if auto_repair_config else "manual_approval",
+            auto_committed=auto_committed,
         )
         try:
             await github_client.post_pr_comment(

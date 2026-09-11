@@ -190,6 +190,8 @@ def generate_pr_summary_comment(
     branch: str = "",
     fix_proposals: list[FixProposal] | None = None,
     custom_secrets: list[str] | None = None,
+    trigger_mode: str = "manual_approval",
+    auto_committed: bool = False,
 ) -> str:
     """Generate the GitHub PR comment summarizing the verification run with interactive actions.
 
@@ -221,10 +223,16 @@ def generate_pr_summary_comment(
 
         # Interactive Bot Actions Callout
         branch_text = f" to branch `{branch}`" if branch else ""
-        body_parts.append("> ### ⚡ Interactive Bot Actions")
-        body_parts.append(
-            f"> - **Apply Fix:** Reply with **`@pr-agent apply`** to commit the proposed patch{branch_text} and re-verify automatically."
-        )
+        if auto_committed:
+            body_parts.append("> ### ⚡ Autonomous Auto-Repair")
+            body_parts.append(
+                f"> - **Auto-Committed:** Autonomous fix verified with green build and automatically committed{branch_text}. Re-verification initiated."
+            )
+        else:
+            body_parts.append("> ### ⚡ Interactive Bot Actions")
+            body_parts.append(
+                f"> - **Apply Fix:** Reply with **`@pr-agent apply`** to commit the proposed patch{branch_text} and re-verify automatically."
+            )
         body_parts.append(
             "> - **Re-run Full Suite:** Reply with **`@pr-agent test --scope full`**"
         )
