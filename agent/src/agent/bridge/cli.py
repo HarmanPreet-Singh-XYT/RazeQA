@@ -6,12 +6,16 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from agent.bridge.daemon import BridgeDaemon, get_git_branch, get_git_sha
+from agent.config import load_env
+
+load_env()
 
 DEFAULT_PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://localhost:8000")
 DEFAULT_DAEMON_URL = os.environ.get("BRIDGE_DAEMON_URL", "http://127.0.0.1:8765")

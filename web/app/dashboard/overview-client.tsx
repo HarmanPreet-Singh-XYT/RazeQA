@@ -112,190 +112,9 @@ export type IntentLog = {
   status: "in-flight" | "verified";
 };
 
-// Seeded realistic data strictly adhering to user's spec
-const RUNS_DATA: RunRecord[] = [
-  {
-    id: "run_f1e2d3c4",
-    branch: "feat/quick-checkout",
-    sha: "f1e2d3c",
-    prNumber: 42,
-    prUrl: "https://github.com/acme-corp/ecommerce-web/pull/42",
-    triggeringUser: "harman (via Claude Code)",
-    triggerType: "on-PR",
-    status: "failed",
-    duration: "1.89s",
-    timestamp: "2 mins ago",
-    risk: "High",
-    riskRationale:
-      "Modified payment button session handler without passing downstream customer_address token to charge invoice payload.",
-    scope: "changed",
-    testType: "functional+visual",
-    bucketCounts: {
-      passed: 4,
-      failed: 1,
-      additionalFindings: 2,
-    },
-    additionalFindingsDetails: [
-      "Unhandled promise rejection on window.ApplePaySession cancellation",
-      "Cumulative Layout Shift (CLS 0.18) during payment sheet dismissal",
-    ],
-    baselineComparison: {
-      isNewRegression: true,
-      mainSha: "9c8b7a6",
-      details: "New regression introduced on this branch. Baseline on main (9c8b7a6) passed all 5 assertions.",
-    },
-    artifacts: {
-      traceUrl: "artifacts/runs/run_f1e2d3c4/trace.zip",
-      videoUrl: "artifacts/runs/run_f1e2d3c4/video.webm",
-      domSnapshotAvailable: true,
-      networkWaterfallCount: 6,
-    },
-    remediationPrompt: `## 🚨 Autonomous PR Verification Failed: /checkout
-> **Risk Assessment:** HIGH RISK
-> **Failing Target:** POST /api/charge returned HTTP 422 Unprocessable Entity
-> **Baseline State:** New regression (main @ 9c8b7a6 passed)
 
-### 🔍 Forensic Evidence
-- **Error:** 'Invalid customer address for Apple Pay token invoice generation'
-- **Artifacts:** artifacts/runs/run_f1e2d3c4/trace.zip, video.webm
 
-### 🧠 Intent Context Hand-off
-- User Prompt: "Add instant Apple Pay button to checkout"
-- Agent Intent: "Bypass standard address form for 1-tap checkout"
-- Touched: components/pay-button.tsx, app/checkout/page.tsx
 
-### 📋 Ready-to-Paste Remediation Prompt for Claude Code:
-Fix regression in /checkout: Ensure the Apple Pay session handler in components/pay-button.tsx passes the default billing address token downstream to /api/charge.`,
-  },
-  {
-    id: "run_8a7b6c5d",
-    branch: "feat/quick-checkout",
-    sha: "8a7b6c5",
-    prNumber: 42,
-    prUrl: "https://github.com/acme-corp/ecommerce-web/pull/42",
-    triggeringUser: "harman (via Claude Code)",
-    triggerType: "on-demand",
-    status: "passed",
-    duration: "0.24s",
-    timestamp: "14 mins ago",
-    risk: "Low",
-    riskRationale: "Pre-flight authentication probe against seeded test user.",
-    scope: "changed",
-    testType: "functional",
-    bucketCounts: {
-      passed: 3,
-      failed: 0,
-      additionalFindings: 0,
-    },
-    baselineComparison: {
-      isNewRegression: false,
-      mainSha: "9c8b7a6",
-      details: "Matches baseline behavior on main.",
-    },
-    artifacts: {
-      traceUrl: "artifacts/runs/run_8a7b6c5d/trace.zip",
-      videoUrl: "artifacts/runs/run_8a7b6c5d/video.webm",
-      domSnapshotAvailable: true,
-      networkWaterfallCount: 2,
-    },
-  },
-  {
-    id: "run_4e3d2c1b",
-    branch: "fix/nav-overflow",
-    sha: "4e3d2c1",
-    prNumber: 41,
-    prUrl: "https://github.com/acme-corp/ecommerce-web/pull/41",
-    triggeringUser: "sarah (Developer)",
-    triggerType: "on-push",
-    status: "passed",
-    duration: "1.42s",
-    timestamp: "45 mins ago",
-    risk: "Low",
-    riskRationale: "CSS containment fix on mobile viewports (< 768px).",
-    scope: "changed",
-    testType: "functional+visual",
-    bucketCounts: {
-      passed: 5,
-      failed: 0,
-      additionalFindings: 1,
-    },
-    additionalFindingsDetails: ["Minor font smoothing warning on Safari iOS sandbox"],
-    baselineComparison: {
-      isNewRegression: false,
-      mainSha: "9c8b7a6",
-      details: "Resolved previous viewport overflow on main.",
-    },
-    artifacts: {
-      traceUrl: "artifacts/runs/run_4e3d2c1b/trace.zip",
-      videoUrl: "artifacts/runs/run_4e3d2c1b/video.webm",
-      domSnapshotAvailable: true,
-      networkWaterfallCount: 4,
-    },
-  },
-  {
-    id: "run_9c8b7a6f",
-    branch: "main",
-    sha: "9c8b7a6",
-    triggeringUser: "GitHub Actions",
-    triggerType: "on-push",
-    status: "passed",
-    duration: "1.15s",
-    timestamp: "3 hours ago",
-    risk: "Low",
-    riskRationale: "Baseline visual and functional snapshot sync on default branch.",
-    scope: "full",
-    testType: "functional+visual",
-    bucketCounts: {
-      passed: 16,
-      failed: 0,
-      additionalFindings: 0,
-    },
-    baselineComparison: {
-      isNewRegression: false,
-      mainSha: "9c8b7a6",
-      details: "Gold baseline snapshot established for main.",
-    },
-    artifacts: {
-      traceUrl: "artifacts/runs/run_9c8b7a6f/trace.zip",
-      videoUrl: "artifacts/runs/run_9c8b7a6f/video.webm",
-      domSnapshotAvailable: true,
-      networkWaterfallCount: 12,
-    },
-  },
-];
-
-const IN_FLIGHT_INTENTS: IntentLog[] = [
-  {
-    id: "int_101",
-    branch: "feat/quick-checkout",
-    user: "harman (Claude Code)",
-    time: "Just now",
-    fileModified: "components/pay-button.tsx",
-    prompt: "Add instant Apple Pay button to checkout",
-    inferredIntent: "Bypass standard address form for 1-tap checkout",
-    status: "in-flight",
-  },
-  {
-    id: "int_102",
-    branch: "feat/quick-checkout",
-    user: "harman (Claude Code)",
-    time: "4 mins ago",
-    fileModified: "app/api/charge/route.ts",
-    prompt: "Add Apple Pay token charge handler",
-    inferredIntent: "Forward token to payment gateway server-side",
-    status: "verified",
-  },
-  {
-    id: "int_098",
-    branch: "fix/nav-overflow",
-    user: "sarah (Cursor)",
-    time: "48 mins ago",
-    fileModified: "components/nav.tsx",
-    prompt: "Fix horizontal scroll overflow on mobile viewports",
-    inferredIntent: "Add overflow-x-hidden to outer navigation wrapper",
-    status: "verified",
-  },
-];
 
 /** Artifact URLs from the backend are relative engine paths — rewrite them to
  * go through this app's own /api/artifacts proxy, which holds AGENT_API_KEY
@@ -306,7 +125,7 @@ function resolveArtifactUrl(url?: string | null): string | undefined {
   return `/api/artifacts?file=${encodeURIComponent(url)}`;
 }
 
-function mapBackendRunToDashboardRun(r: any): RunRecord {
+function mapBackendRunToDashboardRun(r: any, repoName?: string | null): RunRecord {
   const result = r.result || {};
   const isFailed = r.status === "failed" || result.status === "failure";
   const isExternal = r.scope === "external";
@@ -324,20 +143,27 @@ function mapBackendRunToDashboardRun(r: any): RunRecord {
   const failedCount = result.failed_journeys?.length ?? (status === "failed" ? 1 : 0);
   const isNewRegression = Boolean(result.baseline_comparison?.has_new_regressions);
 
+  const durationSec = result.duration_s
+    ? `${Number(result.duration_s).toFixed(2)}s`
+    : result.timing?.total_duration_s
+    ? `${Number(result.timing.total_duration_s).toFixed(2)}s`
+    : undefined;
+
+  const repoSlug = (r.repo && r.repo !== "default") ? r.repo : repoName;
+  const prUrl = isExternal
+    ? r.sha
+    : (r.pr_url || result.pr_url || (r.pr_number && repoSlug ? `https://github.com/${repoSlug}/pull/${r.pr_number}` : undefined));
+
   return {
     id: r.run_id,
     branch: isExternal ? `🌐 ${r.branch}` : r.branch,
     sha: isExternal ? r.sha : (r.sha?.slice(0, 7) || "unknown"),
-    prNumber: isExternal ? 0 : 42,
-    prUrl: isExternal ? r.sha : "https://github.com/acme-corp/ecommerce-web/pull/42",
-    triggeringUser: isExternal ? "External Site Tester" : "harman (via Coding Agent Bridge)",
+    prNumber: r.pr_number || result.pr_number || undefined,
+    prUrl,
+    triggeringUser: isExternal ? "External Site Tester" : (r.author || "Coding Agent Bridge"),
     triggerType: "on-demand",
     status,
-    duration: result.duration_s
-      ? `${result.duration_s}s`
-      : result.timing?.total_duration_s
-      ? `${result.timing.total_duration_s.toFixed(2)}s`
-      : "1.24s",
+    duration: durationSec || "--",
     timestamp: new Date(r.created_at || Date.now()).toLocaleTimeString(),
     risk: (result.risk_tag as any) || (isExternal ? "Live QA" : "Medium"),
     riskRationale: result.summary || result.rationale || "Real-time automated journey verification against preview sandbox.",
@@ -350,7 +176,7 @@ function mapBackendRunToDashboardRun(r: any): RunRecord {
     },
     baselineComparison: {
       isNewRegression,
-      mainSha: "9c8b7a6",
+      mainSha: result.baseline_comparison?.main_sha || "main",
       details: isNewRegression
         ? "New regression introduced on this branch. Baseline on main passed."
         : "Matches baseline behavior on main.",
@@ -360,7 +186,7 @@ function mapBackendRunToDashboardRun(r: any): RunRecord {
       videoUrl: resolveArtifactUrl(r.video_url || result.video_url) || null,
       screenshotUrl: resolveArtifactUrl(result.screenshot_url) || null,
       domSnapshotAvailable: true,
-      networkWaterfallCount: 4,
+      networkWaterfallCount: result.journey_artifacts?.[0]?.network_requests?.length || 0,
     },
     timing: result.timing,
     remediationPrompt: result.remediation_prompt || (isFailed ? `## 🚨 Verification Failed on ${r.branch}\nPlease inspect the failing journeys and remediate.` : undefined),
@@ -370,6 +196,9 @@ function mapBackendRunToDashboardRun(r: any): RunRecord {
 
 export function OverviewClient({ userEmail }: { userEmail: string }) {
   const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [intents, setIntents] = useState<IntentLog[]>([]);
+  const [gitInfo, setGitInfo] = useState<{ sha?: string; branch?: string }>({});
   const [selectedRunId, setSelectedRunId] = useState<string>("");
   const [isLoadingRuns, setIsLoadingRuns] = useState<boolean>(true);
   const [runsError, setRunsError] = useState<string | null>(null);
@@ -380,6 +209,8 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
   const [engineConnected, setEngineConnected] = useState<boolean>(false);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
+  const activeProject = projects[0] || null;
+  const activeRepoName = activeProject?.repo_full_name || null;
   const selectedRun = runs.find((r) => r.id === selectedRunId) ?? runs[0];
 
   const fetchLiveRuns = async () => {
@@ -389,8 +220,11 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
       if (res.ok) {
         const data = await res.json();
         setRunsError(null);
+        if (data.git) {
+          setGitInfo(data.git);
+        }
         if (data.runs && Array.isArray(data.runs)) {
-          const liveMapped = data.runs.map(mapBackendRunToDashboardRun);
+          const liveMapped = data.runs.map((r: any) => mapBackendRunToDashboardRun(r, activeRepoName));
           setRuns(liveMapped);
           if (liveMapped.length > 0 && !selectedRunId) {
             setSelectedRunId(liveMapped[0].id);
@@ -411,11 +245,52 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
     }
   };
 
+  const fetchProjects = async () => {
+    try {
+      const res = await fetch("/api/projects");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.projects && Array.isArray(data.projects)) {
+          setProjects(data.projects);
+        }
+      }
+    } catch {}
+  };
+
+  const fetchIntents = async (branch?: string) => {
+    try {
+      const targetBranch = branch || gitInfo.branch || runs[0]?.branch || "main";
+      const res = await fetch(`/api/intents?branch=${encodeURIComponent(targetBranch)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.intents && Array.isArray(data.intents)) {
+          const mapped = data.intents.map((e: any, idx: number) => ({
+            id: e.id || `int_${idx}`,
+            branch: e.branch || targetBranch,
+            user: e.user || e.repo || "agent",
+            time: e.timestamp ? new Date(e.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Recent",
+            fileModified: Array.isArray(e.files) ? e.files.join(", ") : (e.files || "N/A"),
+            prompt: e.prompt_summary || e.prompt || "Code edit",
+            inferredIntent: e.reasoning || e.inferredIntent || "Automated modification",
+            status: "in-flight" as const,
+          }));
+          setIntents(mapped);
+        }
+      }
+    } catch {}
+  };
+
   useEffect(() => {
     fetchLiveRuns();
-    const interval = setInterval(fetchLiveRuns, 4000);
+    fetchProjects();
+    fetchIntents();
+    const interval = setInterval(() => {
+      fetchLiveRuns();
+      fetchProjects();
+      fetchIntents();
+    }, 4000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeRepoName]);
 
   const handleCopyPrompt = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -431,8 +306,6 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          branch: "feat/quick-checkout",
-          sha: "f1e2d3c" + Math.random().toString(16).slice(2, 6),
           scope: "changed",
           test_type: "functional",
         }),
@@ -481,9 +354,9 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
               className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors"
             >
               <GitBranch className="h-3.5 w-3.5 text-slate-500" />
-              <span>acme-corp / ecommerce-web</span>
+              <span>{activeRepoName || "No repository connected"}</span>
               <span className="rounded bg-slate-200/80 px-1 py-0.2 text-[10px] font-mono text-slate-600">
-                HEAD: f1e2d3c
+                {runs[0]?.sha ? `HEAD: ${runs[0].sha.slice(0, 7)}` : gitInfo.sha ? gitInfo.sha.slice(0, 7) : "HEAD"}
               </span>
             </Link>
 
@@ -597,11 +470,25 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
 
             <div>
               <span className="text-slate-400 block text-[10px] font-sans">GitHub App Connection</span>
-              <div className="font-bold text-emerald-700 text-sm mt-0.5 flex items-center gap-1 font-sans">
-                <Check className="h-3.5 w-3.5" />
-                <span>Check Runs Active</span>
-              </div>
-              <span className="text-[11px] text-slate-500 font-sans">Installation #981247</span>
+              {activeProject?.installation_id ? (
+                <>
+                  <div className="font-bold text-emerald-700 text-sm mt-0.5 flex items-center gap-1 font-sans">
+                    <Check className="h-3.5 w-3.5" />
+                    <span>Check Runs Active</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 font-sans">Installation #{activeProject.installation_id}</span>
+                </>
+              ) : (
+                <>
+                  <div className="font-semibold text-slate-600 text-sm mt-0.5 flex items-center gap-1 font-sans">
+                    <AlertCircle className="h-3.5 w-3.5 text-slate-400" />
+                    <span>Not Connected</span>
+                  </div>
+                  <Link href="/dashboard/projects" className="text-[11px] text-emerald-700 hover:underline font-sans block">
+                    Connect in Projects →
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -615,15 +502,21 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
               <span className="font-bold text-slate-900 uppercase tracking-wider text-[10px] text-slate-500">
                 Repository Configuration &amp; Flow Coverage
               </span>
-              <span className="rounded bg-slate-100 px-1.5 py-0.2 font-mono text-[10px] text-slate-700 border border-slate-200">
-                acme-corp/ecommerce-web
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-700 border border-slate-200">
+                {activeRepoName || "No repository selected"}
               </span>
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="rounded bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 text-[11px] font-semibold">
-                HEAD (f1e2d3c): TESTED (Cached)
-              </span>
+              {runs.length > 0 ? (
+                <span className="rounded bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 text-[11px] font-semibold">
+                  HEAD ({runs[0].sha.slice(0, 7)}): {runs[0].status.toUpperCase()}
+                </span>
+              ) : (
+                <span className="rounded bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 text-[11px] font-semibold">
+                  HEAD ({gitInfo.sha ? gitInfo.sha.slice(0, 7) : "HEAD"}): AWAITING RUNS
+                </span>
+              )}
             </div>
           </div>
 
@@ -632,10 +525,10 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-1">
               <span className="text-slate-500 text-[11px] font-medium">Sandbox Defaults:</span>
               <div className="font-semibold text-slate-900">
-                Scope: <code className="font-mono bg-white px-1 py-0.2 rounded border border-slate-200">changed</code>
+                Scope: <code className="font-mono bg-white px-1 py-0.2 rounded border border-slate-200">{activeProject?.settings?.scope || "changed"}</code>
               </div>
               <div className="font-semibold text-slate-900">
-                Type: <code className="font-mono bg-white px-1 py-0.2 rounded border border-slate-200">functional+visual</code>
+                Type: <code className="font-mono bg-white px-1 py-0.2 rounded border border-slate-200">{activeProject?.settings?.test_type || "functional"}</code>
               </div>
             </div>
 
@@ -643,33 +536,55 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-1">
               <span className="text-slate-500 text-[11px] font-medium">Flow Library Coverage:</span>
               <div className="font-bold text-slate-900">
-                4 Seeded Critical Flows
+                {runs.length > 0 ? `${runs.length} Runs Recorded` : "0 Journeys Recorded"}
               </div>
               <div className="text-[11px] text-slate-500">
-                + 12 agent-generated journeys
+                {runs.length > 0 ? "Verified on active branch" : "Trigger verification to run journeys"}
               </div>
             </div>
 
             {/* Credential / Test Account Status */}
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-1">
               <span className="text-slate-500 text-[11px] font-medium">Credential Status:</span>
-              <div className="flex items-center gap-1.5 text-emerald-700 font-bold">
-                <ShieldCheck className="h-3.5 w-3.5" />
-                <span>Configured: YES</span>
-              </div>
-              <div className="text-[11px] text-slate-500">
-                Roles: <span className="font-mono text-slate-700">standard_qa, billing_admin</span>
-              </div>
+              {activeProject?.encrypted_test_credentials || (activeProject?.settings?.roles && Object.keys(activeProject.settings.roles).length > 0) ? (
+                <>
+                  <div className="flex items-center gap-1.5 text-emerald-700 font-bold">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    <span>Configured: YES</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 truncate">
+                    Roles: <span className="font-mono text-slate-700">{Object.keys(activeProject.settings?.roles || {}).join(", ") || "standard_qa"}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-1.5 text-slate-500 font-medium">
+                    <AlertCircle className="h-3.5 w-3.5 text-slate-400" />
+                    <span>Not Configured</span>
+                  </div>
+                  <Link href="/dashboard/projects" className="text-[11px] text-emerald-700 hover:underline block">
+                    Add test credentials →
+                  </Link>
+                </>
+              )}
             </div>
 
             {/* Freshness / Cache State */}
             <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-1">
               <span className="text-slate-500 text-[11px] font-medium">Branch Freshness:</span>
-              <div className="font-mono font-bold text-slate-900">
-                feat/quick-checkout
+              <div className="font-mono font-bold text-slate-900 truncate">
+                {runs[0]?.branch || gitInfo.branch || "main"}
               </div>
-              <div className="text-[11px] text-emerald-700 font-semibold">
-                SHA dedup hit • 0ms cold boot
+              <div className="text-[11px] font-semibold text-slate-600">
+                {runs.length > 0 ? (
+                  runs[0].status === "cached" ? (
+                    <span className="text-emerald-700">SHA dedup hit • 0ms cold boot</span>
+                  ) : (
+                    <span>Status: {runs[0].status}</span>
+                  )
+                ) : (
+                  <span>Awaiting first commit run</span>
+                )}
               </div>
             </div>
           </div>
@@ -1123,47 +1038,64 @@ export function OverviewClient({ userEmail }: { userEmail: string }) {
             </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {IN_FLIGHT_INTENTS.map((intent) => (
-              <div
-                key={intent.id}
-                className="rounded-lg border border-slate-200 bg-slate-50/50 p-3.5 space-y-2 text-xs font-mono"
-              >
-                <div className="flex items-center justify-between text-[11px] font-sans">
-                  <span className="font-bold text-slate-900">{intent.branch}</span>
-                  <span className="text-slate-400">{intent.time}</span>
-                </div>
-
-                <div className="text-slate-700">
-                  <span className="text-slate-400">File: </span>
-                  <span className="font-bold text-slate-900">{intent.fileModified}</span>
-                </div>
-
-                <div className="text-slate-600 text-[11px] font-sans">
-                  <span className="font-semibold text-slate-800">Prompt: </span>
-                  &quot;{intent.prompt}&quot;
-                </div>
-
-                <div className="text-slate-500 text-[10px] font-sans">
-                  <span className="font-semibold text-slate-700">Inferred: </span>
-                  {intent.inferredIntent}
-                </div>
-
-                <div className="pt-1 flex items-center justify-between text-[10px]">
-                  <span className="text-slate-500">{intent.user}</span>
-                  {intent.status === "in-flight" ? (
-                    <span className="rounded bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.2 font-bold">
-                      IN-FLIGHT
-                    </span>
-                  ) : (
-                    <span className="rounded bg-emerald-50 text-emerald-800 border border-emerald-200 px-1.5 py-0.2 font-bold">
-                      VERIFIED
-                    </span>
-                  )}
-                </div>
+          {intents.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center space-y-2">
+              <div className="flex justify-center">
+                <Workflow className="h-8 w-8 text-slate-300" />
               </div>
-            ))}
-          </div>
+              <p className="text-sm font-semibold text-slate-800 font-sans">No In-Flight Agent Intents Streamed Yet</p>
+              <p className="text-xs text-slate-500 max-w-md mx-auto font-sans">
+                Connect your local coding agent session using the bridge daemon to stream live file modifications and prompt intent:
+              </p>
+              <div className="pt-2">
+                <code className="inline-block rounded bg-slate-900 text-slate-100 px-3 py-1.5 font-mono text-xs shadow-xs">
+                  uv run agent-bridge daemon
+                </code>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {intents.map((intent) => (
+                <div
+                  key={intent.id}
+                  className="rounded-lg border border-slate-200 bg-slate-50/50 p-3.5 space-y-2 text-xs font-mono"
+                >
+                  <div className="flex items-center justify-between text-[11px] font-sans">
+                    <span className="font-bold text-slate-900 truncate max-w-[160px]">{intent.branch}</span>
+                    <span className="text-slate-400">{intent.time}</span>
+                  </div>
+
+                  <div className="text-slate-700 truncate">
+                    <span className="text-slate-400">File: </span>
+                    <span className="font-bold text-slate-900">{intent.fileModified}</span>
+                  </div>
+
+                  <div className="text-slate-600 text-[11px] font-sans line-clamp-2">
+                    <span className="font-semibold text-slate-800">Prompt: </span>
+                    &quot;{intent.prompt}&quot;
+                  </div>
+
+                  <div className="text-slate-500 text-[10px] font-sans line-clamp-2">
+                    <span className="font-semibold text-slate-700">Inferred: </span>
+                    {intent.inferredIntent}
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between text-[10px]">
+                    <span className="text-slate-500 truncate max-w-[120px]">{intent.user}</span>
+                    {intent.status === "in-flight" ? (
+                      <span className="rounded bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.2 font-bold">
+                        IN-FLIGHT
+                      </span>
+                    ) : (
+                      <span className="rounded bg-emerald-50 text-emerald-800 border border-emerald-200 px-1.5 py-0.2 font-bold">
+                        VERIFIED
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </main>
 

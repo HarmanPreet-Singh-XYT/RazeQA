@@ -12,10 +12,10 @@ import {
   CheckCircle2,
   CreditCard,
   Lock,
-  Package,
+  Plus,
+  Minus,
+  Trash2,
   ShieldCheck,
-  Sparkles,
-  Truck,
   AlertCircle,
 } from "lucide-react";
 
@@ -65,8 +65,25 @@ const INITIAL_ITEMS: CartItem[] = [
   },
 ];
 
+const STATE_TAX_RATES: Record<string, number> = {
+  CA: 0.0825,
+  NY: 0.08875,
+  WA: 0.092,
+  TX: 0.0825,
+  IL: 0.0875,
+  MA: 0.0625,
+  FL: 0.07,
+  CO: 0.0775,
+  NJ: 0.06625,
+};
+
+function getTaxRate(state: string): number {
+  const clean = state.trim().toUpperCase();
+  return STATE_TAX_RATES[clean] ?? 0.0725;
+}
+
 export default function CheckoutPage() {
-  const [items] = useState<CartItem[]>(INITIAL_ITEMS);
+  const [items, setItems] = useState<CartItem[]>(INITIAL_ITEMS);
   const [address, setAddress] = useState({
     street: "",
     city: "",
@@ -76,47 +93,128 @@ export default function CheckoutPage() {
   });
   const [promo, setPromo] = useState("");
   const [discount, setDiscount] = useState(0);
+  const [promoAppliedMsg, setPromoAppliedMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [orderConfirmation, setOrderConfirmation] = useState<any | null>(null);
 
   const subtotal = items.reduce((acc, item) => acc + item.price * item.quantity, 0);
-  const total = Math.max(0, subtotal - discount);
+  const taxableAmount = Math.max(0, subtotal - discount);
+  const taxRate = getTaxRate(address.state);
+  const tax = taxableAmount > 0 ? Math.round(taxableAmount * taxRate * 100) / 100 : 0;
+  const total = Math.round((taxableAmount + tax) * 100) / 100;
 
-  const handleApplyPromo = () => {
-    if (promo.trim().toUpperCase() === "DEVPROMO") {
-      setDiscount(50);
-      setErrorMsg(null);
-    } else {
-      setErrorMsg("Invalid promotional code.");
+  const updateQuantity = (id: string, delta: number) => {
+    setItems((prev) =>
+      prev
+        .map((item) => {
+          if (item.id === id) {
+            const nextQty = item.quantity + delta;
+            return nextQty > 0 ? { ...item, quantity: nextQty } : null;
+          }
+          return item;
+        })
+        .filter(Boolean) as CartItem[]
+    );
+  };
+
+  const removeItem = (id: string) => {
+    setItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const handleApplyPromo = async () => {
+    if (!promo.trim()) {
+      setErrorMsg("Please enter a promotional code.");
+      return;
+    }
+    try {
+      const res = await fetch(
+        `/api/charge?promo=${encodeURIComponent(promo.trim())}&subtotal=${subtotal}&state=${encodeURIComponent(
+          address.state || "CA"
+        )}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.promo?.valid) {
+          setDiscount(data.promo.discount);
+          setPromoAppliedMsg(data.promo.description || `${data.promo.code} applied`);
+          setErrorMsg(null);
+        } else {
+          setErrorMsg(data.promo?.error || "Invalid promotional code.");
+        }
+      } else {
+        // Fallback local check if offline
+        const code = promo.trim().toUpperCase();
+        if (code === "DEVPROMO" || code === "AUTOQA50") {
+          setDiscount(50);
+          setPromoAppliedMsg("$50 discount applied");
+          setErrorMsg(null);
+        } else if (code === "WELCOME20") {
+          setDiscount(Math.round(subtotal * 0.2 * 100) / 100);
+          setPromoAppliedMsg("20% welcome discount applied");
+          setErrorMsg(null);
+        } else {
+          setErrorMsg("Invalid promotional code.");
+        }
+      }
+    } catch {
+      setErrorMsg("Failed to validate promo code. Please try again.");
     }
   };
 
-  const handleApplePay = () => {
-    // Demonstration flow: Apple Pay requires customer address verification
+  const processPayment = async (paymentMethod: "apple_pay" | "card") => {
     if (!isFieldFilled(address.street) || !isFieldFilled(address.zip)) {
       setErrorMsg("Address verification error: customer_address is required for invoice creation.");
       return;
     }
+    if (paymentMethod === "card" && !isFieldFilled(address.city)) {
+      setErrorMsg("Please provide all required address fields.");
+      return;
+    }
+
+    setErrorMsg(null);
     setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
+
+    try {
+      const res = await fetch("/api/charge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items,
+          customer_address: address,
+          payment_method: paymentMethod,
+          promo_code: discount > 0 ? promo : undefined,
+          subtotal,
+          discount,
+          tax,
+          total,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setErrorMsg(data.message || data.error || `Payment failed with status ${res.status}`);
+        return;
+      }
+
+      setOrderConfirmation(data);
       setIsSuccess(true);
-    }, 600);
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to submit payment request to backend.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleApplePay = () => {
+    processPayment("apple_pay");
   };
 
   const handleSubmitOrder = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isFieldFilled(address.street) || !isFieldFilled(address.city) || !isFieldFilled(address.zip)) {
-      setErrorMsg("Please provide all required address fields.");
-      return;
-    }
-    setErrorMsg(null);
-    setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
-      setIsSuccess(true);
-    }, 700);
+    processPayment("card");
   };
 
   return (
@@ -153,12 +251,36 @@ export default function CheckoutPage() {
         )}
 
         {isSuccess ? (
-          <Card className="border-emerald-200 bg-emerald-50/50 p-8 text-center max-w-lg mx-auto">
+          <Card className="border-emerald-200 bg-emerald-50/50 p-8 text-center max-w-lg mx-auto shadow-sm">
             <CheckCircle2 className="h-12 w-12 text-emerald-600 mx-auto mb-4" />
             <h2 className="text-xl font-bold text-slate-900">Order Confirmed!</h2>
             <p className="text-sm text-slate-600 mt-2">
               Your test sandbox VM pool and verification quota have been provisioned successfully.
             </p>
+            {orderConfirmation && (
+              <div className="mt-5 p-4 rounded-xl bg-white border border-emerald-200 text-left text-xs space-y-2 font-mono">
+                <div className="flex justify-between text-slate-600">
+                  <span>Order ID:</span>
+                  <span className="font-bold text-slate-900">{orderConfirmation.order_id}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>Transaction:</span>
+                  <span className="text-slate-900">{orderConfirmation.transaction_id}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>Method:</span>
+                  <span className="text-slate-900 capitalize">{orderConfirmation.payment_method?.replace("_", " ")}</span>
+                </div>
+                <div className="flex justify-between text-slate-600">
+                  <span>Tax Paid:</span>
+                  <span className="text-slate-900">${orderConfirmation.financials?.tax?.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-slate-600 pt-1 border-t border-slate-100">
+                  <span className="font-semibold text-slate-900">Total Charged:</span>
+                  <span className="font-bold text-emerald-700">${orderConfirmation.financials?.total?.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
             <div className="mt-6">
               <Link href="/dashboard">
                 <Button className="bg-slate-900 text-white hover:bg-slate-800">Return to Dashboard</Button>
@@ -181,7 +303,7 @@ export default function CheckoutPage() {
                     id="apple-pay-button"
                     onClick={handleApplePay}
                     disabled={isSubmitting}
-                    className="w-full flex items-center justify-center gap-2 rounded-lg bg-black text-white font-medium py-3 px-4 hover:bg-slate-800 transition-colors shadow-xs active:scale-[0.99] disabled:opacity-50"
+                    className="w-full flex items-center justify-center gap-2 rounded-lg bg-black text-white font-medium py-3 px-4 hover:bg-slate-800 transition-colors shadow-xs active:scale-[0.99] disabled:opacity-50 cursor-pointer"
                   >
                     <span>Pay</span>
                     <span className="text-xs text-slate-300">| Instant Order</span>
@@ -229,7 +351,7 @@ export default function CheckoutPage() {
                           id="state"
                           placeholder="CA"
                           value={address.state}
-                          onChange={(e) => setAddress({ ...address, state: e.target.value })}
+                          onChange={(e) => setAddress({ ...address, state: e.target.value.toUpperCase() })}
                           className="mt-1 text-sm bg-white"
                         />
                       </div>
@@ -260,8 +382,8 @@ export default function CheckoutPage() {
                     <Button
                       type="submit"
                       id="submit-order"
-                      disabled={isSubmitting}
-                      className="w-full mt-4 bg-slate-950 hover:bg-slate-800 text-white font-semibold py-2.5 shadow-xs"
+                      disabled={isSubmitting || items.length === 0}
+                      className="w-full mt-4 bg-slate-950 hover:bg-slate-800 text-white font-semibold py-2.5 shadow-xs cursor-pointer"
                     >
                       <CreditCard className="h-4 w-4 mr-2" />
                       <span>{isSubmitting ? "Processing..." : `Complete Purchase ($${total.toFixed(2)})`}</span>
@@ -271,53 +393,90 @@ export default function CheckoutPage() {
               </Card>
             </div>
 
-            {/* Right Column: Independently Scrollable Cart Container */}
+            {/* Right Column: Cart Container */}
             <div className="lg:col-span-5 space-y-6">
               <Card className="border-slate-200 bg-white shadow-xs">
                 <CardHeader className="pb-3 border-b border-slate-100">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base font-semibold">Order Summary</CardTitle>
-                    <span className="text-xs font-mono text-slate-500">{items.length} items</span>
+                    <span className="text-xs font-mono text-slate-500">{items.reduce((sum, i) => sum + i.quantity, 0)} items</span>
                   </div>
                 </CardHeader>
 
                 <CardContent className="pt-4 space-y-4">
-                  {/* Nested independently scrollable container for element-targeted scroll testing */}
                   <div
                     id="cart-items-scroll"
                     className="overflow-y-auto max-h-[280px] pr-2 space-y-3 border border-slate-100 rounded-lg p-3 bg-slate-50/50"
                   >
-                    {items.map((item) => (
-                      <div key={item.id} className="flex items-center justify-between border-b border-slate-100 pb-2.5 last:border-b-0 last:pb-0">
-                        <div className="space-y-0.5">
-                          <p className="text-xs font-medium text-slate-900 line-clamp-1">{item.name}</p>
-                          <p className="text-[11px] text-slate-500">{item.category} × {item.quantity}</p>
+                    {items.length === 0 ? (
+                      <p className="text-xs text-slate-500 text-center py-4">Your cart is empty.</p>
+                    ) : (
+                      items.map((item) => (
+                        <div key={item.id} className="flex items-center justify-between border-b border-slate-100 pb-2.5 last:border-b-0 last:pb-0 gap-2">
+                          <div className="space-y-0.5 flex-1 min-w-0">
+                            <p className="text-xs font-medium text-slate-900 truncate">{item.name}</p>
+                            <p className="text-[11px] text-slate-500">{item.category} × {item.quantity}</p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <div className="flex items-center border border-slate-200 rounded bg-white">
+                              <button
+                                type="button"
+                                onClick={() => updateQuantity(item.id, -1)}
+                                className="px-1.5 py-0.5 text-slate-600 hover:bg-slate-100 text-[10px]"
+                                title="Decrease"
+                              >
+                                <Minus className="h-3 w-3" />
+                              </button>
+                              <span className="px-1.5 text-[11px] font-mono">{item.quantity}</span>
+                              <button
+                                type="button"
+                                onClick={() => updateQuantity(item.id, 1)}
+                                className="px-1.5 py-0.5 text-slate-600 hover:bg-slate-100 text-[10px]"
+                                title="Increase"
+                              >
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </div>
+                            <span className="text-xs font-mono font-semibold text-slate-900 w-16 text-right">
+                              ${(item.price * item.quantity).toFixed(2)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeItem(item.id)}
+                              className="text-slate-400 hover:text-red-600 p-0.5"
+                              title="Remove item"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
-                        <span className="text-xs font-mono font-semibold text-slate-900 shrink-0">
-                          ${(item.price * item.quantity).toFixed(2)}
-                        </span>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
 
                   {/* Promo Code Input */}
-                  <div className="flex gap-2 pt-2">
-                    <Input
-                      id="promo-code"
-                      placeholder="Promo code (e.g. DEVPROMO)"
-                      value={promo}
-                      onChange={(e) => setPromo(e.target.value)}
-                      className="text-xs bg-white"
-                    />
-                    <Button
-                      type="button"
-                      id="apply-promo"
-                      onClick={handleApplyPromo}
-                      variant="outline"
-                      className="text-xs shrink-0 font-medium"
-                    >
-                      Apply
-                    </Button>
+                  <div className="space-y-1.5 pt-2">
+                    <div className="flex gap-2">
+                      <Input
+                        id="promo-code"
+                        placeholder="Promo code (e.g. DEVPROMO, AUTOQA50)"
+                        value={promo}
+                        onChange={(e) => setPromo(e.target.value)}
+                        className="text-xs bg-white"
+                      />
+                      <Button
+                        type="button"
+                        id="apply-promo"
+                        onClick={handleApplyPromo}
+                        variant="outline"
+                        className="text-xs shrink-0 font-medium"
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                    {promoAppliedMsg && (
+                      <p className="text-[11px] text-emerald-600 font-medium">✓ {promoAppliedMsg}</p>
+                    )}
                   </div>
 
                   {/* Financial Breakdown */}
@@ -333,8 +492,10 @@ export default function CheckoutPage() {
                       </div>
                     )}
                     <div className="flex justify-between">
-                      <span>Estimated Tax</span>
-                      <span className="font-mono">$0.00</span>
+                      <span>
+                        Estimated Tax {address.state ? `(${address.state} ${(taxRate * 100).toFixed(2)}%)` : "(Standard 7.25%)"}
+                      </span>
+                      <span className="font-mono">${tax.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between pt-2 border-t border-slate-200 text-sm font-bold text-slate-950">
                       <span>Total Due</span>

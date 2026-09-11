@@ -16,6 +16,7 @@ from agent.db.supabase import (
     SupabaseIntentStore,
     default_intent_store,
     default_run_store,
+    get_supabase_client,
     is_supabase_enabled,
 )
 from agent.github.app import verify_webhook_signature
@@ -31,6 +32,22 @@ def test_supabase_fallback_mode() -> None:
     # In test environment without SUPABASE_URL, fallback should be cleanly active
     assert is_supabase_enabled() is False or isinstance(default_intent_store, SupabaseIntentStore)
     assert default_run_store is not None
+
+
+def test_supabase_secret_key_resolution() -> None:
+    with patch.dict(os.environ, {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_SECRET_KEY": "sb_sec_test"}, clear=False):
+        with patch("supabase.create_client") as mock_create:
+            mock_create.return_value = "mock_client"
+            client = get_supabase_client()
+            assert client == "mock_client"
+            mock_create.assert_called_once_with("https://example.supabase.co", "sb_sec_test")
+
+    with patch.dict(os.environ, {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_SECRET_KEY": "", "SUPABASE_SERVICE_ROLE_KEY": "legacy_service_key"}, clear=False):
+        with patch("supabase.create_client") as mock_create:
+            mock_create.return_value = "mock_client_legacy"
+            client = get_supabase_client()
+            assert client == "mock_client_legacy"
+            mock_create.assert_called_once_with("https://example.supabase.co", "legacy_service_key")
 
 
 def test_github_webhook_signature_verification() -> None:

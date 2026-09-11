@@ -71,6 +71,7 @@ export type DashboardRun = {
   prNumber: number;
   author: string;
   route: string;
+  repo?: string;
   status: "failed" | "passed" | "running" | "queued" | "superseded" | "cached";
   risk: "high" | "low" | "none";
   duration: string;
@@ -112,187 +113,16 @@ function resolveArtifactUrl(relativeUrl: string | null | undefined): string | nu
   return `/api${relativeUrl}`;
 }
 
-const SAMPLE_RUNS: DashboardRun[] = [
-  {
-    id: "run-9841",
-    branch: "feat/quick-checkout",
-    sha: "f1e2d3c",
-    commitMsg: "feat: add 1-tap Apple Pay button to checkout",
-    prNumber: 42,
-    author: "Claude Code via Bridge",
-    route: "/checkout",
-    status: "failed",
-    risk: "high",
-    duration: "1.89s",
-    timestamp: "2m ago",
-    failureReason: "HTTP 422: 'customer_address' token missing from invoice generation payload",
-    failingSelector: "button[data-testid='apple-pay-checkout']",
-    steps: [
-      {
-        id: 1,
-        name: "Auth Pre-flight",
-        command: "POST /api/auth/session (qa@example.com)",
-        duration: "84ms",
-        status: "passed",
-        consoleLog: "Session cookie 'session' set successfully with max-age 86400",
-      },
-      {
-        id: 2,
-        name: "Route Navigation",
-        command: "page.goto('/checkout', { waitUntil: 'networkidle' })",
-        duration: "142ms",
-        status: "passed",
-        consoleLog: "DOM loaded. 18 reactive components hydrated.",
-      },
-      {
-        id: 3,
-        name: "Apple Pay Token Generation",
-        command: "page.click('#apple-pay-btn') -> dispatchSessionToken()",
-        duration: "320ms",
-        status: "passed",
-        consoleLog: "Synthetic Apple Pay token 'tok_apple_4819' issued by sandbox harness",
-      },
-      {
-        id: 4,
-        name: "Submit Invoice Charge",
-        command: "page.click('#submit-order') -> POST /api/charge",
-        duration: "1340ms",
-        status: "failed",
-        errorDetail: "AssertionError: expected HTTP 200 but received HTTP 422 Unprocessable Entity",
-        networkUrl: "/api/charge",
-        networkStatus: 422,
-        consoleLog: "[Error] Uncaught (in promise) Error: customer_address token is missing in charge payload at pay-button.tsx:48",
-      },
-    ],
-    networkRequests: [
-      { method: "GET", url: "/api/user/profile", status: 200, size: "1.2 KB", duration: "24ms" },
-      { method: "GET", url: "/api/cart/items", status: 200, size: "4.8 KB", duration: "48ms" },
-      { method: "POST", url: "/api/apple-pay/session", status: 200, size: "840 B", duration: "112ms" },
-      {
-        method: "POST",
-        url: "/api/charge",
-        status: 422,
-        size: "340 B",
-        duration: "85ms",
-        isError: true,
-        responseSnippet: '{"error": "ValidationError", "field": "customer_address", "message": "Required for invoice token"}',
-      },
-    ],
-    consoleErrors: [
-      "[Error] POST http://localhost:3000/api/charge 422 (Unprocessable Entity)",
-      "[Error] Uncaught (in promise) Error: customer_address is required for 1-tap invoices at pay-button.tsx:48:14",
-    ],
-    remediationPrompt: `## 🚨 Autonomous PR Verification Failed: /checkout
-> **Risk Assessment:** HIGH RISK
-> **Affected Surfaces:** /checkout, /dashboard
-
-### 🔍 Forensic Evidence
-- **Error:** 'Invalid customer address for Apple Pay token invoice generation'
-- **Failing Step:** page.click('#submit-order') -> POST /api/charge returned 422
-- **Video:** artifacts/runs/run-9841/video.webm
-- **Trace:** artifacts/runs/run-9841/trace.zip
-
-### 🧠 Intent Context Hand-off
-- User Prompt: "Add instant Apple Pay button to checkout"
-- Agent Intent: "Bypass standard address form for 1-tap checkout"
-- Touched: components/pay-button.tsx, app/checkout/page.tsx
-
-### 📋 Ready-to-Paste Remediation Prompt for Claude Code:
-Fix regression in /checkout: Ensure the Apple Pay session handler in components/pay-button.tsx passes the default billing address token downstream to /api/charge.`,
-    fixProposals: [
-      {
-        summary: "Forward customer_address token to charge invoice payload",
-        target_files: ["app/checkout/page.tsx", "components/pay-button.tsx"],
-        paradigm: "tailwind",
-        patches: [
-          {
-            file_path: "app/checkout/page.tsx",
-            original_snippet: "const payload = { amount, token };",
-            replacement_snippet: "const payload = { amount, token, customer_address: session.shippingAddress };",
-          }
-        ],
-        unified_diff: "--- a/app/checkout/page.tsx\n+++ b/app/checkout/page.tsx\n@@ -24,3 +24,3 @@\n- const payload = { amount, token };\n+ const payload = { amount, token, customer_address: session.shippingAddress };",
-        suggested_change: "```suggestion\nconst payload = { amount, token, customer_address: session.shippingAddress };\n```",
-        explanation: "Ensures payment gateway verification receives required billing address before token charge invocation.",
-      }
-    ],
-    touchedFiles: [
-      { path: "components/pay-button.tsx", additions: 42, deletions: 6 },
-      { path: "app/checkout/page.tsx", additions: 18, deletions: 12 },
-      { path: "app/api/charge/route.ts", additions: 5, deletions: 1 },
-    ],
-  },
-  {
-    id: "run-9839",
-    branch: "feat/quick-checkout",
-    sha: "8a7b6c5",
-    commitMsg: "chore: update checkout button test id attributes",
-    prNumber: 42,
-    author: "Claude Code via Bridge",
-    route: "/login",
-    status: "passed",
-    risk: "none",
-    duration: "0.28s",
-    timestamp: "12m ago",
-    steps: [
-      { id: 1, name: "Auth Form Render", command: "page.goto('/login')", duration: "90ms", status: "passed" },
-      { id: 2, name: "Form Fill & Submit", command: "page.fill('#email') -> click('Sign in')", duration: "190ms", status: "passed" },
-    ],
-    networkRequests: [
-      { method: "POST", url: "/login", status: 303, size: "0 B", duration: "45ms" },
-      { method: "GET", url: "/dashboard", status: 200, size: "12 KB", duration: "32ms" },
-    ],
-    consoleErrors: [],
-    remediationPrompt: "",
-    touchedFiles: [{ path: "app/login/page.tsx", additions: 4, deletions: 4 }],
-  },
-  {
-    id: "run-9832",
-    branch: "fix/nav-overflow",
-    sha: "4e3d2c1",
-    commitMsg: "fix: prevent horizontal scroll overflow on mobile viewport",
-    prNumber: 41,
-    author: "harman (Developer)",
-    route: "/dashboard",
-    status: "passed",
-    risk: "low",
-    duration: "1.42s",
-    timestamp: "45m ago",
-    steps: [
-      { id: 1, name: "Viewport Resize", command: "page.setViewportSize({ width: 375, height: 812 })", duration: "12ms", status: "passed" },
-      { id: 2, name: "Scroll Metric Assertion", command: "expect(document.body.scrollWidth).toBe(375)", duration: "48ms", status: "passed" },
-    ],
-    networkRequests: [
-      { method: "GET", url: "/dashboard", status: 200, size: "14 KB", duration: "55ms" },
-    ],
-    consoleErrors: [],
-    remediationPrompt: "",
-    touchedFiles: [{ path: "components/nav.tsx", additions: 8, deletions: 2 }],
-  },
-  {
-    id: "run-9810",
-    branch: "main",
-    sha: "9c8b7a6",
-    commitMsg: "merge: release v1.4.0 checkout core engine",
-    prNumber: 39,
-    author: "GitHub Actions Bot",
-    route: "/dashboard",
-    status: "passed",
-    risk: "none",
-    duration: "1.15s",
-    timestamp: "3h ago",
-    steps: [
-      { id: 1, name: "Baseline Visual Diff", command: "expect(page).toHaveScreenshot('main-desktop.png')", duration: "420ms", status: "passed" },
-      { id: 2, name: "Deep Route Crawl", command: "crawler.auditPaths(['/dashboard', '/settings'])", duration: "730ms", status: "passed" },
-    ],
-    networkRequests: [
-      { method: "GET", url: "/dashboard", status: 200, size: "14 KB", duration: "40ms" },
-    ],
-    consoleErrors: [],
-    remediationPrompt: "",
-    touchedFiles: [{ path: "app/page.tsx", additions: 2, deletions: 2 }],
-  },
-];
+function extractSelectorFromError(error?: string): string | undefined {
+  if (!error) return undefined;
+  const locatorMatch = error.match(/Locator\(['"](.*?)['"]\)/);
+  if (locatorMatch) return locatorMatch[1];
+  const testIdMatch = error.match(/\[data-testid=['"](.*?)['"]\]/);
+  if (testIdMatch) return testIdMatch[0];
+  const idMatch = error.match(/#([a-zA-Z0-9_-]+)/);
+  if (idMatch) return idMatch[0];
+  return undefined;
+}
 
 function mapBackendToDashboardRun(r: any): DashboardRun {
   const result = r.result || {};
@@ -309,14 +139,87 @@ function mapBackendToDashboardRun(r: any): DashboardRun {
       ? "failed"
       : "passed";
 
+  const realJourneys = result.journey_artifacts || [];
+  const timing = result.timing || {};
+  const targetRoute = isExternal
+    ? (result.artifacts?.[0]?.route || r.sha)
+    : (realJourneys[0]?.route || result.affected_surfaces?.[0] || result.route || "/");
+
+  const durationSec = result.duration_s
+    ? `${Number(result.duration_s).toFixed(2)}s`
+    : timing.total_duration_s
+    ? `${Number(timing.total_duration_s).toFixed(2)}s`
+    : undefined;
+
+  const failureError = isFailed
+    ? (result.failed_journeys?.[0]?.error || result.rationale || "Autonomous journey regression detected")
+    : undefined;
+
+  const failingSelector = isFailed
+    ? (result.failing_selector || result.failed_journeys?.[0]?.selector || extractSelectorFromError(failureError))
+    : undefined;
+
+  const steps = Array.isArray(result.steps) && result.steps.length > 0
+    ? result.steps
+    : [
+        {
+          id: 1,
+          name: isExternal ? "Target Reachability Probe" : "Diff & Intent Analysis",
+          command: isExternal ? `HEAD ${r.sha}` : "Analyze modified AST diff & agent intent",
+          duration: timing.analysis_duration_s ? `${Math.round(timing.analysis_duration_s * 1000)}ms` : "—",
+          status: "passed",
+          consoleLog: isExternal ? "Target verified live" : "Intent and affected surfaces mapped",
+        },
+        {
+          id: 2,
+          name: isExternal ? "Playwright Route Exploration" : "Browser Journey Navigation",
+          command: `page.goto('${targetRoute}')`,
+          duration: timing.execution_duration_s
+            ? `${Math.round(timing.execution_duration_s * 1000)}ms`
+            : realJourneys[0]?.duration_ms
+            ? `${Math.round(realJourneys[0].duration_ms)}ms`
+            : "—",
+          status: isFailed ? "failed" : "passed",
+          consoleLog: isFailed ? (failureError || "Assertion error on route") : "DOM hydrated & assertions passed",
+        },
+        {
+          id: 3,
+          name: isExternal ? "Interactive DOM Inspection" : "Quality Dimensions Evaluation",
+          command: isExternal ? "observe_page() + inspect_elements()" : "evaluate_quality_dimensions()",
+          duration: "—",
+          status: isFailed ? "failed" : "passed",
+        },
+      ];
+
+  const rawRequests = realJourneys[0]?.network_requests || result.network_requests || [];
+  const networkRequests = Array.isArray(rawRequests) && rawRequests.length > 0
+    ? rawRequests.map((req: any) => ({
+        method: req.method || "GET",
+        url: req.url || "/",
+        status: req.status || 200,
+        size: req.size || (req.content_length ? `${req.content_length} B` : "—"),
+        duration: req.duration ? `${Math.round(req.duration)}ms` : "—",
+        isError: req.status >= 400,
+        responseSnippet: req.responseSnippet,
+      }))
+    : [];
+
+  const rawConsoleErrors = realJourneys[0]?.console_errors || result.console_errors || [];
+  const consoleErrors = isFailed
+    ? (Array.isArray(rawConsoleErrors) && rawConsoleErrors.length > 0
+        ? rawConsoleErrors
+        : [failureError || "Verification issue detected"])
+    : [];
+
   return {
     id: r.run_id,
     branch: isExternal ? `🌐 ${r.branch}` : r.branch,
     sha: isExternal ? r.sha : (r.sha?.slice(0, 7) || "unknown"),
     commitMsg: result.summary || result.commit_msg || (isExternal ? `Autonomous verification of ${r.sha}` : `Verified commit on ${r.branch}`),
-    prNumber: isExternal ? 0 : 42,
-    author: isExternal ? "External Site QA" : "Claude Code / Bridge",
-    route: isExternal ? (result.artifacts?.[0]?.route || r.sha) : "/checkout",
+    prNumber: r.pr_number || result.pr_number || undefined,
+    author: isExternal ? "External Site QA" : (r.author || "Coding Agent Bridge"),
+    route: targetRoute,
+    repo: r.repo,
     status,
     risk:
       result.risk_tag?.toLowerCase() === "high"
@@ -324,52 +227,13 @@ function mapBackendToDashboardRun(r: any): DashboardRun {
         : result.risk_tag?.toLowerCase() === "low"
         ? "low"
         : "none",
-    duration: result.duration_s
-      ? `${result.duration_s}s`
-      : result.timing?.total_duration_s
-      ? `${result.timing.total_duration_s.toFixed(2)}s`
-      : "1.89s",
+    duration: durationSec || "—",
     timestamp: new Date(r.created_at || Date.now()).toLocaleTimeString(),
-    failureReason: isFailed
-      ? (result.failed_journeys?.[0]?.error || result.rationale || "Autonomous journey regression detected")
-      : undefined,
-    failingSelector: "button[data-testid='apple-pay-checkout']",
-    steps: [
-      {
-        id: 1,
-        name: isExternal ? "URL Pre-flight" : "Auth Pre-flight",
-        command: isExternal ? `HEAD ${r.sha}` : "POST /api/auth/session",
-        duration: "84ms",
-        status: "passed",
-        consoleLog: isExternal ? "Target live" : "Session cookie validated",
-      },
-      {
-        id: 2,
-        name: isExternal ? "Playwright Navigation" : "Route Navigation",
-        command: `page.goto('${isExternal ? r.sha : "/checkout"}')`,
-        duration: "142ms",
-        status: "passed",
-        consoleLog: "DOM hydration completed",
-      },
-      {
-        id: 3,
-        name: isExternal ? "Interactive Discovery & Scroll" : "DOM Assertion",
-        command: isExternal ? "observe_page() + scroll_element()" : "expect(selector).toBeVisible()",
-        duration: "110ms",
-        status: isFailed ? "failed" : "passed",
-      },
-    ],
-    networkRequests: [
-      {
-        method: "GET",
-        url: isExternal ? r.sha : "/api/charge",
-        status: isFailed ? 500 : 200,
-        size: "1.2KB",
-        duration: "82ms",
-        isError: isFailed,
-      },
-    ],
-    consoleErrors: isFailed ? [result.failed_journeys?.[0]?.error || "Verification issue detected"] : [],
+    failureReason: failureError,
+    failingSelector,
+    steps,
+    networkRequests,
+    consoleErrors,
     remediationPrompt: result.remediation_prompt || "",
     fixProposals: result.fix_proposals || [],
     traceUrl: resolveArtifactUrl(r.trace_url || result.trace_url),
@@ -378,8 +242,8 @@ function mapBackendToDashboardRun(r: any): DashboardRun {
     timing: result.timing,
     touchedFiles: (result.affected_surfaces || []).map((p: string) => ({
       path: p,
-      additions: 4,
-      deletions: 1,
+      additions: 1,
+      deletions: 0,
     })),
   };
 }
@@ -440,8 +304,6 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          branch: "feat/quick-checkout",
-          sha: "f1e2d3c" + Math.random().toString(16).slice(2, 6),
           scope: "changed",
           test_type: "functional",
         }),
@@ -527,7 +389,7 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
             className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
           >
             <GitBranch className="h-3.5 w-3.5 text-slate-500" />
-            <span>acme-corp / ecommerce-web</span>
+            <span>{selectedRun?.repo && selectedRun.repo !== "default" ? selectedRun.repo : "Repositories"}</span>
             <ChevronDown className="h-3 w-3 text-slate-400" />
           </Link>
 

@@ -44,7 +44,10 @@ export async function POST(request: Request) {
     } = await supabase.auth.getUser();
 
     // In local dev without Supabase Auth keys, allow bypass only if explicitly disabled
-    const isDevNoAuth = process.env.NODE_ENV === "development" && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const hasSupabaseKey =
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const isDevNoAuth = process.env.NODE_ENV === "development" && !hasSupabaseKey;
     if (!user && !isDevNoAuth) {
       return NextResponse.json(
         { error: "Unauthorized: You must be logged in to modify project settings." },

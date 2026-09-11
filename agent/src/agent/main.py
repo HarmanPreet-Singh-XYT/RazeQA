@@ -1,6 +1,11 @@
 import os
 from typing import Any
 
+from agent.config import load_env
+
+# Ensure environment variables are loaded from .env if present
+load_env()
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 

@@ -1,5 +1,11 @@
 -- Autonomous PR Testing & QA Engine - Supabase Schema
 -- Run this in your Supabase SQL Editor or apply via Supabase CLI.
+--
+-- NOTE ON EXISTING TABLE CONFLICTS:
+-- If your Supabase database already has an existing, unrelated table named "projects"
+-- (e.g. with text IDs or other columns), choose one of the following before running:
+--   Option A (Keep old data):  ALTER TABLE projects RENAME TO legacy_projects;
+--   Option B (Clean overwrite): DROP TABLE IF EXISTS intent_logs, runs, installations, projects CASCADE;
 
 -- Enable UUID extension
 create extension if not exists "pgcrypto";
@@ -72,6 +78,14 @@ alter table projects enable row level security;
 alter table intent_logs enable row level security;
 alter table runs enable row level security;
 
+-- Drop existing policies if any to allow idempotent re-runs
+drop policy if exists "Service role full access on installations" on installations;
+drop policy if exists "Service role full access on projects" on projects;
+drop policy if exists "Service role full access on intent_logs" on intent_logs;
+drop policy if exists "Service role full access on runs" on runs;
+drop policy if exists "Users can view own projects" on projects;
+drop policy if exists "Users can view runs for own projects" on runs;
+
 -- Service role has full access
 create policy "Service role full access on installations" on installations for all using (auth.role() = 'service_role');
 create policy "Service role full access on projects" on projects for all using (auth.role() = 'service_role');
@@ -85,16 +99,14 @@ create policy "Users can view runs for own projects" on runs for select using (
 );
 
 -- 6. Storage Bucket for Forensic Run Artifacts (Videos, Traces, Screenshots)
--- Private: these may contain application UI/data captured from the PR under
--- test, so they are never anonymously public. The backend (service role)
--- issues short-lived signed URLs (see agent/db/storage.py) for the dashboard
--- to embed/download, rather than exposing a permanent public URL per object.
 insert into storage.buckets (id, name, public)
 values ('run-artifacts', 'run-artifacts', false)
 on conflict (id) do update set public = false;
 
 -- Service role can upload, manage, and sign URLs for run artifacts
+drop policy if exists "Service Role Manage Run Artifacts" on storage.objects;
 create policy "Service Role Manage Run Artifacts"
 on storage.objects for all
 using ( bucket_id = 'run-artifacts' and auth.role() = 'service_role' );
+
 

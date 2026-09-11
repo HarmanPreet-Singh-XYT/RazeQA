@@ -50,6 +50,14 @@ class GitHubAppClient:
     ) -> None:
         self.app_id = app_id or os.environ.get("GITHUB_APP_ID")
         self.private_key = private_key or os.environ.get("GITHUB_APP_PRIVATE_KEY")
+        if not self.private_key:
+            key_path = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH")
+            if key_path and os.path.exists(key_path):
+                try:
+                    with open(key_path, encoding="utf-8") as f:
+                        self.private_key = f.read()
+                except Exception as exc:
+                    logger.warning("Failed to read GITHUB_APP_PRIVATE_KEY_PATH '%s': %s", key_path, exc)
         self.token = token or os.environ.get("GITHUB_TOKEN")
         self._installation_tokens: dict[int, tuple[str, float]] = {}
 

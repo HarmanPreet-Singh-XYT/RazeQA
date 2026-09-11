@@ -127,7 +127,7 @@ const SAFE_BUILD_BINARIES = [
 
 export default function ProjectsClient() {
   const [projects, setProjects] = useState<ProjectItem[]>([]);
-  const [selectedRepo, setSelectedRepo] = useState("acme-corp/ecommerce-web");
+  const [selectedRepo, setSelectedRepo] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -163,8 +163,8 @@ export default function ProjectsClient() {
       env_vars: {},
     },
     roles: {
-      user: { email: "qa@example.com" },
-      admin: { email: "admin@example.com" },
+      user: { email: "" },
+      admin: { email: "" },
     },
   });
 
@@ -273,7 +273,6 @@ export default function ProjectsClient() {
       id: `proj-${Date.now()}`,
       repo_full_name: trimmed,
       default_branch: newRepoBranch.trim() || "main",
-      installation_id: `inst_${Math.floor(1000000 + Math.random() * 9000000)}`,
       settings: {
         ...settings,
         framework: newRepoFramework,
@@ -507,8 +506,8 @@ export default function ProjectsClient() {
   };
 
   // Active repo metadata
-  const currentProject = projects.find((p) => p.repo_full_name === selectedRepo);
-  const installationId = currentProject?.installation_id || "inst_9948271";
+  const currentProject = projects.find((p) => p.repo_full_name === selectedRepo) || projects[0];
+  const installationId = currentProject?.installation_id || null;
   const defaultBranch = currentProject?.default_branch || "main";
 
   // Calculate token savings across run history
@@ -743,7 +742,7 @@ export default function ProjectsClient() {
               <div className="pt-2 border-t border-slate-100 text-[11px] text-slate-500 space-y-1">
                 <p className="flex items-center justify-between">
                   <span>Installation ID:</span>
-                  <span className="font-mono text-slate-800 font-medium">{installationId}</span>
+                  <span className="font-mono text-slate-800 font-medium">{installationId || "None"}</span>
                 </p>
                 <p className="flex items-center justify-between">
                   <span>Default Base Branch:</span>
@@ -1635,7 +1634,7 @@ export default function ProjectsClient() {
                 <label className="font-bold text-slate-800 block mb-1">Repository Full Name (Owner/Repo)</label>
                 <input
                   type="text"
-                  placeholder="e.g. acme-corp/payment-service"
+                  placeholder="e.g. your-org/your-repo"
                   value={newRepoName}
                   onChange={(e) => setNewRepoName(e.target.value)}
                   className="w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-xs"

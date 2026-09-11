@@ -28,7 +28,11 @@ class SupabaseConfigError(RuntimeError):
 def get_supabase_client() -> Any | None:
     """Instantiate Supabase client if credentials exist in environment."""
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
+    key = (
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+    )
     if not url or not key:
         return None
     try:
@@ -197,6 +201,7 @@ class SupabaseRunStore:
             row = rows[0]
             return RunRecord(
                 run_id=row["id"],
+                repo=row.get("repo", "default"),
                 branch=row["branch"],
                 sha=row["sha"],
                 scope=row["scope"],
@@ -205,6 +210,8 @@ class SupabaseRunStore:
                 created_at=row.get("created_at") or datetime.now(UTC).isoformat(),
                 completed_at=row.get("completed_at"),
                 result=row.get("result"),
+                video_url=row.get("video_url"),
+                trace_url=row.get("trace_url"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to get run from Supabase: %s", exc)
@@ -239,6 +246,7 @@ class SupabaseRunStore:
                 row = rows[0]
                 return RunRecord(
                     run_id=row["id"],
+                    repo=row.get("repo", "default"),
                     branch=row["branch"],
                     sha=row["sha"],
                     scope=row["scope"],
@@ -258,11 +266,15 @@ class SupabaseRunStore:
         self,
         branch: str | None = None,
         sha: str | None = None,
+        repo: str | None = None,
         limit: int | None = None,
         offset: int = 0,
+        **kwargs: Any,
     ) -> list[RunRecord]:
         try:
             query = self.client.table("runs").select("*").order("created_at", desc=True)
+            if repo:
+                query = query.eq("repo", repo)
             if branch:
                 query = query.eq("branch", branch)
             if sha:
@@ -275,6 +287,7 @@ class SupabaseRunStore:
                 records.append(
                     RunRecord(
                         run_id=row["id"],
+                        repo=row.get("repo", "default"),
                         branch=row["branch"],
                         sha=row["sha"],
                         scope=row["scope"],

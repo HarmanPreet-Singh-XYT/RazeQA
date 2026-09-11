@@ -32,7 +32,7 @@ services:
       - PLATFORM_URL=http://localhost:8000
       - CREDENTIAL_STORE_PATH=/app/artifacts/credentials.enc
       - PYTHONUNBUFFERED=1
-      # AGENT_API_KEY and SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY are REQUIRED —
+      # AGENT_API_KEY and SUPABASE_URL / SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY) are REQUIRED —
       # set them in ./agent/.env or ./.env (see agent/.env.example). The API
       # refuses all requests without AGENT_API_KEY; without Supabase creds,
       # run/intent history falls back to in-memory storage lost on restart.

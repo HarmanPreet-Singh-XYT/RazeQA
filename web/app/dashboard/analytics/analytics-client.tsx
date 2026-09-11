@@ -358,8 +358,18 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
                 {metrics.total_runs} jobs verified
               </div>
             </div>
-            <div className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 rounded px-1.5 py-0.5 inline-block w-fit">
-              99.2% Target SLA Met
+            <div
+              className={`text-[10px] font-semibold rounded px-1.5 py-0.5 inline-block w-fit ${
+                metrics.pass_rate >= 95
+                  ? "text-emerald-700 bg-emerald-50"
+                  : metrics.pass_rate >= 80
+                  ? "text-amber-700 bg-amber-50"
+                  : "text-rose-700 bg-rose-50"
+              }`}
+            >
+              {metrics.pass_rate >= 95
+                ? `${metrics.pass_rate}% Target SLA Met (≥95%)`
+                : `${metrics.pass_rate}% vs 95% SLA Target`}
             </div>
           </div>
 
@@ -425,7 +435,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               {
                 id: "perf",
                 name: "Performance & Speed",
-                score: dimensions.performance || 91,
+                score: typeof dimensions.performance === "number" ? dimensions.performance : null,
                 desc: "p95 latency < 2s, transfer payload < 500KB, TTFB optimization.",
                 icon: Zap,
                 color: "text-amber-500",
@@ -434,7 +444,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               {
                 id: "usability",
                 name: "Usability & Learnability",
-                score: dimensions.usability || 94,
+                score: typeof dimensions.usability === "number" ? dimensions.usability : null,
                 desc: "WCAG contrast heuristics, form label associations, missing aria-label scan.",
                 icon: Compass,
                 color: "text-blue-500",
@@ -443,7 +453,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               {
                 id: "i18n",
                 name: "Internationalization (i18n)",
-                score: dimensions.i18n || 88,
+                score: typeof dimensions.i18n === "number" ? dimensions.i18n : null,
                 desc: "Hardcoded strings detection, RTL layout compliance, dynamic currency/date formatting.",
                 icon: Globe,
                 color: "text-indigo-500",
@@ -452,7 +462,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               {
                 id: "security",
                 name: "Security & Privacy",
-                score: dimensions.security || 96,
+                score: typeof dimensions.security === "number" ? dimensions.security : null,
                 desc: "CSP, HSTS, X-Frame-Options headers, credential redaction, cookie security flags.",
                 icon: Lock,
                 color: "text-emerald-500",
@@ -461,7 +471,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               {
                 id: "reliability",
                 name: "Reliability & Uptime",
-                score: dimensions.reliability || 93,
+                score: typeof dimensions.reliability === "number" ? dimensions.reliability : null,
                 desc: "Uptime SLA, 0 uncaught JavaScript errors, automated retry recovery.",
                 icon: ShieldCheck,
                 color: "text-teal-500",
@@ -470,7 +480,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               {
                 id: "seo",
                 name: "Search Engine Optimization (SEO)",
-                score: dimensions.seo || 92,
+                score: typeof dimensions.seo === "number" ? dimensions.seo : null,
                 desc: "Title/meta description character limits, single h1, JSON-LD schema, alt text.",
                 icon: Search,
                 color: "text-purple-500",
@@ -479,7 +489,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               {
                 id: "maintainability",
                 name: "Maintainability & Scalability",
-                score: dimensions.maintainability || 90,
+                score: typeof dimensions.maintainability === "number" ? dimensions.maintainability : null,
                 desc: "AST dependency coupling, circular import prevention, diff churn limits.",
                 icon: Layers,
                 color: "text-sky-500",
@@ -488,7 +498,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               {
                 id: "observability",
                 name: "Observability & Telemetry",
-                score: dimensions.observability || 95,
+                score: typeof dimensions.observability === "number" ? dimensions.observability : null,
                 desc: "Playwright video/trace artifacts, network waterfall logging, Core Web Vitals.",
                 icon: Activity,
                 color: "text-pink-500",
@@ -496,6 +506,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
               },
             ].map((dim) => {
               const Icon = dim.icon;
+              const hasScore = dim.score !== null;
               return (
                 <div
                   key={dim.id}
@@ -508,7 +519,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
                         <h3 className="font-bold text-xs text-slate-900">{dim.name}</h3>
                       </div>
                       <span className="font-mono font-bold text-sm text-slate-950">
-                        {dim.score}
+                        {hasScore ? `${dim.score}` : "—"}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 leading-relaxed mb-4">
@@ -520,14 +531,30 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
                     <div className="h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
                       <div
                         className={`h-full rounded-full ${dim.bg} transition-all duration-500`}
-                        style={{ width: `${dim.score}%` }}
+                        style={{ width: `${hasScore ? dim.score : 0}%` }}
                       />
                     </div>
                     <div className="flex justify-between text-[10px] font-semibold text-slate-400">
                       <span>Threshold: 80</span>
-                      <span className={dim.score >= 90 ? "text-emerald-600" : "text-amber-600"}>
-                        {dim.score >= 90 ? "Optimal" : "Adequate"}
-                      </span>
+                      {hasScore ? (
+                        <span
+                          className={
+                            dim.score! >= 90
+                              ? "text-emerald-600"
+                              : dim.score! >= 80
+                              ? "text-amber-600"
+                              : "text-rose-600"
+                          }
+                        >
+                          {dim.score! >= 90
+                            ? "Optimal"
+                            : dim.score! >= 80
+                            ? "Adequate"
+                            : "Attention Needed"}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 font-normal">Pending Evaluation</span>
+                      )}
                     </div>
                   </div>
                 </div>

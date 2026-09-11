@@ -8,7 +8,8 @@ import { NextRequest, NextResponse } from "next/server";
  * a previous version of this file only checked whether a custom "session"
  * cookie was *present*, which meant `document.cookie = "session=anyone@x.com"`
  * from a browser console fully authenticated as anyone. There is no bypass
- * path here: NEXT_PUBLIC_SUPABASE_URL/ANON_KEY must be configured.
+ * path here: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ * (or legacy NEXT_PUBLIC_SUPABASE_ANON_KEY) must be configured.
  *
  * API routes under /api/* proxy to the backend testing engine (trigger runs,
  * apply autonomous fixes, read forensic artifacts) or the Supabase-backed
@@ -26,9 +27,11 @@ export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseKey =
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!supabaseUrl || !supabaseAnonKey) {
+  if (!supabaseUrl || !supabaseKey) {
     // Fail closed: refuse to serve protected routes rather than silently
     // treating everyone as unauthenticated (or worse, authenticated).
     if (pathname.startsWith("/dashboard") || isApiRoute) {
@@ -39,7 +42,7 @@ export async function proxy(request: NextRequest) {
     return response;
   }
 
-  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+  const supabase = createServerClient(supabaseUrl, supabaseKey, {
     cookies: {
       getAll() {
         return request.cookies.getAll();
@@ -62,7 +65,12 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (isApiRoute && !user) {
+  const isPublicApiRoute =
+    pathname.startsWith("/api/charge") ||
+    pathname.startsWith("/api/checkout") ||
+    pathname.startsWith("/api/health");
+
+  if (isApiRoute && !isPublicApiRoute && !user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

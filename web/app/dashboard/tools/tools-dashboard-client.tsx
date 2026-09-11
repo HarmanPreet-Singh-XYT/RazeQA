@@ -65,10 +65,13 @@ export default function ToolsDashboardClient({ userEmail }: ToolsDashboardClient
 
             <span className="text-slate-300">/</span>
 
-            <div className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800">
+            <Link
+              href="/dashboard/projects"
+              className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors"
+            >
               <GitBranch className="h-3.5 w-3.5 text-slate-500" />
-              <span>acme-corp / ecommerce-web</span>
-            </div>
+              <span>Repositories</span>
+            </Link>
 
             {/* Navigation Links */}
             <nav className="hidden md:flex items-center gap-1 border-l border-slate-200 pl-3">
