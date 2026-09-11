@@ -18,7 +18,8 @@ from agent.bridge.models import IntentEvent
 from agent.db.supabase import default_run_store
 from agent.github.app import GitHubAppClient, GitHubNotConfiguredError
 from agent.journeys.login import run_login_journey
-from agent.remediation.fix_synthesizer import FixProposal, FixSynthesizer
+from agent.remediation.agentic_repair import AgenticRepairEngine, AutoRepairConfig
+from agent.remediation.fix_synthesizer import FilePatch, FixProposal, FixSynthesizer
 from agent.remediation.formatter import (
     generate_pr_summary_comment,
     generate_remediation_markdown,
@@ -180,6 +181,97 @@ def _get_git_diff(cwd: Path, base_ref: str = "main", head_ref: str = "HEAD") -> 
         ) from exc2
 
 
+async def _synthesize_or_repair(
+    journey_name: str,
+    error: str,
+    analysis: AnalysisResult,
+    intents: list[IntentEvent],
+    dom_snapshot: str | None = None,
+    source_root: Path | None = None,
+    custom_secrets: list[str] | None = None,
+    fix_synthesizer: FixSynthesizer | None = None,
+    auto_repair_config: AutoRepairConfig | None = None,
+) -> FixProposal | None:
+    """Executes autonomous agentic repair with mini-swe-agent when enabled,
+    verifying builds and enforcing guardrails, with graceful fallback to synthesizer."""
+    if auto_repair_config and auto_repair_config.enabled and source_root and source_root.exists():
+        try:
+            logger.info("Executing autonomous AgenticRepairEngine for '%s'...", journey_name)
+            repair_engine = AgenticRepairEngine(config=auto_repair_config)
+            repair_res = await asyncio.to_thread(
+                repair_engine.run_repair,
+                workspace_dir=source_root,
+                journey_name=journey_name,
+                error=error,
+                analysis=analysis,
+                intents=intents,
+                dom_snapshot=dom_snapshot,
+                custom_secrets=custom_secrets,
+            )
+            if repair_res and (repair_res.unified_diff or repair_res.target_files):
+                trajectory_dicts = [
+                    {
+                        "step": t.step,
+                        "thought": t.thought,
+                        "command": t.command,
+                        "returncode": t.returncode,
+                        "output": t.output,
+                        "duration_ms": t.duration_ms,
+                        "guardrail_passed": t.guardrail_passed,
+                    }
+                    for t in repair_res.trajectory
+                ]
+                patches = []
+                for tf in repair_res.target_files:
+                    try:
+                        patches.append(
+                            FilePatch(
+                                file_path=tf,
+                                original_snippet="",
+                                replacement_snippet="",
+                                unified_diff=repair_res.unified_diff,
+                                explanation=f"Verified with '{repair_res.build_command}'",
+                            )
+                        )
+                    except Exception:
+                        pass
+                logger.info(
+                    "AgenticRepairEngine completed with success=%s (build_passed=%s, diff_len=%d)",
+                    repair_res.success,
+                    repair_res.build_passed,
+                    len(repair_res.unified_diff),
+                )
+                return FixProposal(
+                    target_files=repair_res.target_files,
+                    styling_paradigm="logic",
+                    root_cause=f"Autonomous repair completed in {repair_res.steps_taken} steps",
+                    explanation=f"Autonomous agent inspected code and verified fix with `{repair_res.build_command}` (build passed: {repair_res.build_passed}).",
+                    patches=patches,
+                    repair_trajectory=trajectory_dicts,
+                    build_passed=repair_res.build_passed,
+                    build_command=repair_res.build_command,
+                    build_output=repair_res.build_output,
+                    steps_taken=repair_res.steps_taken,
+                    max_steps=repair_res.max_steps,
+                    total_cost_usd=repair_res.total_cost_usd,
+                    unified_diff=repair_res.unified_diff,
+                )
+        except Exception as exc:
+            logger.warning("AgenticRepairEngine execution failed (%s), falling back to synthesizer.", exc)
+
+    # Fallback to deterministic/LLM FixSynthesizer
+    synth = fix_synthesizer or FixSynthesizer()
+    return synth.synthesize(
+        journey_name=journey_name,
+        error=error,
+        analysis=analysis,
+        intents=intents,
+        dom_snapshot=dom_snapshot,
+        source_root=source_root,
+        custom_secrets=custom_secrets,
+    )
+
+
 async def _run_journeys(
     base_url: str,
     test_user_email: str,
@@ -189,6 +281,7 @@ async def _run_journeys(
     intents: list[IntentEvent],
     test_type: str,
     run_id: str | None = None,
+    auto_repair_config: AutoRepairConfig | None = None,
 ) -> dict[str, Any]:
     """Runs the seeded login journey followed by exploratory journeys against
     `base_url`, returning collected results. Shared between the PR-branch run
@@ -202,11 +295,6 @@ async def _run_journeys(
     fix_proposals: list[FixProposal] = []
     suggested_fixes: list[dict[str, Any]] = []
 
-    # The real seeded test password (and any stored role credentials) are
-    # redacted verbatim in addition to the generic regex patterns — the
-    # regexes only catch conventional key=value/header shapes, and a real
-    # credential embedded in DOM/error output using an unrecognized format
-    # would otherwise slip into the LLM prompt and the public PR comment.
     custom_secrets = [s for s in (test_user_email, test_user_password) if s]
 
     fix_synthesizer = FixSynthesizer()
@@ -231,15 +319,17 @@ async def _run_journeys(
             "severity": "Critical",
             "domain": "Authentication",
         })
-        login_proposal = fix_synthesizer.synthesize(
+        login_proposal = await _synthesize_or_repair(
             journey_name="login",
             error=login_err,
             analysis=analysis,
             intents=intents,
             source_root=APP_REPO_DIR,
             custom_secrets=custom_secrets,
+            fix_synthesizer=fix_synthesizer,
+            auto_repair_config=auto_repair_config,
         )
-        if login_proposal and login_proposal.patches:
+        if login_proposal and (login_proposal.patches or login_proposal.unified_diff):
             fix_proposals.append(login_proposal)
             for p in login_proposal.patches:
                 suggested_fixes.append(p.model_dump())
@@ -344,7 +434,7 @@ async def _run_journeys(
                 "severity": severity,
                 "domain": domain,
             })
-            route_proposal = fix_synthesizer.synthesize(
+            route_proposal = await _synthesize_or_repair(
                 journey_name=j_name,
                 error=journey_err,
                 analysis=analysis,
@@ -352,8 +442,10 @@ async def _run_journeys(
                 dom_snapshot=exp_res.get("dom_snapshot"),
                 source_root=APP_REPO_DIR,
                 custom_secrets=custom_secrets,
+                fix_synthesizer=fix_synthesizer,
+                auto_repair_config=auto_repair_config,
             )
-            if route_proposal and route_proposal.patches:
+            if route_proposal and (route_proposal.patches or route_proposal.unified_diff):
                 fix_proposals.append(route_proposal)
                 for p in route_proposal.patches:
                     suggested_fixes.append(p.model_dump())
@@ -571,10 +663,24 @@ async def _run_pipeline_inner(
 
     t_journeys = time.monotonic()
     try:
+        from agent.projects.registry import default_project_registry
         from agent.runner.queue import default_job_queue
         if record and default_job_queue.is_job_cancelled(record.run_id):
             logger.info("Run %s was cancelled/superseded before journeys started; terminating.", record.run_id)
             return {"status": "superseded", "error": "Run was superseded by a newer commit"}
+
+        project_rec = default_project_registry.get_by_repo(f"{owner}/{repo}") or default_project_registry.get_by_repo(repo)
+        project_settings = (project_rec.settings if project_rec else {}) or {}
+        auto_repair_raw = project_settings.get("auto_repair", {})
+        auto_repair_config = AutoRepairConfig(
+            enabled=auto_repair_raw.get("enabled", True),
+            trigger_mode=auto_repair_raw.get("trigger_mode", "automatic"),
+            build_command=auto_repair_raw.get("build_command", project_settings.get("build_command", "npm run build")),
+            test_command=auto_repair_raw.get("test_command", project_settings.get("test_command", "npm test")),
+            max_steps=auto_repair_raw.get("max_steps", 10),
+            cost_limit_usd=float(auto_repair_raw.get("cost_limit_usd", 1.0)),
+            custom_instructions=auto_repair_raw.get("custom_instructions", ""),
+        )
 
         with _sandbox_for_sha(repo_dir_for_checkout, sha, image_tag, sandbox_env, run_id=record.run_id if record else None) as sandbox_base_url:
             journeys = await _run_journeys(
@@ -586,6 +692,7 @@ async def _run_pipeline_inner(
                 intents=intents,
                 test_type=test_type,
                 run_id=record.run_id,
+                auto_repair_config=auto_repair_config,
             )
         timing["journeys_duration_s"] = round(time.monotonic() - t_journeys, 3)
     except (CheckoutError, SandboxBootError) as exc:

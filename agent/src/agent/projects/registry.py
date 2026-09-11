@@ -74,6 +74,21 @@ class ProjectRegistry:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to register project in Supabase: %s", exc)
 
+    def update_settings(self, repo_full_name: str, settings: dict[str, Any]) -> ProjectRecord | None:
+        client = self.client
+        record = self.get_by_repo(repo_full_name)
+        if not record:
+            return self.register(repo_full_name, settings=settings)
+
+        updated_settings = {**(record.settings or {}), **settings}
+        record.settings = updated_settings
+
+        if client:
+            try:
+                client.table("projects").update({"settings": updated_settings}).eq("repo_full_name", repo_full_name).execute()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to update project settings in Supabase: %s", exc)
+
         self._cache[repo_full_name] = record
         return record
 

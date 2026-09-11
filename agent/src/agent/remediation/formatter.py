@@ -83,9 +83,9 @@ def generate_remediation_markdown(
         )
         findings_block = f"\n---\n\n### ⚠️ Additional Telemetry Findings\n{findings_items}\n"
 
-    # Format synthesized fix proposal if present
+    # Format synthesized fix proposal or autonomous agentic repair if present
     proposal_block = ""
-    if fix_proposal and fix_proposal.patches:
+    if fix_proposal and (fix_proposal.patches or fix_proposal.unified_diff):
         patch_blocks: list[str] = []
         for p in fix_proposal.patches:
             patch_blocks.append(f"**Target:** `{p.file_path}` — {p.explanation}")
@@ -94,14 +94,42 @@ def generate_remediation_markdown(
             elif p.replacement_snippet:
                 patch_blocks.append(f"```suggestion\n{p.replacement_snippet}\n```")
 
+        # Include unified diff directly if synthesized via agentic repair
+        if not patch_blocks and fix_proposal.unified_diff:
+            patch_blocks.append(f"```diff\n{fix_proposal.unified_diff}\n```")
+
+        trajectory_block = ""
+        if fix_proposal.repair_trajectory:
+            step_rows = []
+            for t in fix_proposal.repair_trajectory:
+                step_idx = t.get("step", 0)
+                cmd = t.get("command", "")
+                rc = t.get("returncode", 0)
+                status_icon = "✅" if rc == 0 else "❌"
+                dur = t.get("duration_ms", 0.0)
+                step_rows.append(f"- **Step {step_idx}** {status_icon} `{cmd}` *({dur:.0f}ms)*")
+            step_list = "\n".join(step_rows)
+            trajectory_block = f"""
+<details>
+<summary>📋 View Autonomous Repair Trajectory ({fix_proposal.steps_taken}/{fix_proposal.max_steps} steps)</summary>
+
+{step_list}
+
+</details>
+"""
+
+        build_badge = "✅ Passed (`0` errors)" if fix_proposal.build_passed else "⚠️ Not verified or build failed"
+        build_cmd_str = f" (`{fix_proposal.build_command}`)" if fix_proposal.build_command else ""
+
         proposal_block = f"""
 ---
 
-### 💡 Diagnosed Root Cause & Synthesized Fix
-- **Root Cause:** {fix_proposal.root_cause}
-- **Detected Styling/Logic Paradigm:** `{fix_proposal.styling_paradigm}`
-- **Explanation:** {fix_proposal.explanation}
-
+### 🛠️ Autonomous Agentic Repair Summary
+- **Status:** {'✨ **Fix Synthesized & Verified**' if fix_proposal.build_passed else '⚠️ Fix Proposed (Pending Review)'}
+- **Build Verification:** {build_badge}{build_cmd_str}
+- **Resource Meter:** `{fix_proposal.steps_taken}/{fix_proposal.max_steps}` steps executed | Cost: `${fix_proposal.total_cost_usd:.4f}`
+- **Explanation:** {fix_proposal.explanation or fix_proposal.root_cause}
+{trajectory_block}
 {chr(10).join(patch_blocks)}
 """
 

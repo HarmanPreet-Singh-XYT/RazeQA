@@ -32,22 +32,22 @@ from strands.models.model import Model
 logger = logging.getLogger("agent.models.factory")
 
 # Anthropic Claude defaults
-DEFAULT_CODE_MODEL = os.environ.get("CODE_MODEL_ID", "claude-sonnet-5")
-DEFAULT_VISION_MODEL = os.environ.get("VISION_MODEL_ID", "gemini-3.5-flash-lite")
+DEFAULT_CODE_MODEL = os.environ.get("CODE_MODEL_ID", "claude-sonnet-4.6")
+DEFAULT_VISION_MODEL = os.environ.get("VISION_MODEL_ID", "gemini-3.8-flash")
 DEFAULT_NAV_MODEL = os.environ.get("NAV_MODEL_ID", "claude-haiku-4.5")
-DEFAULT_ANTHROPIC_VISION_MODEL = os.environ.get("ANTHROPIC_VISION_MODEL", "claude-sonnet-5")
+DEFAULT_ANTHROPIC_VISION_MODEL = os.environ.get("ANTHROPIC_VISION_MODEL", "claude-sonnet-4.6")
 
 # Gemini defaults
 DEFAULT_GEMINI_CODE_MODEL = os.environ.get("GEMINI_CODE_MODEL", "gemini-3.8-flash")
-DEFAULT_GEMINI_VISION_MODEL = os.environ.get("GEMINI_VISION_MODEL", "gemini-3.5-flash-lite")
-DEFAULT_GEMINI_NAV_MODEL = os.environ.get("GEMINI_NAV_MODEL", "gemini-3.5-flash")
+DEFAULT_GEMINI_VISION_MODEL = os.environ.get("GEMINI_VISION_MODEL", "gemini-3.8-flash")
+DEFAULT_GEMINI_NAV_MODEL = os.environ.get("GEMINI_NAV_MODEL", "gemini-3.8-flash")
 
 # AWS Bedrock defaults
 DEFAULT_BEDROCK_CODE_MODEL = os.environ.get(
-    "BEDROCK_CODE_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    "BEDROCK_CODE_MODEL", "us.anthropic.claude-sonnet-4-6"
 )
 DEFAULT_BEDROCK_VISION_MODEL = os.environ.get(
-    "BEDROCK_VISION_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    "BEDROCK_VISION_MODEL", "us.anthropic.claude-sonnet-4-6"
 )
 DEFAULT_BEDROCK_NAV_MODEL = os.environ.get(
     "BEDROCK_NAV_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0"

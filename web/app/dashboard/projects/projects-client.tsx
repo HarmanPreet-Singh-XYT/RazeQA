@@ -50,6 +50,16 @@ type RoleCredential = {
   password?: string;
 };
 
+type AutoRepairSettings = {
+  enabled: boolean;
+  trigger_mode: "automatic" | "manual_approval";
+  build_command: string;
+  test_command: string;
+  max_steps: number;
+  cost_limit_usd: number;
+  custom_instructions: string;
+};
+
 type ProjectSettings = {
   framework: string;
   package_manager: string;
@@ -60,6 +70,7 @@ type ProjectSettings = {
   test_type: "functional" | "functional + visual";
   enable_on_push: boolean;
   enable_on_pr: boolean;
+  auto_repair?: AutoRepairSettings;
   roles: {
     user: RoleCredential;
     admin: RoleCredential;
@@ -83,6 +94,15 @@ export default function ProjectsClient() {
     test_type: "functional",
     enable_on_push: true,
     enable_on_pr: true,
+    auto_repair: {
+      enabled: true,
+      trigger_mode: "automatic",
+      build_command: "npm run build",
+      test_command: "npm test",
+      max_steps: 10,
+      cost_limit_usd: 1.0,
+      custom_instructions: "",
+    },
     roles: {
       user: { email: "qa@example.com", password: "••••••••••••" },
       admin: { email: "admin@example.com", password: "••••••••••••" },
@@ -564,6 +584,257 @@ export default function ProjectsClient() {
                   </select>
                 </div>
               </div>
+            </div>
+
+            {/* 5. Autonomous Agentic Repair (mini-swe-agent & AWS Bedrock) */}
+            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-5">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-950 flex items-center gap-2">
+                    <Terminal className="h-4 w-4 text-indigo-600" />
+                    Autonomous Agentic Repair (mini-swe-agent Engine)
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Empowers an autonomous coding agent to diagnose regressions, edit files, and iterate until the build compiles cleanly.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-700">Auto-Repair Active</span>
+                  <input
+                    type="checkbox"
+                    checked={settings.auto_repair?.enabled ?? true}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        auto_repair: {
+                          ...(settings.auto_repair || {
+                            enabled: true,
+                            trigger_mode: "automatic",
+                            build_command: "npm run build",
+                            test_command: "npm test",
+                            max_steps: 10,
+                            cost_limit_usd: 1.0,
+                            custom_instructions: "",
+                          }),
+                          enabled: e.target.checked,
+                        },
+                      })
+                    }
+                    className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              {settings.auto_repair?.enabled && (
+                <div className="space-y-4">
+                  {/* Trigger Mode Segmented Selection */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-900 block">Repair Execution Mode</label>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div
+                        onClick={() =>
+                          setSettings({
+                            ...settings,
+                            auto_repair: {
+                              ...(settings.auto_repair!),
+                              trigger_mode: "automatic",
+                            },
+                          })
+                        }
+                        className={`cursor-pointer rounded-lg border p-3 transition-all ${
+                          settings.auto_repair?.trigger_mode === "automatic"
+                            ? "border-indigo-500 bg-indigo-50/40 shadow-xs"
+                            : "border-slate-200 hover:border-slate-300"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+                            Automatic Commit on Green Build
+                          </span>
+                          {settings.auto_repair?.trigger_mode === "automatic" && (
+                            <Check className="h-4 w-4 text-indigo-600" />
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-600">
+                          Automatically commits patches to PR branch when build and verification pass with 0 errors.
+                        </p>
+                      </div>
+
+                      <div
+                        onClick={() =>
+                          setSettings({
+                            ...settings,
+                            auto_repair: {
+                              ...(settings.auto_repair!),
+                              trigger_mode: "manual_approval",
+                            },
+                          })
+                        }
+                        className={`cursor-pointer rounded-lg border p-3 transition-all ${
+                          settings.auto_repair?.trigger_mode === "manual_approval"
+                            ? "border-indigo-500 bg-indigo-50/40 shadow-xs"
+                            : "border-slate-200 hover:border-slate-300"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                            <Shield className="h-3.5 w-3.5 text-slate-600" />
+                            Manual Review & Approval
+                          </span>
+                          {settings.auto_repair?.trigger_mode === "manual_approval" && (
+                            <Check className="h-4 w-4 text-indigo-600" />
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-600">
+                          Generates patch proposals and execution trajectory for 1-click review in the dashboard or via `@pr-agent apply`.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Verification Command Inputs */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs font-bold text-slate-900 block mb-1">
+                        Build Verification Command
+                      </label>
+                      <input
+                        type="text"
+                        value={settings.auto_repair?.build_command || "npm run build"}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            auto_repair: {
+                              ...(settings.auto_repair!),
+                              build_command: e.target.value,
+                            },
+                          })
+                        }
+                        className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-mono text-slate-800"
+                        placeholder="npm run build"
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        Agent runs this command in bash to verify syntax and typecheck before submitting.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-slate-900 block mb-1">
+                        Test Suite Command
+                      </label>
+                      <input
+                        type="text"
+                        value={settings.auto_repair?.test_command || "npm test"}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            auto_repair: {
+                              ...(settings.auto_repair!),
+                              test_command: e.target.value,
+                            },
+                          })
+                        }
+                        className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-mono text-slate-800"
+                        placeholder="npm test"
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        Optional unit test command to execute during repair loops.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Guardrail & Cost Limits */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-lg border border-slate-200 bg-slate-50/50 p-4">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-slate-900">
+                          Max Repair Steps (Loop Limit)
+                        </label>
+                        <span className="font-mono text-xs font-bold text-indigo-600">
+                          {settings.auto_repair?.max_steps || 10} steps
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={3}
+                        max={20}
+                        step={1}
+                        value={settings.auto_repair?.max_steps || 10}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            auto_repair: {
+                              ...(settings.auto_repair!),
+                              max_steps: parseInt(e.target.value),
+                            },
+                          })
+                        }
+                        className="w-full accent-indigo-600"
+                      />
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Circuit breaker: Halts immediately if the agent cannot resolve the failure within this limit.
+                      </p>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-slate-900">
+                          Cost Budget Limit ($ USD)
+                        </label>
+                        <span className="font-mono text-xs font-bold text-emerald-600">
+                          ${(settings.auto_repair?.cost_limit_usd || 1.0).toFixed(2)}
+                        </span>
+                      </div>
+                      <input
+                        type="number"
+                        min={0.25}
+                        max={10.0}
+                        step={0.25}
+                        value={settings.auto_repair?.cost_limit_usd || 1.0}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            auto_repair: {
+                              ...(settings.auto_repair!),
+                              cost_limit_usd: parseFloat(e.target.value) || 1.0,
+                            },
+                          })
+                        }
+                        className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-mono text-slate-800"
+                      />
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Hard stop if LLM token consumption reaches this spend threshold.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Custom Developer Instructions */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-900 block mb-1">
+                      Custom Repair Instructions & Guardrail Directives
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={settings.auto_repair?.custom_instructions || ""}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auto_repair: {
+                            ...(settings.auto_repair!),
+                            custom_instructions: e.target.value,
+                          },
+                        })
+                      }
+                      placeholder="e.g. Strictly maintain TypeScript types. Do not modify Tailwind configuration files or global layout wrappers."
+                      className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    />
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Instructions will be injected directly into the agent's task context during automated repair.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
