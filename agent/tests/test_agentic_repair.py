@@ -332,6 +332,9 @@ async def test_pipeline_run_journeys_uses_worktree_source_root(tmp_path):
 
     worktree = tmp_path / "isolated_worktree_sha123"
     worktree.mkdir(parents=True, exist_ok=True)
+    login_page = worktree / "app" / "login" / "page.tsx"
+    login_page.parent.mkdir(parents=True, exist_ok=True)
+    login_page.write_text("export default function Page() {}")
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
 

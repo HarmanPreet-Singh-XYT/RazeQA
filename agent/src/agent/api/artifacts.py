@@ -10,14 +10,24 @@ trace, screenshots) — everything else 404s.
 Protected by the same bearer-auth middleware as every other route (see
 agent.api.auth) — artifacts are forensic evidence of test failures and may
 contain application UI/data, so they're not made anonymously public.
+
+VIDEO STREAMING NOTE
+--------------------
+Browsers require HTTP Range request support (RFC 7233) to play <video> elements
+inline — they send "Range: bytes=0-" and expect a 206 Partial Content response
+with Accept-Ranges and Content-Range headers. A plain 200 FileResponse causes
+the browser to refuse playback (though download still works). The
+``_range_streaming_response`` helper below implements this for .webm files.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import Generator
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
@@ -25,37 +35,108 @@ RUNS_BASE = Path(__file__).resolve().parents[3] / "artifacts" / "runs"
 
 ALLOWED_SUFFIXES = {".webm", ".zip", ".png", ".json"}
 
+_CHUNK = 1024 * 256  # 256 KiB chunks
 
-@router.get("/runs/{run_dir}/{sub_path:path}")
-async def get_run_artifact(run_dir: str, sub_path: str) -> FileResponse:
-    """Serve a single artifact file, e.g. /artifacts/runs/main_abcd1234/video/x.webm."""
+
+def _range_streaming_response(path: Path, request: Request) -> StreamingResponse:
+    """Returns a 206 Partial Content streaming response for video files.
+
+    Parses the ``Range`` header (if present) and streams only the requested
+    byte range. Always advertises ``Accept-Ranges: bytes`` so browsers know
+    they can seek. Falls back to streaming the full file as a 200 when no
+    Range header is present.
+    """
+    file_size = path.stat().st_size
+    range_header = request.headers.get("range")
+
+    start = 0
+    end = file_size - 1
+    status_code = 200
+
+    if range_header:
+        # Parse "bytes=<start>-<end>" — browsers typically send "bytes=0-"
+        try:
+            range_val = range_header.strip().lower().removeprefix("bytes=")
+            parts = range_val.split("-")
+            start = int(parts[0]) if parts[0] else 0
+            end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
+            end = min(end, file_size - 1)
+            start = max(0, start)
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=416, detail="Range Not Satisfiable")
+
+        if start > end or start >= file_size:
+            raise HTTPException(status_code=416, detail="Range Not Satisfiable")
+
+        status_code = 206
+
+    content_length = end - start + 1
+
+    def _iter_file() -> Generator[bytes, None, None]:
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = content_length
+            while remaining > 0:
+                chunk = f.read(min(_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    headers = {
+        "Content-Length": str(content_length),
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="{path.name}"',
+    }
+    if status_code == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    return StreamingResponse(
+        _iter_file(),
+        status_code=status_code,
+        media_type="video/webm",
+        headers=headers,
+    )
+
+
+def _resolve_and_validate(run_dir: str, sub_path: str) -> Path:
+    """Validates path components and returns the resolved file Path, or raises 404."""
     runs_base = RUNS_BASE.resolve()
     base = (RUNS_BASE / run_dir).resolve()
-    # is_relative_to (not a string-prefix check) so a sibling directory that
-    # happens to share RUNS_BASE as a string prefix — e.g. "artifacts/runs-evil"
-    # against "artifacts/runs" — can't pass a naive startswith() comparison.
     if not base.is_relative_to(runs_base):
         raise HTTPException(status_code=404, detail="Not found")
 
     target = (base / sub_path).resolve()
-    # Reject path traversal: the resolved file must stay inside its run dir.
     if not target.is_relative_to(base):
         raise HTTPException(status_code=404, detail="Not found")
 
     if target.suffix.lower() not in ALLOWED_SUFFIXES:
         raise HTTPException(status_code=404, detail="Not found")
 
-    # storage_state.json holds exported session cookies — never serve it,
-    # even though .json is otherwise an allowed suffix for DOM/screenshot
-    # metadata files.
+    # storage_state.json holds exported session cookies — never serve it.
     if target.name == "storage_state.json":
         raise HTTPException(status_code=404, detail="Not found")
 
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Artifact not found")
 
-    media_type = "video/webm" if target.suffix == ".webm" else None
-    return FileResponse(path=target, media_type=media_type, filename=target.name)
+    return target
+
+
+@router.get("/runs/{run_dir}/{sub_path:path}")
+async def get_run_artifact(run_dir: str, sub_path: str, request: Request):
+    """Serve a single artifact file, e.g. /artifacts/runs/main_abcd1234/video/x.webm.
+
+    For .webm video files, uses a Range-aware streaming response (HTTP 206)
+    so browsers can buffer and play the video inline, not just download it.
+    All other file types use a plain FileResponse.
+    """
+    target = _resolve_and_validate(run_dir, sub_path)
+
+    if target.suffix.lower() == ".webm":
+        return _range_streaming_response(target, request)
+
+    return FileResponse(path=target, filename=target.name)
 
 
 def to_artifact_url(local_path: str | Path | None) -> str | None:

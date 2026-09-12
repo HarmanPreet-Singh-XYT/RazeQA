@@ -210,6 +210,10 @@ export default function NewProjectPage() {
               custom_instructions: "",
               env_vars: envRecord,
             },
+            testing: {
+              testing_instructions: "",
+              enable_login_flow: true,
+            },
           },
         }),
       });

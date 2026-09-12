@@ -8,6 +8,8 @@ fleet quality scores across both GitHub PR and External Site test runs.
 from __future__ import annotations
 
 import logging
+import math
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -226,7 +228,16 @@ class FleetAnalyticsAggregator:
                     daily_buckets[run_date_key]["passed"] += 1
 
         pass_rate = (passed_count / max(total_runs, 1)) * 100.0
-        flakiness_index = max(0.0, round((failed_count / max(total_runs, 1)) * 12.0, 1))
+
+        # Real statistical flakiness index (0.0 to 10.0):
+        # Combines intermittent rerun/flaky detection with runtime latency jitter variance
+        flaky_count = sum(1 for b in daily_buckets.values() for _ in range(b.get("flaky", 0)))
+        mean_lat = sum(latencies) / max(len(latencies), 1)
+        variance = sum((lat - mean_lat) ** 2 for lat in latencies) / max(len(latencies), 1)
+        stddev_lat = math.sqrt(variance)
+        timing_jitter_ratio = min(1.0, stddev_lat / max(mean_lat, 1.0))
+        flake_ratio = flaky_count / max(total_runs, 1)
+        flakiness_index = max(0.0, min(10.0, round((flake_ratio * 7.0) + (timing_jitter_ratio * 3.0), 1))) if total_runs > 0 else 0.0
 
         # Accurate latency percentiles with linear interpolation
         latencies.sort()

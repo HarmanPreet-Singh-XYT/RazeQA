@@ -150,6 +150,59 @@ class DependencyGraph:
 
         return visited
 
+    @staticmethod
+    def _route_from_path(rel_path: str) -> str | None:
+        """Extract a Next.js route path from a relative file path, if it represents a route page."""
+        # Next.js App Router (app/xxx/page.tsx or src/app/xxx/page.tsx)
+        app_pattern = re.search(r'(?:^|/)app/(.+)/page\.(?:tsx|jsx|js|ts)$', rel_path)
+        if app_pattern:
+            raw_route = app_pattern.group(1)
+            # Strip route groups like (auth), (dashboard)
+            cleaned_parts = [p for p in raw_route.split("/") if not (p.startswith("(") and p.endswith(")"))]
+            cleaned_route = "/".join(cleaned_parts).strip("/")
+            return f"/{cleaned_route}" if cleaned_route else "/"
+
+        if re.search(r'(?:^|/)app/page\.(?:tsx|jsx|js|ts)$', rel_path):
+            return "/"
+
+        # Next.js Pages router (pages/xxx.tsx or src/pages/xxx.tsx)
+        pages_pattern = re.search(r'(?:^|/)pages/(.+)\.(?:tsx|jsx|js|ts)$', rel_path)
+        if pages_pattern:
+            raw_route = pages_pattern.group(1)
+            # Skip Next.js internal pages and API routes
+            if raw_route.startswith("_") or "/_" in raw_route or raw_route == "api" or raw_route.startswith("api/"):
+                return None
+            cleaned = raw_route.replace("/index", "").replace("index", "").strip("/")
+            return f"/{cleaned}" if cleaned else "/"
+
+        return None
+
+    def discover_all_routes(self) -> list[str]:
+        """Scans the repository source tree and discovers all static routes
+        for Next.js App Router and Pages Router projects without needing a browser.
+        """
+        if not self.root_dir.exists():
+            return []
+
+        ignored_parts = ("node_modules", ".next", ".git", "dist", "build", ".venv", "__pycache__")
+        routes: set[str] = set()
+
+        for p in self.root_dir.rglob("*"):
+            if any(part in ignored_parts for part in p.parts):
+                continue
+            if not p.is_file():
+                continue
+            try:
+                rel_path = p.relative_to(self.root_dir).as_posix()
+            except ValueError:
+                rel_path = p.as_posix()
+
+            route = self._route_from_path(rel_path)
+            if route:
+                routes.add(route)
+
+        return sorted(routes)
+
     def find_affected_routes(self, changed_files: list[str | Path]) -> list[str]:
         """Given a list of changed files (e.g. from git diff), returns downstream
         affected route paths (e.g. ['/checkout', '/login']).
@@ -173,23 +226,9 @@ class DependencyGraph:
             except ValueError:
                 rel_path = f.as_posix()
 
-            # Next.js App Router (app/xxx/page.tsx or src/app/xxx/page.tsx)
-            app_pattern = re.search(r'(?:^|/)app/(.+)/page\.(?:tsx|jsx|js)$', rel_path)
-            if app_pattern:
-                raw_route = app_pattern.group(1)
-                # Strip route groups like (auth), (dashboard)
-                cleaned_route = re.sub(r'/?\([^)]+\)', '', raw_route).strip("/")
-                route = f"/{cleaned_route}" if cleaned_route else "/"
+            route = self._route_from_path(rel_path)
+            if route:
                 routes.add(route)
-            elif re.search(r'(?:^|/)app/page\.(?:tsx|jsx|js)$', rel_path):
-                routes.add("/")
-            # Pages router (pages/xxx.tsx or src/pages/xxx.tsx)
-            else:
-                pages_pattern = re.search(r'(?:^|/)pages/(.+)\.(?:tsx|jsx|js)$', rel_path)
-                if pages_pattern:
-                    raw_route = pages_pattern.group(1).replace("/index", "").replace("index", "").strip("/")
-                    route = f"/{raw_route}" if raw_route else "/"
-                    if not route.startswith("/api"):
-                        routes.add(route)
 
         return sorted(routes)
+

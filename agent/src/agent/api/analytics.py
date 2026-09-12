@@ -48,9 +48,9 @@ async def get_run_quality_analytics(run_id: str) -> dict[str, Any]:
     res = record.result or {}
     quality_report = res.get("quality_dimensions")
 
-    if not quality_report:
-        # Calculate dynamically if not previously cached
-        journeys = res.get("journey_artifacts") or []
+    if not quality_report or not isinstance(quality_report, dict) or "state_graph" not in quality_report:
+        # Calculate dynamically if not previously cached or if older structure
+        journeys = res.get("journey_artifacts") or res.get("artifacts") or []
         report_obj = default_quality_evaluator.evaluate_run(
             run_record=record,
             journeys=journeys,

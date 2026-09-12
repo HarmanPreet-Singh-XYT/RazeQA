@@ -35,3 +35,13 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = ["pytest>=9.1.1", "pytest-asyncio>=1.4.0", "ruff>=0.16.6"]
+
+# Exclude the artifacts/ tree from watchfiles so uvicorn --reload does NOT
+# restart the server every time a git worktree (wt-*) or local clone is
+# created/updated during a test run. Without this, each run triggers a
+# full server reload, which kills in-flight background tasks.
+[tool.watchfiles]
+ignore_paths = [
+    "../artifacts",
+    "artifacts",
+]

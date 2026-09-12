@@ -23,6 +23,7 @@ import {
   Box,
   Workflow,
   Compass,
+  LayoutGrid,
   Play,
   Settings,
   ChevronDown,
@@ -37,6 +38,8 @@ import {
   Menu,
   ArrowUpRight,
   HelpCircle,
+  ArrowLeft,
+  FolderGit2,
 } from "lucide-react";
 import { logout } from "@/app/login/actions";
 import { useDashboard } from "./dashboard-context";
@@ -95,26 +98,31 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
   // Breadcrumb title resolution
   const getBreadcrumbTitle = () => {
     if (pathname === "/dashboard") return "Overview";
-    if (pathname.startsWith("/dashboard/runs") || pathname.startsWith("/dashboard/deployments")) return "Test Runs";
-    if (pathname.startsWith("/dashboard/tools")) return "User Journeys";
-    if (pathname.startsWith("/dashboard/logs")) return "Execution Logs";
-    if (pathname.startsWith("/dashboard/analytics")) return "Quality Analytics";
-    if (pathname.startsWith("/dashboard/new")) return "Import Repository";
     if (pathname.startsWith("/dashboard/projects")) {
       if (currentTab === "roles") return "Test Personas";
       if (currentTab === "auto-repair") return "AI Auto-Repair";
       if (currentTab === "env-vars") return "Sandbox Secrets";
       return "Project Settings";
     }
+    if (pathname === "/dashboard/project") return "Project Overview";
+    if (pathname.startsWith("/dashboard/runs") || pathname.startsWith("/dashboard/deployments")) return "Test Runs";
+    if (pathname.startsWith("/dashboard/tools") || pathname.startsWith("/dashboard/journeys")) return "User Journeys";
+    if (pathname.startsWith("/dashboard/logs")) return "Execution Logs";
+    if (pathname.startsWith("/dashboard/analytics")) return "Quality Analytics";
+    if (pathname.startsWith("/dashboard/new")) return "Import Repository";
     return "Dashboard";
   };
 
+  const isExternalActive = Boolean(activeRepo?.startsWith("external:"));
+
   const isNavActive = (href: string) => {
-    if (href === "/dashboard") return pathname === "/dashboard";
-    if (href === "/dashboard/projects") {
+    const [itemBase] = href.split("?");
+    if (itemBase === "/dashboard") return pathname === "/dashboard";
+    if (itemBase === "/dashboard/project") return pathname === "/dashboard/project";
+    if (itemBase === "/dashboard/projects") {
       return pathname === "/dashboard/projects" && !currentTab;
     }
-    return pathname.startsWith(href);
+    return pathname.startsWith(itemBase);
   };
 
   const isSecondaryActive = (href: string) => {
@@ -128,20 +136,248 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
   };
 
   const navPrimary = [
-    { href: "/dashboard", label: "Overview", icon: Home },
-    { href: "/dashboard/runs", label: "Test Runs", icon: Layers },
-    { href: "/dashboard/tools", label: "User Journeys", icon: Compass },
-    { href: "/dashboard/logs", label: "Execution Logs", icon: Terminal },
-    { href: "/dashboard/analytics", label: "Quality Analytics", icon: BarChart3 },
-    { href: "/dashboard/projects", label: "Project Settings", icon: Settings },
+    {
+      href: `/dashboard/project${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      label: "Overview",
+      icon: Home,
+    },
+    {
+      href: `/dashboard/runs${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      label: "Test Runs",
+      icon: Layers,
+    },
+    {
+      href: `/dashboard/tools${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      label: "User Journeys",
+      icon: Compass,
+    },
+    {
+      href: `/dashboard/logs${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      label: "Execution Logs",
+      icon: Terminal,
+    },
+    {
+      href: `/dashboard/analytics${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      label: "Quality Analytics",
+      icon: BarChart3,
+    },
+    {
+      href: `/dashboard/projects${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      label: "Settings",
+      icon: Settings,
+    },
   ];
 
   const navSecondary = [
-    { href: "/dashboard/projects?tab=roles", label: "Test Personas", icon: Shield },
-    { href: "/dashboard/projects?tab=auto-repair", label: "AI Auto-Repair", icon: Sparkles },
-    { href: "/dashboard/projects?tab=env-vars", label: "Sandbox Secrets", icon: Sliders },
-    { href: "#agent", label: "AutoQA AI Agent", icon: Cpu, isAgentTrigger: true },
+    ...(!isExternalActive
+      ? [
+          { href: "/dashboard/projects?tab=roles", label: "Test Personas", icon: Shield },
+          { href: "/dashboard/projects?tab=auto-repair", label: "AI Auto-Repair", icon: Sparkles },
+          { href: "/dashboard/projects?tab=env-vars", label: "Sandbox Secrets", icon: Sliders },
+        ]
+      : []),
+    { href: "#agent", label: "Autonomous Agent", icon: Cpu, isAgentTrigger: true },
   ];
+
+  const isOverviewPage = pathname === "/dashboard";
+
+  if (isOverviewPage) {
+    return (
+      <div className="min-h-screen bg-slate-50/50 text-slate-900 font-sans antialiased selection:bg-slate-200 flex flex-col w-full">
+        {/* Light Grid Background */}
+        <div className="pointer-events-none fixed inset-0 bg-grid-light mask-radial-light opacity-60 z-0" />
+
+        {/* Global Workspace Header (Vercel Style) */}
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md w-full">
+          {/* Top Row: Brand + Team Switcher + Right Action Buttons */}
+          <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 py-2.5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Link href="/dashboard" className="flex items-center gap-2 text-slate-900 shrink-0">
+                <div className="h-6 w-6 rounded bg-slate-950 text-white flex items-center justify-center font-bold text-[11px] font-mono shadow-2xs">
+                  QA
+                </div>
+              </Link>
+              <span className="text-slate-300 select-none">/</span>
+              <div className="relative">
+                <button
+                  onClick={() => setIsTeamDropdownOpen(!isTeamDropdownOpen)}
+                  className="flex items-center gap-2 px-2 py-1 rounded-md text-xs font-semibold text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+                >
+                  <div className="h-5 w-5 rounded-full bg-slate-900 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                    {userEmail ? userEmail.slice(0, 1).toUpperCase() : "H"}
+                  </div>
+                  <span>{userEmail ? userEmail.split("@")[0] : "harmanpreet-singh"}</span>
+                  <span className="text-[10px] font-mono text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded shrink-0">
+                    AutoQA
+                  </span>
+                  <ChevronDown className="h-3 w-3 text-slate-400" />
+                </button>
+
+                {isTeamDropdownOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsTeamDropdownOpen(false)} />
+                    <div className="absolute left-0 top-9 z-50 w-64 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl space-y-1 text-xs">
+                      <div className="px-2 py-1 text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                        Workspace
+                      </div>
+                      <div className="px-2 py-1.5 rounded bg-slate-100 font-semibold text-slate-900 flex items-center justify-between">
+                        <span>{userEmail || "harmanpreet-singh"}</span>
+                        <Check className="h-3.5 w-3.5 text-emerald-600" />
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Right Action Buttons */}
+            <div className="flex items-center gap-2.5">
+              <button
+                onClick={() => setIsCommandPaletteOpen(true)}
+                className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-50 border border-slate-200 text-slate-500 hover:text-slate-900 hover:border-slate-300 text-xs transition-colors cursor-pointer"
+              >
+                <Search className="h-3.5 w-3.5 text-slate-400" />
+                <span>Search</span>
+                <kbd className="font-mono text-[10px] bg-white border border-slate-200 text-slate-500 px-1 rounded">F</kbd>
+              </button>
+
+              <button
+                onClick={() => setIsAgentModalOpen(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-semibold transition-all shadow-2xs cursor-pointer"
+              >
+                <Cpu className="h-3.5 w-3.5 text-slate-600" />
+                <span>Agent</span>
+              </button>
+
+              <div className="relative">
+                <button
+                  onClick={() => setIsAddNewOpen(!isAddNewOpen)}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-slate-950 text-white hover:bg-slate-800 text-xs font-semibold transition-colors shadow-2xs cursor-pointer"
+                >
+                  <span>Add New</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                {isAddNewOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsAddNewOpen(false)} />
+                    <div className="absolute right-0 top-9 z-50 w-56 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl space-y-1 text-xs">
+                      <Link
+                        href="/dashboard/new"
+                        onClick={() => setIsAddNewOpen(false)}
+                        className="flex items-center gap-2 px-2.5 py-1.5 rounded text-slate-700 hover:text-slate-950 hover:bg-slate-50"
+                      >
+                        <FolderGit2 className="h-4 w-4 text-slate-500" />
+                        <span>Import Git Repository</span>
+                      </Link>
+                      <button
+                        onClick={() => {
+                          setIsAddNewOpen(false);
+                          setIsExternalTestOpen(true);
+                        }}
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-slate-700 hover:text-slate-950 hover:bg-slate-50 text-left cursor-pointer"
+                      >
+                        <Globe className="h-4 w-4 text-sky-600" />
+                        <span>Verify External Site</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* User Avatar Menu */}
+              <div className="relative">
+                <button
+                  onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+                  className="h-7 w-7 rounded-full bg-slate-900 text-white flex items-center justify-center text-[10px] font-bold font-mono cursor-pointer"
+                >
+                  {userEmail ? userEmail.slice(0, 2).toUpperCase() : "HP"}
+                </button>
+                {isUserMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsUserMenuOpen(false)} />
+                    <div className="absolute right-0 top-9 z-50 w-52 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl space-y-1 text-xs">
+                      <div className="px-2 py-1 text-[11px] text-slate-500 font-mono truncate">{userEmail}</div>
+                      <div className="border-t border-slate-100 my-1" />
+                      <button
+                        onClick={async () => {
+                          await logout();
+                          window.location.href = "/login";
+                        }}
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-rose-600 hover:bg-rose-50 cursor-pointer text-left"
+                      >
+                        <LogOut className="h-3.5 w-3.5" />
+                        <span>Sign out</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom Row: Vercel-style Top Tabs Strip */}
+          <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 flex items-center gap-1 overflow-x-auto text-xs font-medium text-slate-600 no-scrollbar">
+            <Link
+              href="/dashboard"
+              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-slate-950 text-slate-950 font-bold transition-colors whitespace-nowrap"
+            >
+              <LayoutGrid className="h-3.5 w-3.5" />
+              <span>Projects</span>
+            </Link>
+            <Link
+              href="/dashboard/runs"
+              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent hover:text-slate-950 hover:border-slate-300 transition-colors whitespace-nowrap"
+            >
+              <Layers className="h-3.5 w-3.5" />
+              <span>Activity &amp; Runs</span>
+            </Link>
+            <Link
+              href="/dashboard/tools"
+              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent hover:text-slate-950 hover:border-slate-300 transition-colors whitespace-nowrap"
+            >
+              <Compass className="h-3.5 w-3.5" />
+              <span>User Journeys</span>
+            </Link>
+            <Link
+              href="/dashboard/logs"
+              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent hover:text-slate-950 hover:border-slate-300 transition-colors whitespace-nowrap"
+            >
+              <Terminal className="h-3.5 w-3.5" />
+              <span>Execution Logs</span>
+            </Link>
+            <Link
+              href="/dashboard/analytics"
+              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent hover:text-slate-950 hover:border-slate-300 transition-colors whitespace-nowrap"
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              <span>Quality Analytics</span>
+            </Link>
+          </div>
+        </header>
+
+        {/* Full-width content */}
+        <main className="relative z-10 flex-1 w-full bg-transparent">
+          {children}
+        </main>
+
+        <AgentModal
+          isOpen={isAgentModalOpen}
+          onClose={() => setIsAgentModalOpen(false)}
+          activeRepo={activeRepo}
+        />
+        <CommandPalette
+          isOpen={isCommandPaletteOpen}
+          onClose={() => setIsCommandPaletteOpen(false)}
+          onOpenAgent={() => setIsAgentModalOpen(true)}
+          onOpenExternalTest={() => setIsExternalTestOpen(true)}
+        />
+        <ExternalTestModal
+          isOpen={isExternalTestOpen}
+          onClose={() => setIsExternalTestOpen(false)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50/50 text-slate-900 font-sans antialiased selection:bg-slate-200 flex flex-col lg:flex-row w-full">
@@ -149,30 +385,37 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
       <div className="pointer-events-none fixed inset-0 bg-grid-light mask-radial-light opacity-60 z-0" />
 
       {/* =========================================================================
-          LEFT SIDEBAR (Light Modern Sidebar)
+          LEFT SIDEBAR (Light Modern Sidebar for Project Context)
           ========================================================================= */}
       <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-slate-200 bg-white text-slate-900 h-screen sticky top-0 z-30 select-none">
-        {/* Top: Team / Scope Switcher */}
-        <div className="p-3 border-b border-slate-200 relative">
-          <button
-            onClick={() => setIsTeamDropdownOpen(!isTeamDropdownOpen)}
-            className="w-full flex items-center justify-between p-1.5 rounded-lg hover:bg-slate-100 transition-colors group cursor-pointer text-left"
+        {/* Top: Back to All Projects + Active Project Card */}
+        <div className="p-3 border-b border-slate-200">
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold text-slate-600 hover:text-slate-950 hover:bg-slate-100 transition-colors group mb-2"
           >
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="h-6 w-6 rounded-full bg-slate-900 flex items-center justify-center text-white font-semibold text-[11px] shrink-0 shadow-xs">
-                {userEmail ? userEmail.slice(0, 1).toUpperCase() : "H"}
-              </div>
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-xs font-semibold text-slate-900 truncate">
-                  {userEmail ? userEmail.split("@")[0] : "harmanpreet-singh"}
-                </span>
-                <span className="text-[10px] font-mono text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded shrink-0">
-                  AutoQA
-                </span>
+            <ArrowLeft className="h-3.5 w-3.5 text-slate-500 group-hover:text-slate-900" />
+            <span>All Projects</span>
+          </Link>
+
+          <div className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200/80">
+            <div className="flex items-center gap-2 min-w-0">
+              {isExternalActive ? (
+                <Globe className="h-4 w-4 text-sky-600 shrink-0" />
+              ) : (
+                <FolderGit2 className="h-4 w-4 text-slate-700 shrink-0" />
+              )}
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-slate-900 truncate">
+                  {projectName}
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">
+                  {isExternalActive ? "External Website" : "Git Repository"}
+                </div>
               </div>
             </div>
-            <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0 group-hover:text-slate-900 transition-colors" />
-          </button>
+          </div>
+        </div>
 
           {/* Team Dropdown */}
           {isTeamDropdownOpen && (
@@ -206,7 +449,6 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
               </div>
             </>
           )}
-        </div>
 
         {/* Find Search Input */}
         <div className="px-3 pt-3 pb-2">
@@ -321,7 +563,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                   {userEmail || "harmanpreet-singh-xyt"}
                 </div>
                 <Link
-                  href="/dashboard/projects"
+                  href="/dashboard"
                   onClick={() => setIsUserMenuOpen(false)}
                   className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-slate-700 hover:bg-slate-50 hover:text-slate-900"
                 >
@@ -351,7 +593,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
       </aside>
 
       {/* Dynamic Viewport Content Column (Header + Children) */}
-      <div className="relative z-10 flex-1 flex flex-col min-w-0 overflow-x-hidden bg-transparent">
+      <div className="flex-1 flex flex-col min-w-0 bg-transparent">
         {/* =========================================================================
             TOP HEADER BAR (Light Breadcrumb & Action Header)
             ========================================================================= */}
@@ -382,7 +624,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                   onClick={() => setIsRepoDropdownOpen(!isRepoDropdownOpen)}
                   className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-semibold text-slate-900 hover:bg-slate-100 border border-transparent hover:border-slate-200 transition-all cursor-pointer truncate max-w-[180px] sm:max-w-[260px]"
                 >
-                  <span className="truncate">{projectName}</span>
+                  <span className="truncate">{pathname === "/dashboard" ? "All Projects" : projectName}</span>
                   <ChevronDown className="h-3 w-3 text-slate-400 shrink-0" />
                 </button>
 
@@ -394,14 +636,14 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                         Switch Project
                       </div>
                       {projects.map((p) => {
-                        const isCurrent = activeRepo === p.repo_full_name;
+                        const isCurrent = activeRepo === p.repo_full_name && pathname !== "/dashboard";
                         return (
                           <button
                             key={p.repo_full_name}
                             onClick={() => {
                               setActiveRepo(p.repo_full_name);
                               setIsRepoDropdownOpen(false);
-                              router.push("/dashboard");
+                              router.push(`/dashboard/project?repo=${encodeURIComponent(p.repo_full_name)}`);
                             }}
                             className={`w-full flex items-center justify-between px-2 py-1.5 rounded transition-colors text-left ${
                               isCurrent
@@ -411,7 +653,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                           >
                             <div className="flex items-center gap-2 truncate">
                               <span className="text-[10px] font-mono text-indigo-600">●</span>
-                              <span className="truncate">{p.repo_full_name.split("/")[1] || p.repo_full_name}</span>
+                              <span className="truncate">{p.name || p.repo_full_name.split("/")[1] || p.repo_full_name}</span>
                             </div>
                             {isCurrent && <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
                           </button>
@@ -419,12 +661,19 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                       })}
                       <div className="border-t border-slate-100 my-1" />
                       <Link
-                        href="/dashboard/projects"
+                        href="/dashboard"
                         onClick={() => setIsRepoDropdownOpen(false)}
-                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                        className={`w-full flex items-center justify-between px-2 py-1.5 rounded transition-colors ${
+                          pathname === "/dashboard"
+                            ? "bg-slate-100 text-slate-950 font-semibold"
+                            : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                        }`}
                       >
-                        <Home className="h-3.5 w-3.5" />
-                        <span>View All Projects</span>
+                        <div className="flex items-center gap-2">
+                          <Home className="h-3.5 w-3.5" />
+                          <span>View All Projects</span>
+                        </div>
+                        {pathname === "/dashboard" && <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
                       </Link>
                       <Link
                         href="/dashboard/new"
@@ -439,12 +688,14 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                 )}
               </div>
 
-              <span className="text-slate-300 select-none">/</span>
-
-              {/* Current Section Breadcrumb */}
-              <span className="text-xs font-semibold text-slate-500 hidden xs:inline truncate">
-                {getBreadcrumbTitle()}
-              </span>
+              {pathname !== "/dashboard" && (
+                <>
+                  <span className="text-slate-300 select-none">/</span>
+                  <span className="text-xs font-semibold text-slate-500 inline truncate">
+                    {getBreadcrumbTitle()}
+                  </span>
+                </>
+              )}
             </div>
 
             {/* Right Action Buttons */}

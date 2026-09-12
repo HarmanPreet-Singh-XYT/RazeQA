@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from agent.runner.retention import cleanup_local_artifacts, purge_run_directory
 from agent.sandbox.docker_sandbox import remove_image
@@ -39,13 +39,11 @@ def test_purge_run_directory(tmp_path: Path) -> None:
     assert not target_dir.exists()
 
 
-def test_remove_image_calls_docker() -> None:
+def test_remove_image_is_noop() -> None:
+    """Sandboxes no longer build a per-run image (see docker_sandbox.run_sandbox,
+    which provisions a shared base container via `docker exec` instead of
+    `docker build`), so removing one is a no-op retained only so old callers
+    don't break."""
     with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
         remove_image("pr-testing-sandbox:test-123")
-        mock_run.assert_called_once_with(
-            ["docker", "rmi", "-f", "pr-testing-sandbox:test-123"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        mock_run.assert_not_called()

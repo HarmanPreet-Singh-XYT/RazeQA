@@ -146,11 +146,21 @@ def test_remediation_formatter_redacts_and_packages_metadata() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_collects_findings_and_uses_stored_credentials(tmp_path: Path) -> None:
+async def test_pipeline_collects_findings_and_uses_stored_credentials(tmp_path: Path, monkeypatch) -> None:
     from agent.runner.pipeline import run_pipeline
 
+    # owner/repo here are fictitious test fixtures, not a real GitHub repo.
+    # Two things must be stubbed so this test never touches the network or
+    # Docker: `ensure_clone` (agent.runner.pipeline treats any owner/repo
+    # other than "local"/"default" as a real GitHub repo to `git clone`) and
+    # SANDBOX_MODE=disabled (skips the real Docker sandbox boot in
+    # agent.runner.pipeline._sandbox_for_sha). This test only exercises
+    # journey orchestration / credential handling, which is what it asserts on.
+    monkeypatch.setenv("SANDBOX_MODE", "disabled")
+
     with patch("agent.runner.pipeline.run_login_journey") as mock_login, \
-         patch("agent.journeys.browser_agent.run_route_journey") as mock_route:
+         patch("agent.journeys.browser_agent.run_route_journey") as mock_route, \
+         patch("agent.sandbox.clone.ensure_clone", return_value=tmp_path):
 
         # Mock successful login with storage state export
         storage_file = tmp_path / "storage_state.json"

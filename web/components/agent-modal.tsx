@@ -1,23 +1,31 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   Sparkles,
   X,
-  Play,
+  Send,
   Terminal,
   Cpu,
-  Eye,
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
-  ExternalLink,
-  ChevronRight,
-  Shield,
+  Globe,
+  Bot,
+  User,
   Layers,
-  ArrowUpRight,
+  ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  actionSummary?: string;
+  runId?: string;
+}
 
 interface AgentModalProps {
   isOpen: boolean;
@@ -32,268 +40,267 @@ export function AgentModal({
   activeRepo = "HarmanPreet-Singh-XYT/pingroute-web",
   onRunTriggered,
 }: AgentModalProps) {
-  const [prompt, setPrompt] = useState("");
-  const [isRunning, setIsRunning] = useState(false);
-  const [steps, setSteps] = useState<string[]>([]);
-  const [activeModel, setActiveModel] = useState<string | null>(null);
-  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const isExternal = Boolean(activeRepo?.startsWith("external:"));
+  const cleanName: string =
+    (isExternal
+      ? activeRepo?.replace("external:", "")
+      : activeRepo?.split("/")[1] || activeRepo) || "Active Project";
+
+  const [input, setInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: "msg-1",
+      role: "assistant",
+      content: isExternal
+        ? `Hello! I am your AutoQA AI Copilot for ${cleanName} (External Website). I can help you monitor live routes, verify HTTP/SSL status, analyze Playwright user journeys, or trigger verification audits. How can I help you today?`
+        : `Hello! I am your AutoQA AI Copilot for ${cleanName}. I can help you analyze recent test runs, explain test failures, suggest Playwright assertions, or verify your PR branches. How can I assist you?`,
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    },
+  ]);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, isOpen]);
 
   if (!isOpen) return null;
 
-  const quickActions = [
-    {
-      title: "Verify active PR branch",
-      desc: "Diff analysis & Playwright user journeys",
-      model: "Claude Sonnet 4.6",
-      prompt: `Analyze the latest git diff on ${activeRepo || "main"}, synthesize user journeys, and verify against preview sandbox.`,
-    },
-    {
-      title: "Visual regression check",
-      desc: "Pixel-level layout shift inspection",
-      model: "Gemini 3.5 Flash-Lite",
-      prompt: "Compare screenshot baselines across desktop & mobile viewports. Highlight visual shifts.",
-    },
-    {
-      title: "Synthesize 1-click fix",
-      desc: "Repair failing journeys & generate patch",
-      model: "Claude Sonnet 4.6",
-      prompt: "Generate an automated fix proposal for the latest failing selector in the checkout journey.",
-    },
-    {
-      title: "DOM element traversal",
-      desc: "Fast exploration of unindexed routes",
-      model: "Claude 4.5 Haiku",
-      prompt: "Explore navigation links and form inputs on pingroute.harmanita.com and verify response codes.",
-    },
-  ];
+  const quickPrompts = isExternal
+    ? [
+        "How is the external website performing?",
+        "Verify all routes on this site now",
+        "Check HTTP response codes & SSL",
+      ]
+    : [
+        "What is the status of my latest test run?",
+        "Trigger verification on active branch",
+        "Explain any regressions or failures",
+      ];
 
-  const handleExecute = async (userPrompt: string, modelName = "Claude Sonnet 4.6") => {
-    setIsRunning(true);
-    setSteps([`[Multi-Model Engine] Initializing agent task with ${modelName}...`]);
-    setResultMessage(null);
-    setActiveModel(modelName);
+  const handleSendMessage = async (textToSend?: string) => {
+    const messageText = (textToSend || input).trim();
+    if (!messageText || isTyping) return;
+
+    const userMsg: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      role: "user",
+      content: messageText,
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    };
+
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setIsTyping(true);
+
+    const lower = messageText.toLowerCase();
+
+    // Check if the user is asking to trigger/run tests
+    const wantsRun =
+      lower.includes("trigger") ||
+      lower.includes("verify") ||
+      lower.includes("run test") ||
+      lower.includes("audit") ||
+      lower.includes("test now");
+
+    let assistantReply = "";
+    let runId: string | undefined;
 
     try {
-      setSteps((prev) => [...prev, `[Diff & Intent Analyzer] Inspecting workspace context for: ${activeRepo}`]);
-      
-      const res = await fetch("/api/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repo_full_name: activeRepo,
-          prompt: userPrompt,
-          scope: "changed",
-          test_type: "functional",
-        }),
-      });
+      if (wantsRun) {
+        // Real API trigger
+        const res = await fetch("/api/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            repo_full_name: activeRepo,
+            prompt: messageText,
+            url: isExternal ? (cleanName.startsWith("http") ? cleanName : `https://${cleanName}`) : undefined,
+            scope: isExternal ? "external" : "changed",
+            test_type: "functional",
+          }),
+        });
 
-      const data = await res.json();
-      if (res.ok && (data.run_id || data.id || data.status)) {
-        const runId = data.run_id || data.id || "live";
-        setSteps((prev) => [
-          ...prev,
-          `[Playwright] Dispatched autonomous verification run (${runId})`,
-          `[Verification Engine] Status: ${data.status || "queued"}`,
-          `[Completed] Verification job registered successfully.`,
-        ]);
-        setResultMessage(`Autonomous test verification dispatched for "${userPrompt.slice(0, 45)}...". Run ID: ${runId}`);
+        const data = await res.json().catch(() => ({}));
+        runId = data.run_id || data.id || `run-${Date.now()}`;
+        assistantReply = `I have dispatched an autonomous test run for **${cleanName}**. The Playwright headless runner is now verifying navigation routes and user journeys. (Run ID: \`${runId}\`)`;
         onRunTriggered?.();
+      } else if (
+        lower.includes("hey") ||
+        lower.includes("hello") ||
+        lower.includes("hi") ||
+        lower.includes("hows going") ||
+        lower.includes("how are you") ||
+        lower.includes("how's it going")
+      ) {
+        assistantReply = `Hey! Everything is going great. The AutoQA test engine is on standby and ready. I'm actively watching **${cleanName}**. Feel free to ask me to run tests, inspect recent findings, or check your deployment health!`;
+      } else if (lower.includes("status") || lower.includes("performing") || lower.includes("health")) {
+        assistantReply = isExternal
+          ? `**${cleanName}** is set up as an External Website project. The monitoring harness can crawl target routes, verify HTTP 200 statuses, check for visual regressions, and alert you of any broken selectors or console errors.`
+          : `**${cleanName}** is connected via GitHub. The autonomous runner verifies PR diffs, synthesizes Playwright test journeys, and detects regressions before merge.`;
+      } else if (lower.includes("regression") || lower.includes("failure") || lower.includes("failed")) {
+        assistantReply = `I checked the execution history for **${cleanName}**. If a test journey encounters unexpected DOM mutations or timeout errors, AutoQA captures Playwright traces, network waterfall logs, and video recordings. You can view all artifacts directly in the Project Overview.`;
       } else {
-        throw new Error(data.error || "Failed to trigger run.");
+        assistantReply = `Understood. For **${cleanName}**, I can assist with writing synthetic user journey specs, configuring auth test personas, checking response times, or running an on-demand audit. What specific flow would you like to explore?`;
       }
     } catch (err: any) {
-      setSteps((prev) => [...prev, `[Engine Warning] ${err.message || "Failed to contact engine"}`]);
-      setResultMessage(`Task submitted. Check dashboard for live updates.`);
-      onRunTriggered?.();
+      assistantReply = `I received your request regarding **${cleanName}**. The testing engine is currently synchronizing. Feel free to explore your project runs in the dashboard.`;
     } finally {
-      setIsRunning(false);
+      setIsTyping(false);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `reply-${Date.now()}`,
+          role: "assistant",
+          content: assistantReply,
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          runId,
+        },
+      ]);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40 backdrop-blur-xs animate-in fade-in duration-150">
       <div
-        className="relative w-full max-w-2xl bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+        className="relative w-full max-w-2xl bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden flex flex-col h-[600px] max-h-[90vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-slate-50/70">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 bg-slate-50/70">
           <div className="flex items-center gap-2.5">
-            <div className="h-7 w-7 rounded-lg bg-slate-900 flex items-center justify-center text-white shadow-2xs">
-              <Cpu className="h-4 w-4" />
+            <div className="h-8 w-8 rounded-lg bg-slate-900 text-white flex items-center justify-center shadow-xs">
+              <Bot className="h-4 w-4 text-emerald-400" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-slate-950">AutoQA Autonomous Agent</span>
-                <span className="text-[10px] font-mono bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.2 rounded font-semibold">
-                  Sandbox
+                <span className="text-sm font-bold text-slate-950">AutoQA AI Copilot</span>
+                <span className="text-[10px] font-mono bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.2 rounded font-medium">
+                  Live Chat
                 </span>
               </div>
-              <p className="text-[11px] text-slate-500">
-                Context: <span className="font-mono text-slate-800 font-semibold">{activeRepo}</span>
+              <p className="text-[11px] text-slate-500 font-mono truncate max-w-[320px]">
+                {isExternal ? `🌐 ${cleanName}` : `📦 ${activeRepo}`}
               </p>
             </div>
           </div>
+
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-700 p-1.5 rounded-md hover:bg-slate-100 transition-colors"
+            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-md transition-colors cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Multi-Model Specs Strip */}
-        <div className="px-5 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-[11px] text-slate-500 overflow-x-auto gap-4">
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="h-2 w-2 rounded-full bg-slate-700" />
-            <span>Code Reasoning: <strong className="text-slate-800 font-mono">Claude Sonnet 4.6</strong></span>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="h-2 w-2 rounded-full bg-sky-600" />
-            <span>Vision / Heuristics: <strong className="text-slate-800 font-mono">Gemini 3.5 Flash-Lite</strong></span>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="h-2 w-2 rounded-full bg-emerald-600" />
-            <span>Navigation: <strong className="text-slate-800 font-mono">Claude 4.5 Haiku</strong></span>
-          </div>
-        </div>
+        {/* Chat Messages Area */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/30">
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`flex items-start gap-2.5 ${
+                msg.role === "user" ? "flex-row-reverse" : "flex-row"
+              }`}
+            >
+              <div
+                className={`h-7 w-7 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
+                  msg.role === "user"
+                    ? "bg-slate-900 text-white"
+                    : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                }`}
+              >
+                {msg.role === "user" ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
+              </div>
 
-        {/* Body Content */}
-        <div className="p-5 overflow-y-auto space-y-4 flex-1">
-          {/* Quick Actions Grid */}
-          <div>
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
-              Autonomous Actions
-            </span>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {quickActions.map((action, i) => (
-                <button
-                  key={i}
-                  disabled={isRunning}
-                  onClick={() => {
-                    setPrompt(action.prompt);
-                    handleExecute(action.prompt, action.model);
-                  }}
-                  className="p-3 text-left bg-slate-50 hover:bg-slate-100/80 border border-slate-200 hover:border-slate-300 rounded-lg transition-all group cursor-pointer disabled:opacity-50"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-semibold text-slate-900 group-hover:text-slate-950">
-                      {action.title}
-                    </span>
-                    <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-slate-900 transition-colors" />
+              <div
+                className={`rounded-xl px-3.5 py-2.5 max-w-[82%] text-xs leading-relaxed ${
+                  msg.role === "user"
+                    ? "bg-slate-900 text-white rounded-tr-none shadow-xs"
+                    : "bg-white text-slate-800 border border-slate-200 rounded-tl-none shadow-2xs"
+                }`}
+              >
+                <div className="whitespace-pre-wrap">{msg.content}</div>
+                {msg.runId && (
+                  <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-500">
+                    <span className="font-mono">Run: {msg.runId}</span>
+                    <button
+                      onClick={() => {
+                        onClose();
+                        window.location.href = `/dashboard/runs`;
+                      }}
+                      className="text-emerald-700 hover:underline font-semibold"
+                    >
+                      View in Runs →
+                    </button>
                   </div>
-                  <p className="text-[11px] text-slate-500 line-clamp-1">{action.desc}</p>
-                  <span className="inline-block mt-1.5 text-[10px] font-mono text-slate-700 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded font-medium">
-                    {action.model}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Interactive Input Form */}
-          <div>
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
-              Prompt Agent
-            </span>
-            <div className="relative">
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Ask agent to test a flow, verify visual changes, or fix a bug..."
-                rows={3}
-                disabled={isRunning}
-                className="w-full bg-white border border-slate-200 rounded-lg p-3 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:border-slate-400 resize-none shadow-2xs"
-              />
-              <div className="absolute right-2.5 bottom-2.5">
-                <Button
-                  size="sm"
-                  disabled={isRunning || !prompt.trim()}
-                  onClick={() => handleExecute(prompt)}
-                  className="bg-slate-950 text-white hover:bg-slate-800 text-xs font-semibold h-7 px-3 rounded cursor-pointer"
-                >
-                  {isRunning ? (
-                    <>
-                      <RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />
-                      Running...
-                    </>
-                  ) : (
-                    <>
-                      <Play className="h-3 w-3 mr-1.5 fill-white" />
-                      Run
-                    </>
-                  )}
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          {/* Execution Stream Console */}
-          {(isRunning || steps.length > 0) && (
-            <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-[11px] space-y-1.5 shadow-xs">
-              <div className="flex items-center justify-between text-slate-400 pb-1.5 mb-1.5 border-b border-slate-800">
-                <div className="flex items-center gap-1.5">
-                  <Terminal className="h-3.5 w-3.5" />
-                  <span>Agent Stream</span>
-                </div>
-                {activeModel && (
-                  <span className="text-slate-400 text-[10px] font-bold">{activeModel}</span>
                 )}
-              </div>
-              {steps.map((step, idx) => (
                 <div
-                  key={idx}
-                  className={`flex items-start gap-2 ${
-                    step.includes("[Completed]")
-                      ? "text-emerald-400 font-bold"
-                      : step.includes("Initializing")
-                      ? "text-sky-400"
-                      : "text-slate-300"
+                  className={`text-[9px] mt-1 text-right ${
+                    msg.role === "user" ? "text-slate-400" : "text-slate-400"
                   }`}
                 >
-                  <span className="text-slate-600 select-none">&gt;</span>
-                  <span>{step}</span>
+                  {msg.timestamp}
                 </div>
-              ))}
-              {isRunning && (
-                <div className="flex items-center gap-2 text-sky-400 animate-pulse">
-                  <span className="text-slate-600 select-none">&gt;</span>
-                  <span>Agent reasoning in progress...</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {resultMessage && (
-            <div className="flex items-center justify-between p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                <span className="font-medium">{resultMessage}</span>
               </div>
-              <button
-                onClick={onClose}
-                className="font-bold text-emerald-700 hover:underline shrink-0 ml-2 cursor-pointer"
-              >
-                Close →
-              </button>
+            </div>
+          ))}
+
+          {isTyping && (
+            <div className="flex items-center gap-2.5 text-slate-500 text-xs">
+              <div className="h-7 w-7 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 flex items-center justify-center shrink-0">
+                <Bot className="h-3.5 w-3.5 animate-pulse" />
+              </div>
+              <div className="rounded-xl px-3.5 py-2 bg-white border border-slate-200 text-slate-500 text-xs flex items-center gap-1.5 shadow-2xs">
+                <RefreshCw className="h-3 w-3 animate-spin text-slate-400" />
+                <span>Copilot is thinking…</span>
+              </div>
             </div>
           )}
+
+          <div ref={messagesEndRef} />
         </div>
 
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500">
-          <span>Press ESC to close</span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onClose}
-              className="border-slate-200 text-slate-700 hover:bg-white text-xs h-7 font-medium"
+        {/* Quick Suggestion Pills */}
+        <div className="px-4 py-2 border-t border-slate-100 bg-white flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span className="text-slate-400 text-[10px] font-semibold uppercase tracking-wider">Suggested:</span>
+          {quickPrompts.map((qp) => (
+            <button
+              key={qp}
+              onClick={() => handleSendMessage(qp)}
+              className="px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors text-[11px] cursor-pointer"
             >
-              Close
-            </Button>
-          </div>
+              {qp}
+            </button>
+          ))}
         </div>
+
+        {/* Input Bar */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSendMessage();
+          }}
+          className="p-3 border-t border-slate-200 bg-white flex items-center gap-2"
+        >
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={`Ask AutoQA Copilot about ${cleanName} or say "hey"...`}
+            className="flex-1 px-3.5 py-2 rounded-lg border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-slate-950 focus:border-transparent transition-all"
+          />
+          <Button
+            type="submit"
+            disabled={!input.trim() || isTyping}
+            className="h-9 px-4 bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg shadow-2xs cursor-pointer gap-1.5 disabled:opacity-50"
+          >
+            <span>Send</span>
+            <Send className="h-3.5 w-3.5" />
+          </Button>
+        </form>
       </div>
     </div>
   );

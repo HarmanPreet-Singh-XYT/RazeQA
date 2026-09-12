@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Layers,
   Search,
@@ -26,6 +27,8 @@ import {
   FileCode2,
   RefreshCw,
   GitCommit,
+  BarChart3,
+  Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDashboard } from "@/components/dashboard-context";
@@ -59,6 +62,7 @@ export type TestRunRecord = {
 };
 
 export function RunsClient({ userEmail }: { userEmail: string }) {
+  const router = useRouter();
   const { activeRepo } = useDashboard();
   const [runs, setRuns] = useState<TestRunRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -207,19 +211,6 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
               </>
             )}
           </Button>
-
-          <Link
-            href="/dashboard"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white hover:bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 transition-colors shadow-2xs"
-          >
-            <span>Overview</span>
-          </Link>
-          <Link
-            href="/dashboard/tools"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white hover:bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 transition-colors shadow-2xs"
-          >
-            <span>User Journeys</span>
-          </Link>
         </div>
       </div>
 
@@ -295,7 +286,8 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
               return (
                 <div
                   key={run.id}
-                  className="p-4 hover:bg-slate-50/80 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4 group"
+                  onClick={() => router.push(`/dashboard/runs/${encodeURIComponent(run.id)}/analytics`)}
+                  className="p-4 hover:bg-slate-50/90 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 group cursor-pointer border-l-4 border-l-transparent hover:border-l-indigo-600"
                 >
                   {/* Run Information */}
                   <div className="space-y-1.5 min-w-0 flex-1">
@@ -325,8 +317,14 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
                       </span>
 
                       {/* Commit Message */}
-                      <span className="font-semibold text-xs text-slate-900 truncate max-w-md">
+                      <span className="font-semibold text-xs text-slate-900 group-hover:text-indigo-600 transition-colors truncate max-w-md">
                         {run.commitMsg}
+                      </span>
+
+                      {/* 30-Dimension Audit Pill */}
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono bg-indigo-50 border border-indigo-200 text-indigo-700 font-semibold">
+                        <Activity className="h-2.5 w-2.5 text-indigo-600" />
+                        <span>30-Dimension Audit</span>
                       </span>
 
                       {/* Pull Request Badge */}
@@ -335,6 +333,7 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
                           href={run.prUrl || `https://github.com/${activeRepo || "HarmanPreet-Singh-XYT/pingroute-web"}/pull/${run.prNumber}`}
                           target="_blank"
                           rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-100 border border-slate-200 text-slate-700 hover:text-slate-950 transition-colors font-semibold"
                         >
                           <GitPullRequest className="h-2.5 w-2.5 text-emerald-600" />
@@ -359,25 +358,40 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
                       <span>{run.duration}</span>
                       <span>·</span>
                       <span>{run.date} by {run.author}</span>
+                      <span>·</span>
+                      <span className="text-indigo-600 font-sans font-medium flex items-center gap-0.5 group-hover:underline">
+                        <span>Open Analytics Page</span>
+                        <ArrowUpRight className="h-3 w-3" />
+                      </span>
                     </div>
                   </div>
 
                   {/* Right Actions */}
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <Link
+                      href={`/dashboard/runs/${encodeURIComponent(run.id)}/analytics`}
+                      className="flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors shadow-2xs cursor-pointer"
+                    >
+                      <BarChart3 className="h-3.5 w-3.5 text-indigo-600" />
+                      <span>Analytics &amp; Graphs</span>
+                    </Link>
+
                     <button
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.stopPropagation();
                         setSelectedRun(run);
                         setIsForensicsOpen(true);
                       }}
                       className="flex items-center gap-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors shadow-2xs cursor-pointer"
                     >
                       <Video className="h-3.5 w-3.5 text-slate-700" />
-                      <span>Replay &amp; Forensics</span>
+                      <span>Replay &amp; Logs</span>
                     </button>
 
                     {isFailed && (
                       <button
-                        onClick={() => {
+                        onClick={(e) => {
+                          e.stopPropagation();
                           setSelectedRun(run);
                           setIsForensicsOpen(true);
                         }}
@@ -397,7 +411,7 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
 
       {/* Forensic Inspection Modal */}
       {isForensicsOpen && selectedRun && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-xs p-4 animate-in fade-in-50">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 backdrop-blur-xs p-4 animate-in fade-in-50">
           <div className="w-full max-w-3xl rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             {/* Modal Header */}
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 bg-slate-50/70">

@@ -3,12 +3,16 @@
 Inspects package manifests (package.json, lockfiles, etc.) to deduce
 the web framework, package manager, build/start commands, and runtime port.
 Synthesizes a minimal production-ready Dockerfile when one does not exist.
+
+Also handles monorepo delegation patterns where the root package.json
+delegates build/start to a subdirectory (e.g. `npm --prefix web run build`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +29,48 @@ class ProjectConfig:
     port: int
     has_custom_dockerfile: bool = False
     dockerfile_content: str | None = None
+
+
+_PREFIX_RE = re.compile(r"npm\s+--prefix\s+(\S+)")
+
+
+def resolve_build_root(repo_dir: Path | str) -> Path:
+    """Returns the actual directory to use as the Docker build context.
+
+    Handles monorepo roots whose package.json delegates via
+    ``npm --prefix <subdir> run build`` — a common pattern for repos that
+    keep the web app in a subfolder (e.g. ``web/``). In that case the
+    subfolder is returned so the Docker build context contains the real
+    package.json, lockfiles, and source rather than the thin wrapper root.
+
+    Falls back to ``repo_dir`` itself when no delegation is detected.
+    """
+    root = Path(repo_dir).resolve()
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return root
+
+    try:
+        pkg: dict = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except Exception:
+        return root
+
+    scripts: dict = pkg.get("scripts", {})
+    build_script: str = scripts.get("build", "")
+
+    # Detect `npm --prefix <subdir> run build` delegation
+    m = _PREFIX_RE.search(build_script)
+    if m:
+        subdir = root / m.group(1)
+        if subdir.is_dir() and (subdir / "package.json").is_file():
+            logger.debug(
+                "Detected monorepo delegation: build context resolved to '%s' (from '%s')",
+                subdir,
+                root,
+            )
+            return subdir
+
+    return root
 
 
 def detect_project_config(repo_dir: Path | str) -> ProjectConfig:
@@ -140,13 +186,20 @@ def _synthesize_node_dockerfile(pm: str, build_cmd: str, start_cmd: str, port: i
 
     return f"""FROM node:20-alpine AS base
 WORKDIR /app
-ENV NODE_ENV=production
 ENV PORT={port}
 
-# Install dependencies
+# Install dependencies. NODE_ENV is deliberately NOT set to "production" here
+# — that would make npm skip devDependencies, which commonly hold build-time
+# tooling (e.g. @tailwindcss/postcss, TypeScript types) required by the build
+# step below, causing "Cannot find module" failures.
 COPY package*.json pnpm-lock.yaml* yarn.lock* bun.lock* ./
 RUN npm install -g pnpm yarn bun || true
 RUN {install_cmd} || npm install
+
+# Copy the rest of the source (app/pages, config, public assets, etc.) —
+# without this, the build step below only sees package.json and fails with
+# "Couldn't find any `pages` or `app` directory".
+COPY . .
 
 # Build. Deliberately NOT `|| true`: if the PR's code fails to build, the
 # image build must fail so the pipeline reports a clear build-failure result
@@ -154,6 +207,7 @@ RUN {install_cmd} || npm install
 # output from a prior successful layer.
 RUN {build_cmd}
 
+ENV NODE_ENV=production
 EXPOSE {port}
 CMD ["sh", "-c", "{start_cmd}"]
 """

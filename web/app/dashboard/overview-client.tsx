@@ -7,6 +7,7 @@ import {
   Activity,
   AlertCircle,
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Camera,
   Check,
@@ -335,6 +336,87 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto w-full animate-in fade-in-50 duration-200">
+      {/* Project Navigation & Context Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-2 border-b border-slate-200">
+        <div className="flex items-center gap-3">
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-950 transition-colors bg-white px-2.5 py-1.5 rounded-md border border-slate-200 shadow-2xs hover:bg-slate-50"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span>All Projects</span>
+          </Link>
+          <span className="text-slate-300">/</span>
+          <div className="flex items-center gap-2">
+            <div className={`h-7 w-7 rounded-lg flex items-center justify-center shrink-0 ${
+              activeRepoName.startsWith("external:")
+                ? "bg-sky-50 border border-sky-200 text-sky-600"
+                : "bg-slate-100 border border-slate-200 text-slate-700"
+            }`}>
+              {activeRepoName.startsWith("external:") ? (
+                <Globe className="h-4 w-4" />
+              ) : (
+                <GitBranch className="h-4 w-4" />
+              )}
+            </div>
+            <h1 className="text-sm font-bold text-slate-900">
+              {activeRepoName.startsWith("external:")
+                ? activeRepoName.replace("external:", "")
+                : (activeProject?.name || activeRepoName.split("/")[1] || activeRepoName)}
+            </h1>
+            {activeRepoName.startsWith("external:") && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">
+                External Site
+              </span>
+            )}
+          </div>
+          {activeProject?.domain && (
+            <a
+              href={activeProject.domain.startsWith("http") ? activeProject.domain : `https://${activeProject.domain}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hidden sm:flex items-center gap-1 text-xs text-slate-500 hover:text-slate-900 font-mono bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded transition-colors"
+            >
+              <span>{activeProject.domain}</span>
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          {activeRepoName.startsWith("external:") ? (
+            <a
+              href={activeProject?.domain || `https://${activeRepoName.replace("external:", "")}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-md border border-slate-200 bg-white hover:bg-slate-50 transition-colors shadow-2xs"
+            >
+              <Globe className="h-3.5 w-3.5 text-sky-600" />
+              <span className="font-mono text-[11px] truncate max-w-[200px]">
+                {activeProject?.domain || activeRepoName.replace("external:", "")}
+              </span>
+              <ExternalLink className="h-3 w-3 text-slate-400" />
+            </a>
+          ) : (
+            <a
+              href={`https://github.com/${activeRepoName}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-md border border-slate-200 bg-white hover:bg-slate-50 transition-colors shadow-2xs"
+            >
+              <GitBranch className="h-3.5 w-3.5 text-slate-500" />
+              <span className="font-mono text-[11px] truncate max-w-[180px]">{activeRepoName}</span>
+            </a>
+          )}
+          <Link
+            href="/dashboard/projects"
+            className="flex items-center gap-1 text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-md border border-slate-200 bg-white hover:bg-slate-50 transition-colors shadow-2xs"
+          >
+            <span>Settings</span>
+          </Link>
+        </div>
+      </div>
+
       {/* =========================================================================
           TIER 1: SYSTEM HEALTH & VERIFICATION SIGNALS
           ========================================================================= */}

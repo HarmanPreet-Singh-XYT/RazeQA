@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Globe, Play, RefreshCw, X, Shield, Sparkles, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useDashboard } from "@/components/dashboard-context";
 
 interface ExternalTestModalProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface ExternalTestModalProps {
 }
 
 export function ExternalTestModal({ isOpen, onClose, onSuccess }: ExternalTestModalProps) {
+  const { addExternalProject } = useDashboard();
   const [url, setUrl] = useState("https://example.com");
   const [testType, setTestType] = useState<"functional" | "functional+visual">("functional");
   const [routes, setRoutes] = useState("/");
@@ -51,6 +53,7 @@ export function ExternalTestModal({ isOpen, onClose, onSuccess }: ExternalTestMo
         throw new Error(data.error || "Failed to enqueue verification run.");
       }
 
+      addExternalProject(url.trim());
       onSuccess?.(data);
       onClose();
     } catch (err: any) {

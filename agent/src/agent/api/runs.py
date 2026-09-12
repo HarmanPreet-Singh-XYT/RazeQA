@@ -16,6 +16,33 @@ logger = logging.getLogger("agent.api.runs")
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
+def _normalize_artifact_urls(data: dict) -> dict:
+    """Converts local filesystem paths for video_url / trace_url stored in a run
+    record into browser-fetchable /artifacts/runs/... API URLs. The pipeline
+    stores raw local paths in the DB; the API must translate them before
+    sending to the client so the video player and trace download links work."""
+    from agent.api.artifacts import to_artifact_url
+
+    for field in ("video_url", "trace_url"):
+        val = data.get(field)
+        if val and not val.startswith("http") and not val.startswith("/artifacts"):
+            converted = to_artifact_url(val)
+            if converted:
+                data[field] = converted
+
+    # Also normalize artifact URLs nested inside the result payload
+    result = data.get("result")
+    if isinstance(result, dict):
+        for field in ("video_url", "trace_url"):
+            val = result.get(field)
+            if val and not val.startswith("http") and not val.startswith("/artifacts"):
+                converted = to_artifact_url(val)
+                if converted:
+                    result[field] = converted
+
+    return data
+
+
 class RunRequest(BaseModel):
     branch: str
     sha: str
@@ -340,7 +367,7 @@ async def get_run(run_id: str) -> dict[str, Any]:
     record = store.get(run_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-    return record.model_dump()
+    return _normalize_artifact_urls(record.model_dump())
 
 
 @router.get("")
@@ -351,7 +378,7 @@ async def list_runs(
 ) -> list[dict[str, Any]]:
     store = _active_store()
     records = store.list_all(branch=branch, sha=sha, repo=repo)
-    return [r.model_dump() for r in records]
+    return [_normalize_artifact_urls(r.model_dump()) for r in records]
 
 
 @router.post("/{run_id}/apply")

@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  Compass,
   Copy,
   Cpu,
   Database,
@@ -19,6 +20,7 @@ import {
   Eye,
   EyeOff,
   GitBranch,
+  Globe,
   History,
   KeyRound,
   Layers,
@@ -43,7 +45,8 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useDashboard } from "@/components/dashboard-context";
+import { useDashboard, ProjectInfo } from "@/components/dashboard-context";
+import { ExternalProjectSettings } from "./external-project-settings";
 
 function GithubIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
@@ -75,6 +78,11 @@ type AutoRepairSettings = {
   env_vars?: Record<string, string>;
 };
 
+type TestingSettings = {
+  testing_instructions: string;
+  enable_login_flow?: boolean;
+};
+
 type ProjectSettings = {
   framework: string;
   package_manager: string;
@@ -86,6 +94,7 @@ type ProjectSettings = {
   enable_on_push: boolean;
   enable_on_pr: boolean;
   auto_repair?: AutoRepairSettings;
+  testing?: TestingSettings;
   roles: {
     user: RoleCredential;
     admin: RoleCredential;
@@ -140,6 +149,7 @@ export default function ProjectsClient() {
     activeRepo: dashboardActiveRepo,
     setActiveRepo: setDashboardActiveRepo,
     refreshProjects: refreshDashboardProjects,
+    projects: dashboardProjects,
   } = useDashboard();
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(
@@ -171,6 +181,13 @@ export default function ProjectsClient() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Sync with dashboardActiveRepo
+  useEffect(() => {
+    if (dashboardActiveRepo) {
+      setSelectedRepo(dashboardActiveRepo);
+    }
+  }, [dashboardActiveRepo]);
+
   // Modals & dropdowns
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const [isAddRepoModalOpen, setIsAddRepoModalOpen] = useState(false);
@@ -200,6 +217,10 @@ export default function ProjectsClient() {
       custom_instructions: "",
       model_name: "anthropic/claude-sonnet-4.6",
       env_vars: {},
+    },
+    testing: {
+      testing_instructions: "",
+      enable_login_flow: true,
     },
     roles: {
       user: { email: "" },
@@ -253,12 +274,16 @@ export default function ProjectsClient() {
           const data = await res.json();
           if (data.projects && data.projects.length > 0) {
             setProjects(data.projects);
-            const initialRepo = dashboardActiveRepo
-              ? data.projects.find((p: any) => p.repo_full_name === dashboardActiveRepo) || data.projects[0]
-              : data.projects[0];
-            setSelectedRepo(initialRepo.repo_full_name);
-            if (initialRepo.settings) {
-              setSettings((prev) => ({ ...prev, ...initialRepo.settings }));
+            if (!dashboardActiveRepo) {
+              setSelectedRepo(data.projects[0].repo_full_name);
+              if (data.projects[0].settings) {
+                setSettings((prev) => ({ ...prev, ...data.projects[0].settings }));
+              }
+            } else if (!dashboardActiveRepo.startsWith("external:")) {
+              const matched = data.projects.find((p: any) => p.repo_full_name === dashboardActiveRepo);
+              if (matched && matched.settings) {
+                setSettings((prev) => ({ ...prev, ...matched.settings }));
+              }
             }
           }
         }
@@ -563,6 +588,23 @@ export default function ProjectsClient() {
   const showAutoRepair = activeTab === "all" || activeTab === "auto-repair";
   const showEnvVars = activeTab === "all" || activeTab === "env-vars";
   const showRunsCache = activeTab === "all" || activeTab === "runs";
+  // Check if currently selected project is an External Website
+  const isExternal = Boolean(selectedRepo?.startsWith("external:"));
+
+  if (isExternal) {
+    return (
+      <ExternalProjectSettings
+        selectedRepo={selectedRepo}
+        allProjects={dashboardProjects}
+        onSelectProject={(repo) => {
+          setSelectedRepo(repo);
+          setDashboardActiveRepo(repo);
+        }}
+        activeTab={activeTab}
+        onTabChange={(tab) => handleTabChange(tab as any)}
+      />
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto w-full p-4 sm:p-6 lg:p-8 space-y-6 text-slate-900 animate-in fade-in-50 duration-200">
@@ -590,26 +632,40 @@ export default function ProjectsClient() {
               {isRepoDropdownOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setIsRepoDropdownOpen(false)} />
-                  <div className="absolute left-0 mt-1.5 w-64 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl z-50 animate-in fade-in-50 zoom-in-95 text-xs">
+                  <div className="absolute left-0 mt-1.5 w-72 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl z-50 animate-in fade-in-50 zoom-in-95 text-xs">
                     <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Switch Repository
+                      Switch Project
                     </div>
-                    <div className="max-h-48 overflow-y-auto space-y-0.5">
-                      {projects.map((p) => (
-                        <button
-                          key={p.repo_full_name}
-                          type="button"
-                          onClick={() => handleSelectRepo(p)}
-                          className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
-                            selectedRepo === p.repo_full_name
-                              ? "bg-emerald-50 text-emerald-800 font-bold"
-                              : "text-slate-700 hover:bg-slate-100"
-                          }`}
-                        >
-                          <span className="truncate">{p.repo_full_name}</span>
-                          {selectedRepo === p.repo_full_name && <Check className="h-3.5 w-3.5 text-emerald-600" />}
-                        </button>
-                      ))}
+                    <div className="max-h-56 overflow-y-auto space-y-0.5">
+                      {dashboardProjects.map((p) => {
+                        const isExt = p.type === "external" || p.repo_full_name.startsWith("external:");
+                        return (
+                          <button
+                            key={p.repo_full_name}
+                            type="button"
+                            onClick={() => {
+                              setSelectedRepo(p.repo_full_name);
+                              setDashboardActiveRepo(p.repo_full_name);
+                              setIsRepoDropdownOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
+                              selectedRepo === p.repo_full_name
+                                ? "bg-emerald-50 text-emerald-800 font-bold"
+                                : "text-slate-700 hover:bg-slate-100"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 truncate">
+                              {isExt ? (
+                                <Globe className="h-3.5 w-3.5 text-sky-600 shrink-0" />
+                              ) : (
+                                <GitBranch className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+                              )}
+                              <span className="truncate">{p.name || p.repo_full_name}</span>
+                            </div>
+                            {selectedRepo === p.repo_full_name && <Check className="h-3.5 w-3.5 text-emerald-600" />}
+                          </button>
+                        );
+                      })}
                     </div>
                     <div className="pt-1.5 mt-1 border-t border-slate-100">
                       <button
@@ -1606,6 +1662,68 @@ export default function ProjectsClient() {
               )}
             </div>
           )}
+
+          {/* 7b. Autonomous Exploration & Scope Planning Instructions Card */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-950 flex items-center gap-2">
+                  <Compass className="h-4 w-4 text-indigo-600" />
+                  Autonomous Exploration &amp; Testing Instructions
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Direct the mini-swe-agent scope planner on what matters most to test across your application surfaces.
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-900 block mb-1">
+                Testing Instructions
+              </label>
+              <textarea
+                rows={3}
+                value={settings.testing?.testing_instructions || ""}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    testing: {
+                      ...(settings.testing || { testing_instructions: "" }),
+                      testing_instructions: e.target.value,
+                    },
+                  })
+                }
+                placeholder="Tell the agent what matters most to test (e.g. 'focus on checkout and account settings', 'skip the marketing pages')."
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+              />
+              <p className="text-[10px] text-slate-500 mt-0.5">
+                Tell the agent what matters most to test (e.g. 'focus on checkout and account settings', 'skip the marketing pages').
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+              <div>
+                <span className="text-xs font-semibold text-slate-800 block">Include Authentication / Login Journey</span>
+                <p className="text-[10px] text-slate-500">
+                  When enabled and test credentials exist, logs in before exploring pages. Uncheck if the app has no authentication or you only want unauthenticated testing.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.testing?.enable_login_flow ?? true}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    testing: {
+                      ...(settings.testing || { testing_instructions: "" }),
+                      enable_login_flow: e.target.checked,
+                    },
+                  })
+                }
+                className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+              />
+            </div>
+          </div>
 
           {/* 8. Custom Sandbox Environment Variables Card */}
           {showEnvVars && (

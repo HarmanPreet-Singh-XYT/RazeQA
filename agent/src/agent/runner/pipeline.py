@@ -19,6 +19,7 @@ from agent.bridge.models import IntentEvent
 from agent.db.supabase import default_run_store
 from agent.github.app import GitHubAppClient, GitHubNotConfiguredError
 from agent.journeys.login import run_login_journey
+from agent.journeys.scope_planner import PlannedRoute, ScopePlanner, TestingConfig
 from agent.remediation.agentic_repair import AgenticRepairEngine, AutoRepairConfig
 from agent.remediation.fix_synthesizer import FilePatch, FixProposal, FixSynthesizer, apply_patch_to_text
 from agent.remediation.formatter import (
@@ -26,7 +27,7 @@ from agent.remediation.formatter import (
     generate_remediation_markdown,
 )
 from agent.sandbox.checkout import CheckoutError, checkout_worktree
-from agent.sandbox.docker_sandbox import SandboxBootError, build_image, run_sandbox
+from agent.sandbox.docker_sandbox import SandboxBootError, run_sandbox
 
 logger = logging.getLogger("agent.runner.pipeline")
 ARTIFACTS_BASE = Path(__file__).resolve().parents[3] / "artifacts" / "runs"
@@ -132,22 +133,16 @@ def _sandbox_for_sha(repo_dir: Path, sha: str, image_tag: str, env: dict[str, st
         return
 
     with checkout_worktree(repo_dir, sha, WORKSPACES_BASE) as worktree_path:
-        build_image(worktree_path, image_tag)
-        try:
-            with run_sandbox(image_tag, env=env) as handle:
+        with run_sandbox(worktree_path, image_tag, env=env) as handle:
+            if run_id:
+                from agent.runner.queue import default_job_queue
+                default_job_queue.register_container(run_id, handle.container_name)
+            try:
+                yield SandboxInfo(base_url=handle.base_url, worktree_path=worktree_path)
+            finally:
                 if run_id:
                     from agent.runner.queue import default_job_queue
-                    default_job_queue.register_container(run_id, handle.container_name)
-                try:
-                    yield SandboxInfo(base_url=handle.base_url, worktree_path=worktree_path)
-                finally:
-                    if run_id:
-                        from agent.runner.queue import default_job_queue
-                        default_job_queue.unregister_container(run_id)
-        finally:
-            if os.environ.get("KEEP_SANDBOX_IMAGES", "false").lower() not in ("true", "1"):
-                from agent.sandbox.docker_sandbox import remove_image
-                remove_image(image_tag)
+                    default_job_queue.unregister_container(run_id)
 
 
 class GitDiffError(RuntimeError):
@@ -296,11 +291,12 @@ async def _run_journeys(
     run_id: str | None = None,
     auto_repair_config: AutoRepairConfig | None = None,
     source_root: Path | None = None,
+    testing_config: TestingConfig | None = None,
+    discovered_routes: list[str] | None = None,
+    git_diff: str = "",
 ) -> dict[str, Any]:
-    """Runs the seeded login journey followed by exploratory journeys against
-    `base_url`, returning collected results. Shared between the PR-branch run
-    and (when refreshing the baseline) the base-branch run, so both use the
-    exact same journey logic against their own isolated sandbox."""
+    """Runs discovered route validation, login (if present), and autonomous exploratory
+    journeys against `base_url`, returning collected results."""
     passed_journeys: list[str] = []
     failed_journeys: list[dict[str, Any]] = []
     additional_findings: list[str] = []
@@ -309,79 +305,164 @@ async def _run_journeys(
     fix_proposals: list[FixProposal] = []
     suggested_fixes: list[dict[str, Any]] = []
 
-    custom_secrets = [s for s in (test_user_email, test_user_password) if s]
+    target_source_root = source_root or APP_REPO_DIR
 
+    # 1. Route Discovery: Static, from source if not already provided
+    if discovered_routes is None:
+        from agent.analyzer.dependency_graph import DependencyGraph
+
+        dep_graph = DependencyGraph(target_source_root)
+        discovered_routes = dep_graph.discover_all_routes()
+
+    custom_secrets = [s for s in (test_user_email, test_user_password) if s]
     fix_synthesizer = FixSynthesizer()
 
-    login_result = await asyncio.to_thread(
-        run_login_journey,
-        base_url=base_url,
-        email=test_user_email,
-        password=test_user_password,
-        artifacts_dir=artifacts_dir,
+    # 2. Login-route detection: only run login journey if:
+    #    a) An auth/login route exists in discovered routes
+    #    b) Valid auth credentials (email and password) are provided
+    #    c) The user wants the login flow (enable_login_flow=True and not instructed to skip)
+    login_candidate_suffixes = ("/login", "/signin", "/sign-in", "/auth")
+    has_login_route = any(
+        r in ("/login", "/signin", "/sign-in", "/auth")
+        or any(r.rstrip("/").endswith(s) for s in login_candidate_suffixes)
+        for r in (discovered_routes or [])
     )
 
-    raw_journeys.append({"name": "login", "passed": login_result.passed, "error": login_result.error})
+    has_auth_details = bool(
+        test_user_email and test_user_password and test_user_email.strip() and test_user_password.strip()
+    )
 
-    if login_result.passed:
-        passed_journeys.append("login")
+    instructions_text = (testing_config.testing_instructions if testing_config else "").lower()
+    instructions_ask_skip_login = bool(
+        re.search(
+            r"\b(?:skip|no|disable|without|don'?t(?:\s+need)?|ignore)\s+(?:login|auth|authentication|signin|sign-in)\b",
+            instructions_text,
+        )
+    )
+
+    user_wants_login = (
+        (testing_config.enable_login_flow if testing_config is not None else True)
+        and not instructions_ask_skip_login
+    )
+
+    should_run_login = has_login_route and has_auth_details and user_wants_login
+
+    login_result = None
+    if should_run_login:
+        login_result = await asyncio.to_thread(
+            run_login_journey,
+            base_url=base_url,
+            email=test_user_email,
+            password=test_user_password,
+            artifacts_dir=artifacts_dir,
+        )
+
+        raw_journeys.append({"name": "login", "passed": login_result.passed, "error": login_result.error})
+
+        if login_result.passed:
+            passed_journeys.append("login")
+        else:
+            login_err = login_result.error or "Login verification failed"
+            failed_journeys.append({
+                "name": "login",
+                "error": login_err,
+                "severity": "Critical",
+                "domain": "Authentication",
+            })
+            login_proposal = await _synthesize_or_repair(
+                journey_name="login",
+                error=login_err,
+                analysis=analysis,
+                intents=intents,
+                source_root=target_source_root,
+                custom_secrets=custom_secrets,
+                fix_synthesizer=fix_synthesizer,
+                auto_repair_config=auto_repair_config,
+            )
+            if login_proposal and (login_proposal.patches or login_proposal.unified_diff):
+                fix_proposals.append(login_proposal)
+                for p in login_proposal.patches:
+                    suggested_fixes.append(p.model_dump())
+
+            login_video_url = _artifact_url_for_file(login_result.video_path, run_id, "video")
+            login_trace_url = _artifact_url_for_file(login_result.trace_path, run_id, "traces")
+
+            prompt = generate_remediation_markdown(
+                journey_name="login",
+                error=login_err,
+                analysis=analysis,
+                intents=intents,
+                trace_path=login_trace_url or (str(login_result.trace_path) if login_result.trace_path else None),
+                video_path=login_video_url or (str(login_result.video_path) if login_result.video_path else None),
+                severity="Critical",
+                domain="Authentication",
+                fix_proposal=login_proposal,
+                custom_secrets=custom_secrets,
+            )
+            remediation_prompts.append(prompt)
     else:
-        login_err = login_result.error or "Login verification failed"
-        failed_journeys.append({
-            "name": "login",
-            "error": login_err,
-            "severity": "Critical",
-            "domain": "Authentication",
-        })
-        login_proposal = await _synthesize_or_repair(
-            journey_name="login",
-            error=login_err,
-            analysis=analysis,
-            intents=intents,
-            source_root=source_root or APP_REPO_DIR,
-            custom_secrets=custom_secrets,
-            fix_synthesizer=fix_synthesizer,
-            auto_repair_config=auto_repair_config,
-        )
-        if login_proposal and (login_proposal.patches or login_proposal.unified_diff):
-            fix_proposals.append(login_proposal)
-            for p in login_proposal.patches:
-                suggested_fixes.append(p.model_dump())
+        reasons = []
+        if not has_login_route:
+            reasons.append("no login/auth route in discovered static routes")
+        if not has_auth_details:
+            reasons.append("no auth credentials (email/password) provided")
+        if not user_wants_login:
+            if instructions_ask_skip_login:
+                reasons.append("testing instructions requested skipping login flow")
+            else:
+                reasons.append("login flow disabled in configuration")
 
-        login_video_url = _artifact_url_for_file(login_result.video_path, run_id, "video")
-        login_trace_url = _artifact_url_for_file(login_result.trace_path, run_id, "traces")
-
-        prompt = generate_remediation_markdown(
-            journey_name="login",
-            error=login_err,
-            analysis=analysis,
-            intents=intents,
-            trace_path=login_trace_url or (str(login_result.trace_path) if login_result.trace_path else None),
-            video_path=login_video_url or (str(login_result.video_path) if login_result.video_path else None),
-            severity="Critical",
-            domain="Authentication",
-            fix_proposal=login_proposal,
-            custom_secrets=custom_secrets,
+        logger.info(
+            "Skipping login journey entirely to prevent spurious errors (%s). Discovered routes: %s",
+            ", ".join(reasons),
+            discovered_routes,
         )
-        remediation_prompts.append(prompt)
 
     from agent.journeys.browser_agent import run_route_journey
 
-    storage_state_path = login_result.storage_state_path
+    storage_state_path = login_result.storage_state_path if login_result else None
     journey_artifacts: list[dict[str, Any]] = []
 
-    exploratory_routes: list[str] = []
-    for surf in analysis.affected_surfaces:
-        if surf.startswith("/") and surf not in ("/login", "/auth"):
-            if surf not in exploratory_routes:
-                exploratory_routes.append(surf)
-        elif "app/" in surf and "page.tsx" in surf:
-            parts = surf.split("app/")[-1].replace("/page.tsx", "").replace("page.tsx", "")
-            route = f"/{parts}".rstrip("/") or "/"
-            if route not in ("/login", "/auth") and route not in exploratory_routes:
-                exploratory_routes.append(route)
+    # 3. Scope decision: mini-swe-agent as the planner
+    planner = ScopePlanner(config=testing_config)
+    planned_routes: list[PlannedRoute] = []
+    try:
+        plan_res = await asyncio.to_thread(
+            planner.plan_test_scope,
+            workspace_dir=target_source_root,
+            discovered_routes=discovered_routes or [],
+            analysis=analysis,
+            git_diff=git_diff,
+            custom_secrets=custom_secrets,
+        )
+        if plan_res.success and plan_res.planned_routes:
+            planned_routes = plan_res.planned_routes
+            logger.info("Scope planner planned %d routes: %s", len(planned_routes), [p.route for p in planned_routes])
+    except Exception as exc:
+        logger.warning("Scope planning encountered error; will fallback to diff-derived routes: %s", exc)
 
-    for route in exploratory_routes:
+    # Fallback to diff-derived exploratory routes if scope planner produced no routes or was unavailable
+    if not planned_routes:
+        fallback_routes: list[str] = []
+        if analysis and analysis.affected_surfaces:
+            for surf in analysis.affected_surfaces:
+                if surf.startswith("/") and surf not in ("/login", "/auth"):
+                    if surf not in fallback_routes:
+                        fallback_routes.append(surf)
+                elif "app/" in surf and "page.tsx" in surf:
+                    parts = surf.split("app/")[-1].replace("/page.tsx", "").replace("page.tsx", "")
+                    route = f"/{parts}".rstrip("/") or "/"
+                    if route not in ("/login", "/auth") and route not in fallback_routes:
+                        fallback_routes.append(route)
+        if not fallback_routes and discovered_routes and "/" in discovered_routes:
+            fallback_routes.append("/")
+        planned_routes = [PlannedRoute(route=r, focus="diff-derived verification") for r in fallback_routes]
+        logger.info("Using fallback exploratory routes (%d): %s", len(planned_routes), [p.route for p in planned_routes])
+
+    for p_route in planned_routes:
+        route = p_route.route
+        focus = p_route.focus
+        logger.info("Executing exploratory journey for route %s (focus: %s)", route, focus)
         exp_res = await asyncio.to_thread(
             run_route_journey,
             route=route,
@@ -389,7 +470,7 @@ async def _run_journeys(
             artifacts_dir=artifacts_dir,
             test_type=test_type,
             storage_state=storage_state_path,
-            risk_tag=analysis.risk_tag,
+            risk_tag=analysis.risk_tag if analysis else "",
         )
         j_name = exp_res.get("name", f"exploratory:{route}")
         passed = exp_res.get("passed", False)
@@ -657,8 +738,11 @@ async def _run_pipeline_inner(
 
     dep_graph = DependencyGraph(APP_REPO_DIR)
     downstream_surfaces = dep_graph.find_affected_routes(changed_files)
+    discovered_routes = dep_graph.discover_all_routes()
     if downstream_surfaces:
         logger.info("Dependency graph found %d downstream route(s): %s", len(downstream_surfaces), downstream_surfaces)
+    if discovered_routes:
+        logger.info("Discovered %d static route(s): %s", len(discovered_routes), discovered_routes)
 
     analyzer = DiffAnalyzer()
     analysis: AnalysisResult = analyzer.analyze(diff, intents, downstream_surfaces=downstream_surfaces)
@@ -668,6 +752,11 @@ async def _run_pipeline_inner(
     # 4. Execute Browser Journeys inside an isolated, resource-constrained
     # sandbox built from the exact SHA under test (never the host's own
     # possibly-stale localhost:3000).
+    #
+    # repo_dir_for_checkout: for real GitHub projects we need a LOCAL clone of
+    # the target repo (not the agent's own codebase) so that `git worktree`
+    # checks out the correct code. For local/dev runs we fall back to
+    # APP_REPO_DIR (the mounted web/ directory).
     repo_dir_for_checkout = APP_REPO_DIR
     image_tag = f"pr-testing-sandbox:{_sanitize_path_component(branch)}-{sha[:12]}"
     sandbox_env = {
@@ -684,6 +773,41 @@ async def _run_pipeline_inner(
             return {"status": "superseded", "error": "Run was superseded by a newer commit"}
 
         project_rec = default_project_registry.get_by_repo(f"{owner}/{repo}") or default_project_registry.get_by_repo(repo)
+
+        # Resolve the checkout directory: for real GitHub repos (owner != "local"),
+        # clone the target repo locally so we test *its* code, not the agent's own.
+        is_real_github_repo = owner not in ("local", "default", "") and repo not in ("default", "web", "")
+        if is_real_github_repo:
+            try:
+                from agent.sandbox.clone import CloneError, ensure_clone
+                github_token: str | None = None
+                try:
+                    from agent.github.app import GitHubAppClient as _GAC
+                    _gc = _GAC()
+                    github_token = _gc.token
+                    if not github_token and installation_id:
+                        github_token = await asyncio.to_thread(_gc.get_installation_token, installation_id)
+                except Exception:
+                    pass
+                clone_path = await asyncio.to_thread(ensure_clone, owner, repo, github_token)
+                repo_dir_for_checkout = clone_path
+                logger.info(
+                    "Using cloned repo for checkout: %s/%s -> %s",
+                    owner, repo, clone_path,
+                )
+            except CloneError as exc:
+                logger.error(
+                    "Failed to clone %s/%s — cannot test: %s. "
+                    "Ensure the repo is public or the GitHub App is installed on it.",
+                    owner, repo, exc,
+                )
+                default_run_store.update(
+                    run_id=record.run_id,
+                    status="failed",
+                    result={"status": "error", "error": f"Could not clone repository {owner}/{repo}: {exc}"},
+                    completed=True,
+                )
+                raise
         project_settings = (project_rec.settings if project_rec else {}) or {}
         auto_repair_raw = project_settings.get("auto_repair", {})
         auto_repair_config = AutoRepairConfig(
@@ -699,7 +823,26 @@ async def _run_pipeline_inner(
             env_vars=auto_repair_raw.get("env_vars", {}),
         )
 
+        testing_raw = project_settings.get("testing", {})
+        testing_config = TestingConfig(
+            testing_instructions=testing_raw.get(
+                "testing_instructions",
+                project_settings.get("testing_instructions", ""),
+            ),
+            enable_login_flow=bool(
+                testing_raw.get("enable_login_flow", project_settings.get("enable_login_flow", True))
+            ),
+            max_routes=int(testing_raw.get("max_routes", 15)),
+            model_name=testing_raw.get("model_name"),
+        )
+
         with _sandbox_for_sha(repo_dir_for_checkout, sha, image_tag, sandbox_env, run_id=record.run_id if record else None) as sandbox_info:
+            active_source_root = getattr(sandbox_info, "worktree_path", None) or repo_dir_for_checkout
+            active_discovered_routes = discovered_routes
+            if active_source_root and active_source_root != APP_REPO_DIR:
+                dep_graph_active = DependencyGraph(active_source_root)
+                active_discovered_routes = dep_graph_active.discover_all_routes() or discovered_routes
+
             journeys = await _run_journeys(
                 base_url=str(sandbox_info),
                 test_user_email=test_user_email,
@@ -710,7 +853,10 @@ async def _run_pipeline_inner(
                 test_type=test_type,
                 run_id=record.run_id,
                 auto_repair_config=auto_repair_config,
-                source_root=getattr(sandbox_info, "worktree_path", None) or APP_REPO_DIR,
+                source_root=active_source_root,
+                testing_config=testing_config,
+                discovered_routes=active_discovered_routes,
+                git_diff=diff,
             )
         timing["journeys_duration_s"] = round(time.monotonic() - t_journeys, 3)
     except (CheckoutError, SandboxBootError) as exc:
@@ -759,6 +905,12 @@ async def _run_pipeline_inner(
                 baseline_image_tag = f"pr-testing-sandbox:{safe_base_branch}-{base_sha[:12]}"
                 baseline_artifacts_dir = ARTIFACTS_BASE / f"{safe_base_branch}_{base_sha[:8]}_baseline"
                 with _sandbox_for_sha(repo_dir_for_checkout, base_sha, baseline_image_tag, sandbox_env) as baseline_info:
+                    base_active_source = getattr(baseline_info, "worktree_path", None) or repo_dir_for_checkout
+                    base_discovered_routes = discovered_routes
+                    if base_active_source and base_active_source != APP_REPO_DIR:
+                        dep_graph_base = DependencyGraph(base_active_source)
+                        base_discovered_routes = dep_graph_base.discover_all_routes() or discovered_routes
+
                     baseline_journeys = await _run_journeys(
                         base_url=str(baseline_info),
                         test_user_email=test_user_email,
@@ -768,7 +920,11 @@ async def _run_pipeline_inner(
                         intents=[],
                         test_type=test_type,
                         run_id=f"{record.run_id}_baseline",
-                        source_root=getattr(baseline_info, "worktree_path", None) or APP_REPO_DIR,
+                        auto_repair_config=auto_repair_config,
+                        source_root=base_active_source,
+                        testing_config=testing_config,
+                        discovered_routes=base_discovered_routes,
+                        git_diff=diff,
                     )
                 default_baseline_store.update_baseline_from_run(repo=repo, journeys=baseline_journeys["raw_journeys"])
                 logger.info("Refreshed baseline for repo '%s' from live %s run (%d journeys)", repo, base_branch, len(baseline_journeys["raw_journeys"]))
@@ -784,16 +940,24 @@ async def _run_pipeline_inner(
     logger.info("Pipeline completed: overall_status=%s (new_regressions=%s)", overall_status, has_new_regressions)
 
     # 6. Update Run Record with persistent Supabase Storage artifact URLs
-    login_video_url = _artifact_url_for_file(login_result.video_path, record.run_id, "video")
-    login_trace_url = _artifact_url_for_file(login_result.trace_path, record.run_id, "traces")
+    login_video_url = (
+        _artifact_url_for_file(login_result.video_path, record.run_id, "video")
+        if login_result and login_result.video_path
+        else None
+    )
+    login_trace_url = (
+        _artifact_url_for_file(login_result.trace_path, record.run_id, "traces")
+        if login_result and login_result.trace_path
+        else None
+    )
 
-    journey_artifacts = [
-        {
+    journey_artifacts = []
+    if login_result:
+        journey_artifacts.append({
             "name": "login",
             "trace_url": login_trace_url,
             "video_url": login_video_url,
-        }
-    ]
+        })
     for ja in journeys["journey_artifacts"]:
         annotated_url = ja.get("annotated_screenshot_url") or _artifact_url_for_file(
             ja.get("annotated_screenshot_path"), record.run_id, "screenshots"
@@ -816,7 +980,10 @@ async def _run_pipeline_inner(
     # Primary video & trace: prioritize the failing journey's recordings
     primary_video_url = login_video_url
     primary_trace_url = login_trace_url
-
+    if not primary_video_url and journeys["journey_artifacts"]:
+        primary_video_url = journeys["journey_artifacts"][0].get("video_url")
+    if not primary_trace_url and journeys["journey_artifacts"]:
+        primary_trace_url = journeys["journey_artifacts"][0].get("trace_url")
     primary_screenshot_url = None
     for ja in journeys["journey_artifacts"]:
         if any(fj["name"] == ja["name"] for fj in failed_journeys):

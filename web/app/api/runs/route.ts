@@ -100,15 +100,56 @@ export async function POST(request: Request) {
   }
   try {
     const body = await request.json();
-    if (!body.url) {
-      const git = getGitInfo();
-      if (!body.sha || body.sha === "HEAD") {
-        body.sha = git.sha;
-      }
-      if (!body.branch) {
-        body.branch = git.branch;
-      }
+
+    // Normalize: UI sends repo_full_name (e.g. "owner/repo"), Python expects "repo".
+    if (body.repo_full_name && !body.repo) {
+      body.repo = body.repo_full_name;
+      delete body.repo_full_name;
     }
+
+    if (!body.url) {
+      // For a real GitHub repo (contains "/"), resolve the latest SHA from
+      // the GitHub API so we test the actual repo's HEAD — NOT the local
+      // Next.js server git (which is this monorepo's SHA, unrelated to the
+      // selected project).
+      const repoFullName: string = body.repo || "";
+      const isGitHubRepo = repoFullName.includes("/") &&
+        !repoFullName.startsWith("local") &&
+        !repoFullName.startsWith("default");
+
+      if (isGitHubRepo && (!body.sha || body.sha === "HEAD")) {
+        const branch = body.branch || "main";
+        try {
+          const ghRes = await fetch(
+            `https://api.github.com/repos/${repoFullName}/commits/${branch}`,
+            {
+              headers: {
+                Accept: "application/vnd.github.sha",
+                ...(process.env.GITHUB_TOKEN
+                  ? { Authorization: `token ${process.env.GITHUB_TOKEN}` }
+                  : {}),
+              },
+              cache: "no-store",
+            }
+          );
+          if (ghRes.ok) {
+            body.sha = (await ghRes.text()).trim();
+          }
+        } catch {
+          // GitHub API unavailable — fall through to HEAD as a last resort
+        }
+      }
+
+      // Final fallback: use local git HEAD (only meaningful for local dev repos)
+      if (!body.sha || body.sha === "HEAD") {
+        const git = getGitInfo();
+        body.sha = git.sha;
+        if (!body.branch) body.branch = git.branch;
+      }
+
+      if (!body.branch) body.branch = "main";
+    }
+
     const targetEndpoint = body.url ? `${ENGINE_URL}/runs/external` : `${ENGINE_URL}/runs`;
     const res = await fetch(targetEndpoint, {
       method: "POST",

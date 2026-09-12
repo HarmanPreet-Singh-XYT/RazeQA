@@ -1,6 +1,40 @@
 """Tests for Multi-Model Routing via AWS Strands Agents SDK."""
 
+import os
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+# Env vars that determine provider routing in agent.models.factory
+# (get_active_provider_for_role). Tests in this file assert the "neither
+# key present" fallback routing (code/nav -> anthropic, visual -> gemini),
+# so they need a clean slate regardless of what real credentials happen to
+# be loaded into the process environment — e.g. importing
+# agent.remediation.agentic_repair (mini-swe-agent) elsewhere in the test
+# session triggers agent.config's load_dotenv(agent/.env), which injects
+# any real GEMINI_API_KEY/DEFAULT_AI_PROVIDER found there permanently into
+# os.environ for the rest of the pytest process.
+_PROVIDER_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "DEFAULT_AI_PROVIDER",
+    "USE_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "ENABLE_MULTI_MODEL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_provider_env(monkeypatch):
+    """Ensures no provider credentials leak in from the real process
+    environment (see note above) so provider-routing fallback logic is
+    tested deterministically."""
+    for var in _PROVIDER_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
 
 from strands import Agent
 from strands.models.anthropic import AnthropicModel
