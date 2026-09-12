@@ -50,7 +50,7 @@ export default function ToolsHubPage() {
           <div className="flex items-center gap-3">
             <Link href="/" className="flex items-center gap-2 group">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-950 text-white font-mono font-bold text-xs shadow-xs group-hover:bg-slate-800 transition-colors">
-                PR
+                QA
               </div>
               <span className="font-bold text-slate-900 tracking-tight text-base">
                 AutoQA Platform
@@ -58,7 +58,7 @@ export default function ToolsHubPage() {
             </Link>
             <span className="text-slate-300">/</span>
             <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">
-              Developer Toolbox
+              Dev Tools Hub
             </span>
           </div>
 

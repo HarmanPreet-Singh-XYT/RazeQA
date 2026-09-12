@@ -178,7 +178,22 @@ class SupabaseRunStore:
             status="queued",
         )
         try:
-            payload = {
+            project_id = None
+            if repo and repo != "default":
+                try:
+                    proj_res = (
+                        self.client.table("projects")
+                        .select("id")
+                        .eq("repo_full_name", repo)
+                        .limit(1)
+                        .execute()
+                    )
+                    if proj_res.data:
+                        project_id = proj_res.data[0]["id"]
+                except Exception:
+                    pass
+
+            payload: dict[str, Any] = {
                 "id": record.run_id,
                 "branch": record.branch,
                 "sha": record.sha,
@@ -187,6 +202,8 @@ class SupabaseRunStore:
                 "status": record.status,
                 "created_at": record.created_at,
             }
+            if project_id:
+                payload["project_id"] = project_id
             self.client.table("runs").insert(payload).execute()
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to insert run into Supabase: %s", exc)
@@ -273,8 +290,20 @@ class SupabaseRunStore:
     ) -> list[RunRecord]:
         try:
             query = self.client.table("runs").select("*").order("created_at", desc=True)
-            if repo:
-                query = query.eq("repo", repo)
+            if repo and repo != "default":
+                try:
+                    proj_res = (
+                        self.client.table("projects")
+                        .select("id")
+                        .eq("repo_full_name", repo)
+                        .limit(1)
+                        .execute()
+                    )
+                    if proj_res.data:
+                        project_id = proj_res.data[0]["id"]
+                        query = query.or_(f"project_id.eq.{project_id},project_id.is.null")
+                except Exception as p_exc:
+                    logger.debug("Could not resolve project_id for repo %s: %s", repo, p_exc)
             if branch:
                 query = query.eq("branch", branch)
             if sha:
@@ -287,7 +316,7 @@ class SupabaseRunStore:
                 records.append(
                     RunRecord(
                         run_id=row["id"],
-                        repo=row.get("repo", "default"),
+                        repo=repo or row.get("repo", "default"),
                         branch=row["branch"],
                         sha=row["sha"],
                         scope=row["scope"],

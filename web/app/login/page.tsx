@@ -57,9 +57,10 @@ function GithubIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
-function AuthForm() {
+export function AuthForm({ initialTab = "login" }: { initialTab?: "login" | "register" }) {
   const searchParams = useSearchParams();
-  const initialMode = searchParams.get("tab") === "register" ? "register" : "login";
+  const tabParam = searchParams.get("tab");
+  const initialMode = tabParam === "register" || initialTab === "register" ? "register" : "login";
   const [mode, setMode] = useState<"login" | "register">(initialMode);
   const [oauthLoading, setOauthLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -326,6 +327,26 @@ function AuthForm() {
                 {!loginPending && <ArrowRight className="h-3.5 w-3.5" />}
               </Button>
             </form>
+          ) : registerState?.success ? (
+            /* Dedicated Post-Registration Check Email View */
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-6 text-center space-y-3 animate-in fade-in-50">
+              <div className="w-12 h-12 rounded-full bg-emerald-100 border border-emerald-200 text-emerald-700 flex items-center justify-center mx-auto shadow-2xs">
+                <Mail className="h-6 w-6" />
+              </div>
+              <h3 className="text-base font-bold text-slate-950">Check your email</h3>
+              <p className="text-xs text-slate-600 leading-relaxed max-w-xs mx-auto">
+                We sent a confirmation link to <span className="font-mono font-semibold text-slate-900">{emailInput || "your email address"}</span>. Please click the link to confirm your account and log in.
+              </p>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setMode("login")}
+                  className="text-xs font-semibold text-emerald-800 hover:text-emerald-950 underline cursor-pointer"
+                >
+                  Return to sign in →
+                </button>
+              </div>
+            </div>
           ) : (
             /* Registration Form */
             <form action={registerAction} className="flex flex-col gap-4">
@@ -444,16 +465,10 @@ function AuthForm() {
                 </div>
               ) : null}
 
-              {registerState?.success ? (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3 text-xs text-emerald-800 font-medium">
-                  {registerState.success}
-                </div>
-              ) : null}
-
               <Button
                 type="submit"
                 disabled={registerPending}
-                className="w-full h-10 bg-slate-950 hover:bg-slate-800 text-white font-semibold text-xs tracking-tight shadow-sm active:scale-[0.99] transition-all mt-1 gap-2"
+                className="w-full h-10 bg-slate-950 hover:bg-slate-800 text-white font-semibold text-xs tracking-tight shadow-sm active:scale-[0.99] transition-all mt-1 gap-2 cursor-pointer"
               >
                 {registerPending ? "Creating account…" : "Create Supabase Account"}
                 {!registerPending && <ArrowRight className="h-3.5 w-3.5" />}
@@ -461,25 +476,37 @@ function AuthForm() {
             </form>
           )}
 
-          {/* Development & Sandbox Runner Callout */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                <Terminal className="h-3.5 w-3.5 text-slate-700" />
-                <span>Docker Sandbox Mode</span>
-              </div>
-              <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-mono text-slate-600">
-                Playwright Auth
+          {/* Dedicated Divider for Demo / Sandbox */}
+          <div className="relative my-2">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-slate-200" />
+            </div>
+            <div className="relative flex justify-center text-[10px] uppercase font-bold tracking-wider">
+              <span className="bg-white px-2 text-slate-400">
+                Demo &amp; QA Sandbox Mode
               </span>
             </div>
-            <p className="text-[11px] text-slate-600 leading-relaxed mb-3">
-              Automated journeys run against the seeded test user (<code className="font-mono text-slate-900 bg-white px-1 py-0.5 rounded border border-slate-200">qa@example.com</code>).
+          </div>
+
+          {/* Development & Sandbox Runner Callout */}
+          <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-3 opacity-90 transition-opacity hover:opacity-100">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                <Terminal className="h-3.5 w-3.5 text-slate-500" />
+                <span>Docker Sandbox Mode</span>
+              </div>
+              <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-mono text-slate-500">
+                Test Account
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed mb-2.5">
+              Automated journeys run against the seeded test user (<code className="font-mono text-slate-700 bg-white px-1 py-0.5 rounded border border-slate-200">qa@example.com</code>).
             </p>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleFillSandbox}
-                className="flex-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors shadow-xs text-center"
+                className="flex-1 rounded-lg border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors shadow-2xs text-center cursor-pointer"
               >
                 Fill Credentials
               </button>
@@ -487,9 +514,9 @@ function AuthForm() {
                 <button
                   type="submit"
                   disabled={sandboxPending}
-                  className="w-full rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800 transition-colors shadow-xs text-center disabled:opacity-60"
+                  className="w-full rounded-lg border border-slate-300/80 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-800 transition-colors shadow-2xs text-center disabled:opacity-60 cursor-pointer"
                 >
-                  {sandboxPending ? "Authenticating…" : "Instant 1-Click Login"}
+                  {sandboxPending ? "Signing in…" : "Quick Sandbox Sign In"}
                 </button>
               </form>
             </div>

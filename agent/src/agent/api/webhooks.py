@@ -46,6 +46,123 @@ async def github_webhook(
     if x_github_event == "ping":
         return {"status": "pong", "zen": payload.get("zen")}
 
+    # --------------------------------------------------------------------------
+    # 0. GitHub App Installation Lifecycle Webhooks
+    # --------------------------------------------------------------------------
+    if x_github_event in ("installation", "installation_repositories"):
+        action = payload.get("action", "")
+        inst = payload.get("installation", {})
+        inst_id = inst.get("id")
+        account_info = inst.get("account", {})
+        account_login = account_info.get("login", "")
+        account_id = account_info.get("id", 0)
+
+        logger.info(
+            "Received GitHub App %s event '%s' for installation %s (%s)",
+            x_github_event,
+            action,
+            inst_id,
+            account_login,
+        )
+
+        from agent.db.supabase import get_supabase_client
+        supabase = get_supabase_client()
+
+        if supabase and inst_id:
+            try:
+                if x_github_event == "installation" and action in ("created", "unsuspend"):
+                    repos = payload.get("repositories", [])
+                    supabase.table("installations").upsert(
+                        {
+                            "installation_id": inst_id,
+                            "account_login": account_login,
+                            "account_id": account_id,
+                            "repositories": [
+                                {
+                                    "id": r.get("id"),
+                                    "name": r.get("name"),
+                                    "full_name": r.get("full_name"),
+                                    "private": r.get("private", False),
+                                }
+                                for r in repos
+                            ],
+                        },
+                        on_conflict="installation_id",
+                    ).execute()
+
+                    for r in repos:
+                        full_name = r.get("full_name")
+                        if full_name:
+                            existing = (
+                                supabase.table("projects")
+                                .select("id")
+                                .eq("repo_full_name", full_name)
+                                .maybe_single()
+                                .execute()
+                            )
+                            if not existing or not existing.data:
+                                supabase.table("projects").insert(
+                                    {
+                                        "installation_id": inst_id,
+                                        "repo_full_name": full_name,
+                                        "settings": {
+                                            "framework": "nextjs",
+                                            "package_manager": "npm",
+                                            "build_command": "npm run build",
+                                            "start_command": "npm start",
+                                            "port": 3000,
+                                            "scope": "changed",
+                                            "test_type": "functional",
+                                            "enable_on_push": True,
+                                            "enable_on_pr": True,
+                                        },
+                                    }
+                                ).execute()
+
+                elif x_github_event == "installation_repositories" and action == "added":
+                    added_repos = payload.get("repositories_added", [])
+                    for r in added_repos:
+                        full_name = r.get("full_name")
+                        if full_name:
+                            existing = (
+                                supabase.table("projects")
+                                .select("id")
+                                .eq("repo_full_name", full_name)
+                                .maybe_single()
+                                .execute()
+                            )
+                            if not existing or not existing.data:
+                                supabase.table("projects").insert(
+                                    {
+                                        "installation_id": inst_id,
+                                        "repo_full_name": full_name,
+                                        "settings": {
+                                            "framework": "nextjs",
+                                            "package_manager": "npm",
+                                            "build_command": "npm run build",
+                                            "start_command": "npm start",
+                                            "port": 3000,
+                                            "scope": "changed",
+                                            "test_type": "functional",
+                                            "enable_on_push": True,
+                                            "enable_on_pr": True,
+                                        },
+                                    }
+                                ).execute()
+
+                elif x_github_event == "installation" and action == "deleted":
+                    supabase.table("installations").delete().eq("installation_id", inst_id).execute()
+
+            except Exception as db_err:
+                logger.error("Failed to process installation webhook in Supabase: %s", db_err)
+
+        return {
+            "status": "processed",
+            "event": x_github_event,
+            "action": action,
+            "installation_id": inst_id,
+        }
+
     # Repository Identity Binding: verify webhook repo against configured APP_REPO_NAME
     repo_meta = payload.get("repository", {})
     owner_login = repo_meta.get("owner", {}).get("login") or repo_meta.get("owner", {}).get("name", "")

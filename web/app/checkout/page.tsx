@@ -1,5 +1,12 @@
 "use client";
 
+/**
+ * CANONICAL DEMO FIXTURE: This page serves as the intentional customer application target
+ * evaluated and repaired by the AutoQA test runner (agent/src/agent/runner/baseline.py,
+ * analyzer/quality_dimensions.py, and remediation/fix_synthesizer.py). It is intentionally
+ * unlinked from the main dashboard navigation. Do not delete or rename.
+ */
+
 import { useState } from "react";
 import Link from "next/link";
 import { isFieldFilled } from "@/lib/form-validation";

@@ -301,3 +301,65 @@ class GitHubAppClient:
             res = await client.post(url, headers=headers, json={"content": reaction})
             res.raise_for_status()
             return res.json()
+
+    async def get_installations(self) -> list[dict[str, Any]]:
+        """Fetch all installations of this GitHub App."""
+        if not (self.app_id and self.private_key):
+            raise GitHubNotConfiguredError("GITHUB_APP_ID and private key are required to list installations.")
+
+        app_jwt = self._generate_jwt()
+        url = "https://api.github.com/app/installations"
+        headers = {
+            "Authorization": f"Bearer {app_jwt}",
+            "Accept": "application/vnd.github+json",
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(url, headers=headers)
+            res.raise_for_status()
+            return res.json()
+
+    async def get_installation_repositories(self, installation_id: int) -> dict[str, Any]:
+        """Fetch all repositories accessible to a specific installation."""
+        token = await self.get_installation_token(installation_id)
+        url = "https://api.github.com/installation/repositories"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(url, headers=headers)
+            res.raise_for_status()
+            return res.json()
+
+    async def get_all_installed_repositories(self) -> list[dict[str, Any]]:
+        """Retrieve a unified list of all repositories granted across all app installations."""
+        installations = await self.get_installations()
+        all_repos: list[dict[str, Any]] = []
+
+        for inst in installations:
+            inst_id = inst.get("id")
+            if not inst_id:
+                continue
+            account_info = inst.get("account") or {}
+            account_login = account_info.get("login", "")
+            account_type = account_info.get("type", "User")
+
+            try:
+                repo_data = await self.get_installation_repositories(inst_id)
+                for r in repo_data.get("repositories", []):
+                    all_repos.append({
+                        "installation_id": inst_id,
+                        "account": account_login,
+                        "account_type": account_type,
+                        "repo_full_name": r.get("full_name"),
+                        "repo_name": r.get("name"),
+                        "default_branch": r.get("default_branch", "main"),
+                        "private": r.get("private", False),
+                        "html_url": r.get("html_url") or f"https://github.com/{r.get('full_name')}",
+                        "description": r.get("description") or "",
+                    })
+            except Exception as exc:
+                logger.error("Failed to fetch repositories for installation %s (%s): %s", inst_id, account_login, exc)
+
+        return all_repos
+

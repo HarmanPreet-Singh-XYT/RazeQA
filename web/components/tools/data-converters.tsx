@@ -632,7 +632,7 @@ export function JSONVisualizer() {
               : typeof val === "number"
               ? "text-blue-600"
               : typeof val === "boolean"
-              ? "text-purple-600"
+              ? "text-amber-600"
               : "text-slate-500"
           }`}
         >

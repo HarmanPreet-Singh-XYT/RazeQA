@@ -14,6 +14,7 @@ from agent.api.artifacts import router as artifacts_router
 from agent.api.auth import BearerAuthMiddleware
 from agent.api.bridge import router as bridge_router
 from agent.api.dashboard import router as dashboard_router
+from agent.api.github import router as github_router
 from agent.api.runs import router as runs_router
 from agent.api.webhooks import router as webhooks_router
 
@@ -40,6 +41,7 @@ app.include_router(runs_router)
 app.include_router(webhooks_router)
 app.include_router(artifacts_router)
 app.include_router(analytics_router)
+app.include_router(github_router)
 
 
 

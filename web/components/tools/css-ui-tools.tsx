@@ -554,7 +554,7 @@ export function CSSGenerator() {
           {/* Preview & Code Output Column */}
           <div className="lg:col-span-7 space-y-4">
             {/* Visual Canvas Demo */}
-            <div className="rounded-xl border border-slate-200 p-8 min-h-[220px] flex items-center justify-center bg-gradient-to-tr from-indigo-500 via-purple-500 to-rose-400 overflow-hidden relative">
+            <div className="rounded-xl border border-slate-200 p-8 min-h-[220px] flex items-center justify-center bg-gradient-to-tr from-sky-500 via-teal-500 to-emerald-400 overflow-hidden relative">
               {activeTab === "glass" && (
                 <div
                   style={{

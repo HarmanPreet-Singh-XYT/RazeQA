@@ -7,7 +7,6 @@ import {
   Boxes,
   ExternalLink,
   FileCode2,
-  GitBranch,
   Globe,
   Network,
   Palette,
@@ -17,7 +16,6 @@ import {
   Terminal,
   Zap,
 } from "lucide-react";
-import { logout } from "@/app/login/actions";
 import {
   TOOL_CATEGORIES,
   TOOLS_REGISTRY,
@@ -48,90 +46,8 @@ export default function ToolsDashboardClient({ userEmail }: ToolsDashboardClient
   };
 
   return (
-    <div className="min-h-screen bg-[#fafaf9] text-slate-900 font-sans antialiased flex flex-col">
-      {/* 1. Global Navigation Bar */}
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
-          {/* Brand & Repo Context */}
-          <div className="flex items-center gap-3">
-            <Link href="/" className="flex items-center gap-2 group">
-              <div className="h-7 w-7 rounded-lg bg-slate-950 text-white font-mono font-bold text-xs flex items-center justify-center shadow-xs group-hover:bg-slate-800 transition-colors">
-                PR
-              </div>
-              <span className="font-bold text-slate-950 text-sm tracking-tight hidden sm:inline-block">
-                AutoQA Platform
-              </span>
-            </Link>
-
-            <span className="text-slate-300">/</span>
-
-            <Link
-              href="/dashboard/projects"
-              className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors"
-            >
-              <GitBranch className="h-3.5 w-3.5 text-slate-500" />
-              <span>Repositories</span>
-            </Link>
-
-            {/* Navigation Links */}
-            <nav className="hidden md:flex items-center gap-1 border-l border-slate-200 pl-3">
-              <Link
-                href="/dashboard"
-                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-              >
-                Overview
-              </Link>
-              <Link
-                href="/dashboard/runs"
-                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-              >
-                PR Forensics
-              </Link>
-              <Link
-                href="/dashboard/projects"
-                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-              >
-                Projects & Settings
-              </Link>
-              <Link
-                href="/dashboard/analytics"
-                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-              >
-                Analytics & AI Insights
-              </Link>
-              <Link
-                href="/dashboard/tools"
-                className="rounded-md px-2.5 py-1 text-xs font-bold text-slate-950 bg-slate-100 transition-colors"
-              >
-                Dev Tools
-              </Link>
-            </nav>
-          </div>
-
-          {/* User Email & Sign Out */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 border-l border-slate-200 pl-3">
-              <div className="h-6 w-6 rounded-full bg-slate-900 text-white font-bold text-[10px] flex items-center justify-center">
-                QA
-              </div>
-              <span className="text-xs font-medium text-slate-700 hidden md:inline-block">
-                {userEmail}
-              </span>
-            </div>
-            <form action={logout}>
-              <button
-                type="submit"
-                className="text-xs text-slate-500 hover:text-slate-900 font-medium transition-colors"
-              >
-                Sign out
-              </button>
-            </form>
-          </div>
-        </div>
-      </header>
-
-      {/* 2. Main Split Workspace */}
-      <main className="mx-auto max-w-7xl px-6 py-6 flex-1 flex flex-col lg:flex-row gap-6">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto w-full animate-in fade-in-50 duration-200">
+      <div className="flex flex-col lg:flex-row gap-6">
         {/* Left Sidebar: Tools Catalog & Switcher (340px) */}
         <aside className="w-full lg:w-80 shrink-0 space-y-4">
           <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
@@ -240,7 +156,7 @@ export default function ToolsDashboardClient({ userEmail }: ToolsDashboardClient
         <section className="flex-1 overflow-hidden">
           <ToolRenderer tool={activeTool} />
         </section>
-      </main>
+      </div>
     </div>
   );
 }

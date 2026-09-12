@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   Activity,
   AlertCircle,
@@ -30,6 +31,8 @@ import {
   Settings2,
   Shield,
   ShieldCheck,
+  Sliders,
+  SlidersHorizontal,
   Sparkles,
   Terminal,
   Trash2,
@@ -40,6 +43,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useDashboard } from "@/components/dashboard-context";
 
 function GithubIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
@@ -125,14 +129,49 @@ const SAFE_BUILD_BINARIES = [
   "make",
 ];
 
+type SettingsTab = "all" | "repo-build" | "roles" | "auto-repair" | "env-vars" | "runs";
+
 export default function ProjectsClient() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const tabParam = searchParams.get("tab") as SettingsTab | null;
+
+  const {
+    activeRepo: dashboardActiveRepo,
+    setActiveRepo: setDashboardActiveRepo,
+    refreshProjects: refreshDashboardProjects,
+  } = useDashboard();
+
+  const [activeTab, setActiveTab] = useState<SettingsTab>(
+    tabParam && ["repo-build", "roles", "auto-repair", "env-vars", "runs"].includes(tabParam)
+      ? tabParam
+      : "all"
+  );
+
+  useEffect(() => {
+    if (tabParam && ["repo-build", "roles", "auto-repair", "env-vars", "runs"].includes(tabParam)) {
+      setActiveTab(tabParam);
+    } else if (!tabParam) {
+      setActiveTab("all");
+    }
+  }, [tabParam]);
+
+  const handleTabChange = (newTab: SettingsTab) => {
+    setActiveTab(newTab);
+    if (newTab === "all") {
+      router.push("/dashboard/projects");
+    } else {
+      router.push(`/dashboard/projects?tab=${newTab}`);
+    }
+  };
+
   const [projects, setProjects] = useState<ProjectItem[]>([]);
-  const [selectedRepo, setSelectedRepo] = useState("");
+  const [selectedRepo, setSelectedRepo] = useState(dashboardActiveRepo || "");
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // Dropdown states
+  // Modals & dropdowns
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const [isAddRepoModalOpen, setIsAddRepoModalOpen] = useState(false);
   const [newRepoName, setNewRepoName] = useState("");
@@ -214,7 +253,9 @@ export default function ProjectsClient() {
           const data = await res.json();
           if (data.projects && data.projects.length > 0) {
             setProjects(data.projects);
-            const initialRepo = data.projects[0];
+            const initialRepo = dashboardActiveRepo
+              ? data.projects.find((p: any) => p.repo_full_name === dashboardActiveRepo) || data.projects[0]
+              : data.projects[0];
             setSelectedRepo(initialRepo.repo_full_name);
             if (initialRepo.settings) {
               setSettings((prev) => ({ ...prev, ...initialRepo.settings }));
@@ -226,10 +267,11 @@ export default function ProjectsClient() {
       }
     }
     loadProjects();
-  }, []);
+  }, [dashboardActiveRepo]);
 
   // 2. Fetch Run History whenever selectedRepo changes
   const fetchRunHistory = async (repoName: string) => {
+    if (!repoName) return;
     setIsLoadingRuns(true);
     try {
       const res = await fetch(`/api/runs?repo=${encodeURIComponent(repoName)}&limit=8`);
@@ -248,19 +290,20 @@ export default function ProjectsClient() {
   useEffect(() => {
     if (selectedRepo) {
       fetchRunHistory(selectedRepo);
+      const proj = projects.find((p) => p.repo_full_name === selectedRepo);
+      if (proj && proj.settings) {
+        setSettings((prev) => ({ ...prev, ...proj.settings }));
+      }
     }
-  }, [selectedRepo]);
+  }, [selectedRepo, projects]);
 
-  // Handle switching active project
   const handleSelectRepo = (p: ProjectItem) => {
     setSelectedRepo(p.repo_full_name);
+    setDashboardActiveRepo(p.repo_full_name);
     setIsRepoDropdownOpen(false);
     if (p.settings) {
       setSettings(p.settings);
     }
-    setPasswordsToUpdate({});
-    setSaveSuccess(false);
-    setSaveError(null);
   };
 
   // Add new repository to projects list and persist to Supabase
@@ -279,36 +322,37 @@ export default function ProjectsClient() {
       },
     };
 
+    setProjects((prev) => [newProj, ...prev]);
+    setSelectedRepo(trimmed);
+    setDashboardActiveRepo(trimmed);
+    setIsAddRepoModalOpen(false);
+    setNewRepoName("");
+
     try {
       await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repo_full_name: trimmed,
-          settings: newProj.settings,
-        }),
+        body: JSON.stringify(newProj),
       });
-
-      const updated = [newProj, ...projects.filter((p) => p.repo_full_name !== trimmed)];
-      setProjects(updated);
-      setSelectedRepo(trimmed);
-      setIsAddRepoModalOpen(false);
-      setNewRepoName("");
+      refreshDashboardProjects();
     } catch (err) {
-      console.error("Failed to connect repo", err);
+      console.error("Failed to persist newly connected repo", err);
     }
   };
 
-  // Live validation of build command
+  // Safe Toolchain Validation for Build Command
   const buildCommandValidation = useMemo(() => {
-    const cmd = (settings.auto_repair?.build_command || "").trim();
-    if (!cmd) return { valid: true, message: "Default 'npm run build' will be used." };
+    const cmd = settings.auto_repair?.build_command?.trim();
+    if (!cmd) {
+      return { valid: false, message: "Build verification command is empty." };
+    }
 
-    for (const op of [";", "&&", "||", "|", "`", "$", "\n", ">", "<"]) {
+    const dangerousOperators = [";", "&&", "||", "|", "`", "$", ">", "<"];
+    for (const op of dangerousOperators) {
       if (cmd.includes(op)) {
         return {
           valid: false,
-          message: `Disallowed operator '${op}'. Commands must be single, unchained executables.`,
+          message: `Command contains chained operator '${op}'. Use a single safe script call for sandbox isolation.`,
         };
       }
     }
@@ -329,7 +373,6 @@ export default function ProjectsClient() {
     setIsSaving(true);
     setSaveError(null);
     try {
-      // Build roles payload: only include passwords if explicitly modified by the user
       const rolesToSave: Record<string, RoleCredential> = {};
       for (const [rKey, cred] of Object.entries(settings.roles || {})) {
         const stagedPassword = passwordsToUpdate[rKey];
@@ -339,7 +382,6 @@ export default function ProjectsClient() {
             password: stagedPassword.trim(),
           };
         } else {
-          // Omit password key so the server preserves existing credentials
           const { password: _p, ...rest } = cred;
           rolesToSave[rKey] = rest;
         }
@@ -515,123 +557,98 @@ export default function ProjectsClient() {
   const totalTokensSaved = totalCachedRuns * 15000;
   const totalCostSaved = (totalCachedRuns * 0.45).toFixed(2);
 
+  // Visibility filters based on active tab
+  const showRepoBuild = activeTab === "all" || activeTab === "repo-build";
+  const showRoles = activeTab === "all" || activeTab === "roles";
+  const showAutoRepair = activeTab === "all" || activeTab === "auto-repair";
+  const showEnvVars = activeTab === "all" || activeTab === "env-vars";
+  const showRunsCache = activeTab === "all" || activeTab === "runs";
+
   return (
-    <div className="min-h-screen bg-[#fafaf9] text-slate-900 flex flex-col font-sans">
-      {/* ---------------- Top App Header ---------------- */}
-      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-md px-6 py-2.5 flex items-center justify-between shadow-xs">
-        <div className="flex items-center gap-4">
-          <Link href="/dashboard" className="flex items-center gap-2 group">
-            <div className="h-8 w-8 rounded-lg bg-emerald-600 flex items-center justify-center text-white font-bold text-base shadow-sm group-hover:bg-emerald-700 transition-colors">
-              A
+    <div className="max-w-7xl mx-auto w-full p-4 sm:p-6 lg:p-8 space-y-6 text-slate-900 animate-in fade-in-50 duration-200">
+      {/* Top Banner & Header Controls */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+        <div>
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-950 flex items-center gap-2">
+              <Settings2 className="h-5 w-5 text-emerald-600" />
+              Repository Settings &amp; Zero-Config Onboarding
+            </h1>
+
+            {/* Switch Repository Pill */}
+            <div className="relative inline-block">
+              <button
+                type="button"
+                onClick={() => setIsRepoDropdownOpen(!isRepoDropdownOpen)}
+                className="flex items-center gap-1.5 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200 px-2.5 py-0.5 text-xs font-mono font-bold text-slate-800 transition-colors"
+              >
+                <GitBranch className="h-3 w-3 text-slate-500" />
+                <span className="max-w-[200px] truncate">{selectedRepo || "Select Repo"}</span>
+                <ChevronDown className="h-3 w-3 text-slate-400" />
+              </button>
+
+              {isRepoDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsRepoDropdownOpen(false)} />
+                  <div className="absolute left-0 mt-1.5 w-64 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl z-50 animate-in fade-in-50 zoom-in-95 text-xs">
+                    <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Switch Repository
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-0.5">
+                      {projects.map((p) => (
+                        <button
+                          key={p.repo_full_name}
+                          type="button"
+                          onClick={() => handleSelectRepo(p)}
+                          className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
+                            selectedRepo === p.repo_full_name
+                              ? "bg-emerald-50 text-emerald-800 font-bold"
+                              : "text-slate-700 hover:bg-slate-100"
+                          }`}
+                        >
+                          <span className="truncate">{p.repo_full_name}</span>
+                          {selectedRepo === p.repo_full_name && <Check className="h-3.5 w-3.5 text-emerald-600" />}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="pt-1.5 mt-1 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsRepoDropdownOpen(false);
+                          setIsAddRepoModalOpen(true);
+                        }}
+                        className="w-full flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 transition-colors"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        <span>Connect New Repository</span>
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
-            <span className="font-extrabold text-base tracking-tight text-slate-950">
-              AutoQA <span className="font-medium text-slate-500 text-xs">Engine</span>
-            </span>
-          </Link>
-
-          {/* Repository Switcher Dropdown */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setIsRepoDropdownOpen(!isRepoDropdownOpen)}
-              className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-800 transition-colors shadow-2xs"
-            >
-              <GitBranch className="h-3.5 w-3.5 text-slate-500" />
-              <span className="max-w-[160px] truncate">{selectedRepo}</span>
-              <ChevronDown className="h-3 w-3 text-slate-400" />
-            </button>
-
-            {isRepoDropdownOpen && (
-              <div className="absolute left-0 mt-1.5 w-64 rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg z-50 animate-in fade-in-50 zoom-in-95">
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Switch Repository
-                </div>
-                <div className="max-h-48 overflow-y-auto space-y-0.5">
-                  {projects.map((p) => (
-                    <button
-                      key={p.repo_full_name}
-                      type="button"
-                      onClick={() => handleSelectRepo(p)}
-                      className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
-                        selectedRepo === p.repo_full_name
-                          ? "bg-emerald-50 text-emerald-800 font-bold"
-                          : "text-slate-700 hover:bg-slate-100"
-                      }`}
-                    >
-                      <span className="truncate">{p.repo_full_name}</span>
-                      {selectedRepo === p.repo_full_name && <Check className="h-3.5 w-3.5 text-emerald-600" />}
-                    </button>
-                  ))}
-                </div>
-                <div className="pt-1.5 mt-1 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRepoDropdownOpen(false);
-                      setIsAddRepoModalOpen(true);
-                    }}
-                    className="w-full flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 transition-colors"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    <span>Connect New Repository</span>
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
-
-          {/* Navigation Links */}
-          <nav className="hidden md:flex items-center gap-1 border-l border-slate-200 pl-3">
-            <Link
-              href="/dashboard"
-              className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            >
-              Overview
-            </Link>
-            <Link
-              href="/dashboard/runs"
-              className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            >
-              PR Forensics
-            </Link>
-            <Link
-              href="/dashboard/projects"
-              className="rounded-md px-2.5 py-1 text-xs font-bold text-slate-950 bg-slate-100 transition-colors"
-            >
-              Projects & Settings
-            </Link>
-            <Link
-              href="/dashboard/analytics"
-              className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            >
-              Analytics & AI Insights
-            </Link>
-            <Link
-              href="/dashboard/tools"
-              className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            >
-              Dev Tools
-            </Link>
-          </nav>
+          <p className="text-xs sm:text-sm text-slate-600 mt-1">
+            Manage multi-role test credentials, manual verification dispatcher, smart token caching, and automated trigger policies.
+          </p>
         </div>
 
-        {/* Header Action Buttons */}
-        <div className="flex items-center gap-2.5">
-          {/* Manual Run Dispatcher Trigger Button */}
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2.5 shrink-0">
           <Button
             onClick={() => setIsRunModalOpen(true)}
             variant="outline"
-            className="border-slate-300 hover:bg-slate-100 text-slate-800 font-semibold text-xs px-3 py-1.5 h-8 gap-1.5 shadow-2xs"
+            className="border-slate-300 hover:bg-slate-100 text-slate-800 font-semibold text-xs px-3 py-1.5 h-8 gap-1.5 shadow-2xs cursor-pointer"
           >
             <Play className="h-3.5 w-3.5 text-emerald-600 fill-emerald-600" />
             <span>Trigger Test Run</span>
           </Button>
 
-          {/* Save Button */}
           <Button
             onClick={handleSave}
             disabled={isSaving}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs px-3.5 py-1.5 h-8 gap-1.5 shadow-sm active:scale-95 transition-all"
+            className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs px-3.5 py-1.5 h-8 gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
           >
             {saveSuccess ? (
               <>
@@ -651,73 +668,114 @@ export default function ProjectsClient() {
             )}
           </Button>
         </div>
-      </header>
+      </div>
 
-      {/* ---------------- Main Content ---------------- */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-6 md:p-8 space-y-8">
-        {saveError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-xs text-red-800 flex items-center justify-between shadow-xs animate-in fade-in-50">
-            <div className="flex items-center gap-2.5">
-              <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
-              <div>
-                <span className="font-bold">Save Failed:</span> {saveError}
-              </div>
+      {/* Save Error Alert Banner */}
+      {saveError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3.5 text-xs text-red-800 flex items-center justify-between shadow-xs animate-in fade-in-50">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+            <div>
+              <span className="font-bold">Save Failed:</span> {saveError}
             </div>
-            <button
-              type="button"
-              onClick={() => setSaveError(null)}
-              className="text-red-600 hover:text-red-900 font-semibold text-xs ml-4"
-            >
-              Dismiss
-            </button>
           </div>
-        )}
-
-        {/* Page Banner */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-6">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold tracking-tight text-slate-950 flex items-center gap-2.5">
-                <Settings2 className="h-6 w-6 text-emerald-600" />
-                Repository Settings & Zero-Config Onboarding
-              </h1>
-              <span className="rounded-full bg-slate-100 border border-slate-200 px-2.5 py-0.5 text-xs font-mono font-bold text-slate-700">
-                {selectedRepo}
-              </span>
-            </div>
-            <p className="text-sm text-slate-600 mt-1">
-              Manage multi-role test credentials, manual verification dispatcher, smart token caching, and automated trigger policies.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsRunModalOpen(true)}
-              className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-lg shadow-sm transition-all active:scale-95"
-            >
-              <Play className="h-3.5 w-3.5 fill-current" />
-              <span>Run On-Demand Verification</span>
-            </button>
-
-            <a
-              href="https://github.com/apps"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-3.5 py-2 rounded-lg shadow-sm transition-all active:scale-95"
-            >
-              <GithubIcon className="h-4 w-4" />
-              <span>GitHub App</span>
-              <ExternalLink className="h-3 w-3 opacity-70" />
-            </a>
-          </div>
+          <button
+            type="button"
+            onClick={() => setSaveError(null)}
+            className="text-red-600 hover:text-red-900 font-semibold text-xs ml-4 cursor-pointer"
+          >
+            Dismiss
+          </button>
         </div>
+      )}
 
-        {/* Grid of Configuration Cards */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column: Repository & Framework Detection */}
-          <div className="space-y-6 lg:col-span-1">
-            {/* 1. Connected Repository Card */}
+      {/* Settings Tab Navigation Strip */}
+      <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto pb-0 text-xs select-none no-scrollbar">
+        <button
+          type="button"
+          onClick={() => handleTabChange("all")}
+          className={`flex items-center gap-1.5 px-3 py-2 border-b-2 font-medium transition-colors whitespace-nowrap cursor-pointer ${
+            activeTab === "all"
+              ? "border-slate-900 text-slate-950 font-bold"
+              : "border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300"
+          }`}
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          <span>All Configurations</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleTabChange("repo-build")}
+          className={`flex items-center gap-1.5 px-3 py-2 border-b-2 font-medium transition-colors whitespace-nowrap cursor-pointer ${
+            activeTab === "repo-build"
+              ? "border-slate-900 text-slate-950 font-bold"
+              : "border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300"
+          }`}
+        >
+          <GithubIcon className="h-3.5 w-3.5" />
+          <span>Repository &amp; Build</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleTabChange("roles")}
+          className={`flex items-center gap-1.5 px-3 py-2 border-b-2 font-medium transition-colors whitespace-nowrap cursor-pointer ${
+            activeTab === "roles"
+              ? "border-slate-900 text-slate-950 font-bold"
+              : "border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300"
+          }`}
+        >
+          <Shield className="h-3.5 w-3.5 text-sky-600" />
+          <span>Test Personas</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleTabChange("auto-repair")}
+          className={`flex items-center gap-1.5 px-3 py-2 border-b-2 font-medium transition-colors whitespace-nowrap cursor-pointer ${
+            activeTab === "auto-repair"
+              ? "border-slate-900 text-slate-950 font-bold"
+              : "border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300"
+          }`}
+        >
+          <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+          <span>AI Auto-Repair</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleTabChange("env-vars")}
+          className={`flex items-center gap-1.5 px-3 py-2 border-b-2 font-medium transition-colors whitespace-nowrap cursor-pointer ${
+            activeTab === "env-vars"
+              ? "border-slate-900 text-slate-950 font-bold"
+              : "border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300"
+          }`}
+        >
+          <Sliders className="h-3.5 w-3.5 text-slate-700" />
+          <span>Sandbox Secrets</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleTabChange("runs")}
+          className={`flex items-center gap-1.5 px-3 py-2 border-b-2 font-medium transition-colors whitespace-nowrap cursor-pointer ${
+            activeTab === "runs"
+              ? "border-slate-900 text-slate-950 font-bold"
+              : "border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300"
+          }`}
+        >
+          <Database className="h-3.5 w-3.5 text-indigo-600" />
+          <span>Execution &amp; Cache</span>
+        </button>
+      </div>
+
+      {/* Grid of Configuration Cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left Column: Repository & Framework Detection & Stats */}
+        <div className={`space-y-6 ${activeTab === "all" ? "lg:col-span-1" : "lg:col-span-3"}`}>
+          {/* 1. Connected Repository Card */}
+          {showRepoBuild && (
             <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
@@ -753,14 +811,16 @@ export default function ProjectsClient() {
               <button
                 type="button"
                 onClick={() => setIsAddRepoModalOpen(true)}
-                className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-semibold text-slate-600 hover:border-slate-400 hover:text-slate-900 transition-colors"
+                className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 py-2 text-xs font-semibold text-slate-600 hover:border-slate-400 hover:text-slate-900 transition-colors cursor-pointer"
               >
                 <Plus className="h-3.5 w-3.5" />
                 <span>Add / Connect Another Repo</span>
               </button>
             </div>
+          )}
 
-            {/* 2. Framework & Build Detection Card */}
+          {/* 2. Framework & Build Detection Card */}
+          {showRepoBuild && (
             <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
@@ -819,9 +879,11 @@ export default function ProjectsClient() {
                 </div>
               </div>
             </div>
+          )}
 
-            {/* 3. Smart Caching & Token Reduction Stats Card */}
-            <div className="rounded-xl border border-indigo-200 bg-linear-to-br from-indigo-50/50 via-white to-purple-50/30 p-5 shadow-xs space-y-4">
+          {/* 3. Smart Caching & Token Reduction Stats Card */}
+          {showRunsCache && (
+            <div className="rounded-xl border border-indigo-200 bg-linear-to-br from-indigo-50/50 via-white to-sky-50/30 p-5 shadow-xs space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
                   <Database className="h-3.5 w-3.5 text-indigo-600" />
@@ -852,11 +914,13 @@ export default function ProjectsClient() {
                 </div>
               </div>
             </div>
-          </div>
+          )}
+        </div>
 
-          {/* Right Column (2 cols): Multi-Role Credentials, Triggers, & Run History */}
-          <div className="space-y-6 lg:col-span-2">
-            {/* 4. Multi-Role Credential Management with Password Toggles & Custom Roles */}
+        {/* Right Column (2 cols): Multi-Role Credentials, Triggers, & Run History */}
+        <div className={`space-y-6 ${activeTab === "all" ? "lg:col-span-2" : "lg:col-span-3"}`}>
+          {/* 4. Multi-Role Credential Management with Password Toggles & Custom Roles */}
+          {showRoles && (
             <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-5">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                 <div>
@@ -871,7 +935,7 @@ export default function ProjectsClient() {
                 <button
                   type="button"
                   onClick={() => setIsAddRoleModalOpen(true)}
-                  className="rounded-md border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-800 flex items-center gap-1.5 transition-colors shadow-2xs"
+                  className="rounded-md border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-800 flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
                 >
                   <Plus className="h-3.5 w-3.5" />
                   <span>Add Role</span>
@@ -891,7 +955,7 @@ export default function ProjectsClient() {
                         isAdmin
                           ? "border-amber-200/80 bg-amber-50/30"
                           : isCustom
-                          ? "border-purple-200 bg-purple-50/20"
+                          ? "border-sky-200 bg-sky-50/30"
                           : "border-slate-200 bg-slate-50/60"
                       }`}
                     >
@@ -900,7 +964,7 @@ export default function ProjectsClient() {
                           {isAdmin ? (
                             <Shield className="h-3.5 w-3.5 text-amber-600" />
                           ) : isCustom ? (
-                            <Users className="h-3.5 w-3.5 text-purple-600" />
+                            <Users className="h-3.5 w-3.5 text-sky-600" />
                           ) : (
                             <User className="h-3.5 w-3.5 text-slate-600" />
                           )}
@@ -912,7 +976,7 @@ export default function ProjectsClient() {
                               isAdmin
                                 ? "text-amber-800 bg-amber-100"
                                 : isCustom
-                                ? "text-purple-800 bg-purple-100"
+                                ? "text-sky-800 bg-sky-100"
                                 : "text-emerald-700 bg-emerald-100"
                             }`}
                           >
@@ -922,7 +986,7 @@ export default function ProjectsClient() {
                             <button
                               type="button"
                               onClick={() => handleRemoveRole(roleKey)}
-                              className="text-slate-400 hover:text-red-600 p-0.5"
+                              className="text-slate-400 hover:text-red-600 p-0.5 cursor-pointer"
                               title="Delete Role"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
@@ -969,7 +1033,7 @@ export default function ProjectsClient() {
                             onClick={() =>
                               setShowPassword((prev) => ({ ...prev, [roleKey]: !prev[roleKey] }))
                             }
-                            className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-700"
+                            className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-700 cursor-pointer"
                           >
                             {showPassword[roleKey] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                           </button>
@@ -981,7 +1045,7 @@ export default function ProjectsClient() {
                           type="button"
                           onClick={() => handleTestRole(roleKey)}
                           disabled={testingRole === roleKey}
-                          className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 flex items-center gap-1"
+                          className="text-xs font-semibold text-slate-600 hover:text-slate-900 flex items-center gap-1.5 transition-colors cursor-pointer"
                         >
                           {testingRole === roleKey ? (
                             <>
@@ -995,8 +1059,8 @@ export default function ProjectsClient() {
                             </>
                           ) : (
                             <>
-                              <ShieldCheck className="h-3 w-3" />
-                              <span>Test Credentials</span>
+                              <ShieldCheck className="h-3 w-3 text-slate-500" />
+                              <span>Verify Auth Flow</span>
                             </>
                           )}
                         </button>
@@ -1006,14 +1070,16 @@ export default function ProjectsClient() {
                 })}
               </div>
             </div>
+          )}
 
-            {/* 5. Commit Run History & Status Sync */}
+          {/* 5. Commit Run History & Status Sync */}
+          {showRunsCache && (
             <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                 <div>
                   <h3 className="text-sm font-bold text-slate-950 flex items-center gap-2">
                     <History className="h-4 w-4 text-emerald-600" />
-                    Commit Verification History & Sync
+                    Commit Verification History &amp; Sync
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Live log of all verified commits for <span className="font-mono font-bold text-slate-800">{selectedRepo}</span> to track test state and prevent redundant executions.
@@ -1023,7 +1089,7 @@ export default function ProjectsClient() {
                   type="button"
                   onClick={() => fetchRunHistory(selectedRepo)}
                   disabled={isLoadingRuns}
-                  className="rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 flex items-center gap-1"
+                  className="rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 flex items-center gap-1 cursor-pointer"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${isLoadingRuns ? "animate-spin text-emerald-600" : ""}`} />
                   <span>Sync</span>
@@ -1049,15 +1115,15 @@ export default function ProjectsClient() {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {runHistory.map((run) => {
-                        const shortSha = run.sha.length > 7 ? run.sha.slice(0, 7) : run.sha;
+                        const shortSha = run.sha?.length > 7 ? run.sha.slice(0, 7) : (run.sha || "HEAD");
                         return (
-                          <tr key={run.run_id} className="hover:bg-slate-50/80 transition-colors">
+                          <tr key={run.run_id || run.sha} className="hover:bg-slate-50/80 transition-colors">
                             <td className="py-2.5 font-mono text-slate-800 font-bold flex items-center gap-1.5">
                               <span>{shortSha}</span>
                               <button
                                 type="button"
                                 onClick={() => handleCopySha(run.sha)}
-                                className="text-slate-400 hover:text-slate-600"
+                                className="text-slate-400 hover:text-slate-600 cursor-pointer"
                                 title="Copy SHA"
                               >
                                 {copiedSha === run.sha ? (
@@ -1069,11 +1135,11 @@ export default function ProjectsClient() {
                             </td>
                             <td className="py-2.5 text-slate-600 font-medium">
                               <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">
-                                {run.branch}
+                                {run.branch || "main"}
                               </span>
                             </td>
                             <td className="py-2.5 text-slate-600">
-                              <span className="capitalize">{run.scope}</span>
+                              <span className="capitalize">{run.scope || "changed"}</span>
                             </td>
                             <td className="py-2.5">
                               {run.status === "completed" ? (
@@ -1123,13 +1189,15 @@ export default function ProjectsClient() {
                 </div>
               )}
             </div>
+          )}
 
-            {/* 6. Trigger Policies & Test Defaults */}
+          {/* 6. Trigger Policies & Test Defaults */}
+          {showRepoBuild && (
             <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-5">
               <div className="border-b border-slate-100 pb-3">
                 <h3 className="text-sm font-bold text-slate-950 flex items-center gap-2">
                   <Workflow className="h-4 w-4 text-emerald-600" />
-                  Automated Verification Triggers & Defaults
+                  Automated Verification Triggers &amp; Defaults
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
                   Configure when the autonomous testing engine runs and what depth of checks it executes.
@@ -1148,7 +1216,7 @@ export default function ProjectsClient() {
                       type="checkbox"
                       checked={settings.enable_on_push}
                       onChange={(e) => setSettings({ ...settings, enable_on_push: e.target.checked })}
-                      className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500"
+                      className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                     />
                   </div>
                   <p className="text-[11px] text-slate-600">
@@ -1167,7 +1235,7 @@ export default function ProjectsClient() {
                       type="checkbox"
                       checked={settings.enable_on_pr}
                       onChange={(e) => setSettings({ ...settings, enable_on_pr: e.target.checked })}
-                      className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500"
+                      className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                     />
                   </div>
                   <p className="text-[11px] text-slate-600">
@@ -1204,8 +1272,10 @@ export default function ProjectsClient() {
                 </div>
               </div>
             </div>
+          )}
 
-            {/* 7. Autonomous Agentic Repair (mini-swe-agent & Bedrock/Claude/Gemini) */}
+          {/* 7. Autonomous Agentic Repair (mini-swe-agent & Bedrock/Claude/Gemini) */}
+          {showAutoRepair && (
             <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-5">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                 <div>
@@ -1242,7 +1312,7 @@ export default function ProjectsClient() {
                         },
                       })
                     }
-                    className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500"
+                    className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                   />
                 </div>
               </div>
@@ -1327,14 +1397,14 @@ export default function ProjectsClient() {
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                             <Shield className="h-3.5 w-3.5 text-slate-600" />
-                            Manual Review & Approval
+                            Manual Review &amp; Approval
                           </span>
                           {settings.auto_repair?.trigger_mode === "manual_approval" && (
                             <Check className="h-4 w-4 text-indigo-600" />
                           )}
                         </div>
                         <p className="text-[11px] text-slate-600">
-                          Generates patch proposals and execution trajectory for 1-click review in the dashboard or via `@pr-agent apply`.
+                          Generates patch proposals and execution trajectory for 1-click review in the dashboard or via @pr-agent apply.
                         </p>
                       </div>
                     </div>
@@ -1434,7 +1504,7 @@ export default function ProjectsClient() {
                             },
                           });
                         }}
-                        className="w-full accent-indigo-600"
+                        className="w-full accent-indigo-600 cursor-pointer"
                       />
                       <p className="text-[10px] text-slate-500 mt-0.5">
                         Circuit breaker: Halts if unresolved within limit.
@@ -1500,7 +1570,7 @@ export default function ProjectsClient() {
                             },
                           });
                         }}
-                        className="w-full accent-indigo-600"
+                        className="w-full accent-indigo-600 cursor-pointer"
                       />
                       <p className="text-[10px] text-slate-500 mt-0.5">
                         Overall session execution ceiling.
@@ -1508,82 +1578,10 @@ export default function ProjectsClient() {
                     </div>
                   </div>
 
-                  {/* Sandbox Environment Variables */}
-                  <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-4 space-y-3">
-                    <label className="text-xs font-bold text-slate-900 block">
-                      Custom Sandbox Environment Variables
-                    </label>
-                    <div className="space-y-2">
-                      {Object.entries(settings.auto_repair?.env_vars || {}).map(([key, val]) => {
-                        const isRevealed = !!showEnvSecrets[key];
-                        return (
-                          <div key={key} className="flex items-center justify-between bg-white rounded-md border px-2.5 py-1 text-xs">
-                            <span className="font-mono font-bold text-slate-800">{key}</span>
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-slate-500 max-w-[200px] truncate">
-                                {isRevealed ? val : "••••••••••••"}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setShowEnvSecrets((prev) => ({ ...prev, [key]: !prev[key] }))}
-                                className="text-slate-400 hover:text-slate-700"
-                                title={isRevealed ? "Hide value" : "Reveal value"}
-                              >
-                                {isRevealed ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveEnvVar(key)}
-                                className="text-slate-400 hover:text-red-600"
-                                title="Remove variable"
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        placeholder="KEY (e.g. NEXT_PUBLIC_API)"
-                        value={newEnvKey}
-                        onChange={(e) => setNewEnvKey(e.target.value)}
-                        className="w-1/2 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-mono"
-                      />
-                      <div className="relative w-1/2">
-                        <input
-                          type={showNewEnvVal ? "text" : "password"}
-                          placeholder="Value (Secret)"
-                          value={newEnvVal}
-                          onChange={(e) => setNewEnvVal(e.target.value)}
-                          className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1 pr-7 text-xs font-mono"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowNewEnvVal((prev) => !prev)}
-                          className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-700"
-                          title={showNewEnvVal ? "Hide" : "Show"}
-                        >
-                          {showNewEnvVal ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                        </button>
-                      </div>
-                      <Button
-                        type="button"
-                        onClick={handleAddEnvVar}
-                        variant="outline"
-                        className="text-xs h-7 px-2.5"
-                      >
-                        Add
-                      </Button>
-                    </div>
-                  </div>
-
                   {/* Custom Developer Instructions */}
                   <div>
                     <label className="text-xs font-bold text-slate-900 block mb-1">
-                      Custom Repair Instructions & Guardrail Directives
+                      Custom Repair Instructions &amp; Guardrail Directives
                     </label>
                     <textarea
                       rows={2}
@@ -1607,15 +1605,106 @@ export default function ProjectsClient() {
                 </div>
               )}
             </div>
-          </div>
+          )}
+
+          {/* 8. Custom Sandbox Environment Variables Card */}
+          {showEnvVars && (
+            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-950 flex items-center gap-2">
+                    <Sliders className="h-4 w-4 text-slate-700" />
+                    Custom Sandbox Environment Variables &amp; Secrets
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Injected securely into test execution sandboxes and Playwright automation workers.
+                  </p>
+                </div>
+                <span className="text-[10px] font-mono font-semibold bg-slate-100 border border-slate-200 text-slate-600 px-2 py-0.5 rounded-full">
+                  Encrypted at rest
+                </span>
+              </div>
+
+              <div className="space-y-2">
+                {Object.keys(settings.auto_repair?.env_vars || {}).length === 0 ? (
+                  <p className="text-xs text-slate-400 italic py-2">No custom sandbox environment variables configured yet.</p>
+                ) : (
+                  Object.entries(settings.auto_repair?.env_vars || {}).map(([key, val]) => {
+                    const isRevealed = !!showEnvSecrets[key];
+                    return (
+                      <div key={key} className="flex items-center justify-between bg-slate-50/70 rounded-md border border-slate-200 px-3 py-1.5 text-xs">
+                        <span className="font-mono font-bold text-slate-800">{key}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-slate-500 max-w-[200px] truncate">
+                            {isRevealed ? val : "••••••••••••"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setShowEnvSecrets((prev) => ({ ...prev, [key]: !prev[key] }))}
+                            className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                            title={isRevealed ? "Hide value" : "Reveal value"}
+                          >
+                            {isRevealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveEnvVar(key)}
+                            className="text-slate-400 hover:text-red-600 cursor-pointer"
+                            title="Remove variable"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                <input
+                  type="text"
+                  placeholder="KEY (e.g. NEXT_PUBLIC_API)"
+                  value={newEnvKey}
+                  onChange={(e) => setNewEnvKey(e.target.value)}
+                  className="w-1/2 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-mono"
+                />
+                <div className="relative w-1/2">
+                  <input
+                    type={showNewEnvVal ? "text" : "password"}
+                    placeholder="Value (Secret)"
+                    value={newEnvVal}
+                    onChange={(e) => setNewEnvVal(e.target.value)}
+                    className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 pr-7 text-xs font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewEnvVal((prev) => !prev)}
+                    className="absolute right-2 top-2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    title={showNewEnvVal ? "Hide" : "Show"}
+                  >
+                    {showNewEnvVal ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+                <Button
+                  type="button"
+                  onClick={handleAddEnvVar}
+                  variant="outline"
+                  className="text-xs h-8 px-3 cursor-pointer"
+                >
+                  Add
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
-      </main>
+      </div>
 
       {/* ---------------- Connect New Repository Modal ---------------- */}
       {isAddRepoModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4 animate-in fade-in-50 zoom-in-95">
-            <div className="flex items-center justify-between border-b pb-3">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                 <GithubIcon className="h-4 w-4" />
                 Connect New Repository
@@ -1623,7 +1712,7 @@ export default function ProjectsClient() {
               <button
                 type="button"
                 onClick={() => setIsAddRepoModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600"
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1668,17 +1757,17 @@ export default function ProjectsClient() {
                 </select>
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-2 border-t">
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => setIsAddRepoModalOpen(false)}
-                  className="text-xs h-8"
+                  className="text-xs h-8 cursor-pointer"
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8">
-                  Connect & Load
+                <Button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8 cursor-pointer">
+                  Connect &amp; Load
                 </Button>
               </div>
             </form>
@@ -1690,15 +1779,15 @@ export default function ProjectsClient() {
       {isAddRoleModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4 animate-in fade-in-50 zoom-in-95">
-            <div className="flex items-center justify-between border-b pb-3">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                <Users className="h-4 w-4 text-purple-600" />
+                <Users className="h-4 w-4 text-sky-600" />
                 Add Custom Role Persona
               </h3>
               <button
                 type="button"
                 onClick={() => setIsAddRoleModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600"
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1740,16 +1829,16 @@ export default function ProjectsClient() {
                 />
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-2 border-t">
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => setIsAddRoleModalOpen(false)}
-                  className="text-xs h-8"
+                  className="text-xs h-8 cursor-pointer"
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-purple-600 hover:bg-purple-700 text-white text-xs h-8">
+                <Button type="submit" className="bg-sky-600 hover:bg-sky-700 text-white text-xs h-8 cursor-pointer">
                   Create Role
                 </Button>
               </div>
@@ -1762,7 +1851,7 @@ export default function ProjectsClient() {
       {isRunModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-4 animate-in fade-in-50 zoom-in-95">
-            <div className="flex items-center justify-between border-b pb-3">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                   <Play className="h-4 w-4 text-emerald-600 fill-emerald-600" />
@@ -1775,7 +1864,7 @@ export default function ProjectsClient() {
               <button
                 type="button"
                 onClick={() => setIsRunModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600"
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1802,7 +1891,7 @@ export default function ProjectsClient() {
                   </span>
                   <Link
                     href={`/dashboard/runs`}
-                    className="underline text-[11px]"
+                    className="underline text-[11px] font-medium"
                   >
                     View Forensics &rarr;
                   </Link>
@@ -1894,23 +1983,23 @@ export default function ProjectsClient() {
                   type="checkbox"
                   checked={runForce}
                   onChange={(e) => setRunForce(e.target.checked)}
-                  className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500"
+                  className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                 />
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-2 border-t">
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => setIsRunModalOpen(false)}
-                  className="text-xs h-8"
+                  className="text-xs h-8 cursor-pointer"
                 >
                   Close
                 </Button>
                 <Button
                   type="submit"
                   disabled={isDispatchingRun}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8 gap-1.5"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8 gap-1.5 cursor-pointer"
                 >
                   {isDispatchingRun ? (
                     <>

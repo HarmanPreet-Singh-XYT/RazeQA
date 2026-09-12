@@ -24,8 +24,14 @@ function getGitInfo(): { sha: string; branch: string } {
   return { sha, branch };
 }
 
+import { createAdminClient } from "@/lib/supabase/admin";
+
 export async function GET(request: Request) {
   const git = getGitInfo();
+  const { searchParams } = new URL(request.url);
+  const repoParam = searchParams.get("repo");
+  const branchParam = searchParams.get("branch");
+
   if (!ENGINE_API_KEY) {
     return NextResponse.json(
       { runs: [], engineConnected: false, git, error: "Server misconfigured: AGENT_API_KEY is not set." },
@@ -33,7 +39,6 @@ export async function GET(request: Request) {
     );
   }
   try {
-    const { searchParams } = new URL(request.url);
     const queryString = searchParams.toString();
     const targetUrl = queryString ? `${ENGINE_URL}/runs?${queryString}` : `${ENGINE_URL}/runs`;
 
@@ -43,21 +48,47 @@ export async function GET(request: Request) {
       cache: "no-store",
     });
 
-    if (!res.ok) {
-      return NextResponse.json(
-        { runs: [], engineConnected: false, git, error: `Engine returned ${res.status}` },
-        { status: 200 }
-      );
+    if (res.ok) {
+      const runs = await res.json();
+      return NextResponse.json({ runs, engineConnected: true, git });
     }
-
-    const runs = await res.json();
-    return NextResponse.json({ runs, engineConnected: true, git });
   } catch (err: any) {
-    return NextResponse.json(
-      { runs: [], engineConnected: false, git, warning: "Engine daemon offline at localhost:8000" },
-      { status: 200 }
-    );
+    // Engine daemon offline - fall through to Supabase direct query
   }
+
+  // Fallback: Direct Supabase query if engine is offline or returned error
+  try {
+    const supabase = createAdminClient();
+    let query = supabase.from("runs").select("*").order("created_at", { ascending: false });
+    if (branchParam) {
+      query = query.eq("branch", branchParam);
+    }
+    const { data: dbRuns, error: dbError } = await query;
+    if (!dbError && dbRuns && dbRuns.length > 0) {
+      const mapped = dbRuns.map((r: any) => ({
+        id: r.id,
+        run_id: r.id,
+        branch: r.branch,
+        sha: r.sha,
+        repo: repoParam || "default",
+        scope: r.scope || "changed",
+        test_type: r.test_type || "functional",
+        status: r.status || "queued",
+        result: r.result || {},
+        video_url: r.video_url,
+        trace_url: r.trace_url,
+        pr_number: r.github_pr_number,
+        created_at: r.created_at,
+        completed_at: r.completed_at,
+      }));
+      return NextResponse.json({ runs: mapped, engineConnected: false, git });
+    }
+  } catch {}
+
+  return NextResponse.json(
+    { runs: [], engineConnected: false, git, warning: "Engine daemon offline at localhost:8000" },
+    { status: 200 }
+  );
 }
 
 export async function POST(request: Request) {
@@ -71,10 +102,10 @@ export async function POST(request: Request) {
     const body = await request.json();
     if (!body.url) {
       const git = getGitInfo();
-      if (!body.sha || body.sha.startsWith("f1e2d3c") || body.sha === "HEAD") {
+      if (!body.sha || body.sha === "HEAD") {
         body.sha = git.sha;
       }
-      if (!body.branch || body.branch === "feat/quick-checkout") {
+      if (!body.branch) {
         body.branch = git.branch;
       }
     }

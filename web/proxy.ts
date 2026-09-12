@@ -68,7 +68,9 @@ export async function proxy(request: NextRequest) {
   const isPublicApiRoute =
     pathname.startsWith("/api/charge") ||
     pathname.startsWith("/api/checkout") ||
-    pathname.startsWith("/api/health");
+    pathname.startsWith("/api/health") ||
+    pathname.startsWith("/api/github") ||
+    (pathname === "/api/projects" && request.method === "GET");
 
   if (isApiRoute && !isPublicApiRoute && !user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

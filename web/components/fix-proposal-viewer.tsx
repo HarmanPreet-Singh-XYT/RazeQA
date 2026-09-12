@@ -55,15 +55,15 @@ export type FixProposalData = {
 };
 
 interface FixProposalViewerProps {
-  runId: string;
-  branch: string;
+  runId?: string;
+  branch?: string;
   proposals: FixProposalData[];
   onFixApplied?: () => void;
 }
 
 export function FixProposalViewer({
-  runId,
-  branch,
+  runId = "",
+  branch = "",
   proposals,
   onFixApplied,
 }: FixProposalViewerProps) {
@@ -140,7 +140,7 @@ export function FixProposalViewer({
       case "css_in_js":
         return {
           label: "CSS-in-JS",
-          bg: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800",
+          bg: "bg-slate-100 text-slate-800 border-slate-300",
           icon: <Palette className="w-3.5 h-3.5 mr-1" />,
         };
       case "inline_style":
@@ -394,7 +394,7 @@ export function FixProposalViewer({
         {viewMode === "trajectory" ? (
           <div className="p-3 space-y-2">
             {proposal.repair_trajectory && proposal.repair_trajectory.length > 0 ? (
-              proposal.repair_trajectory.map((t, idx) => (
+              proposal.repair_trajectory.map((t: TrajectoryStep, idx: number) => (
                 <div
                   key={idx}
                   className="rounded-lg border border-slate-800 bg-slate-900/90 overflow-hidden"
@@ -457,7 +457,7 @@ export function FixProposalViewer({
         ) : viewMode === "diff" ? (
           <table className="w-full border-collapse">
             <tbody>
-              {diffLines.map((line, idx) => {
+              {diffLines.map((line: string, idx: number) => {
                 let rowBg = "";
                 let textColor = "text-slate-300";
                 let prefixColor = "text-slate-500";

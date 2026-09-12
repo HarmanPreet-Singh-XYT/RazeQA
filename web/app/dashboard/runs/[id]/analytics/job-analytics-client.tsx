@@ -35,7 +35,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { logout } from "@/app/login/actions";
+import { ApplyFixButton } from "@/components/apply-fix-button";
 
 export default function JobAnalyticsClient({
   runId,
@@ -48,9 +48,6 @@ export default function JobAnalyticsClient({
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string>("");
-  const [appliedFix, setAppliedFix] = useState(false);
-  const [isApplyingFix, setIsApplyingFix] = useState(false);
-  const [applyFixError, setApplyFixError] = useState<string | null>(null);
 
   const fetchJobAnalytics = async () => {
     try {
@@ -77,28 +74,6 @@ export default function JobAnalyticsClient({
   useEffect(() => {
     fetchJobAnalytics();
   }, [runId]);
-
-  const handleApplyFix = async () => {
-    setIsApplyingFix(true);
-    setApplyFixError(null);
-    try {
-      const res = await fetch(`/api/runs/${runId}/apply`, {
-        method: "POST",
-      });
-      if (res.ok) {
-        setAppliedFix(true);
-        setTimeout(() => setAppliedFix(false), 4000);
-        await fetchJobAnalytics();
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setApplyFixError(errData.error || `Failed to apply fix (HTTP ${res.status}).`);
-      }
-    } catch (err: any) {
-      setApplyFixError(err?.message || "Network error while connecting to PR Testing Engine.");
-    } finally {
-      setIsApplyingFix(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -153,86 +128,7 @@ export default function JobAnalyticsClient({
   const activePathData = perPathMap[selectedPath] || (pathKeys.length > 0 ? perPathMap[pathKeys[0]] : null);
 
   return (
-    <div className="min-h-screen bg-[#fafaf9] text-slate-900 font-sans antialiased selection:bg-indigo-100">
-      {/* Background grid */}
-      <div className="pointer-events-none absolute inset-0 bg-grid-light opacity-50" />
-
-      {/* Global Navigation Bar */}
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
-          <div className="flex items-center gap-3">
-            <Link href="/" className="flex items-center gap-2 group">
-              <div className="h-7 w-7 rounded-lg bg-slate-950 text-white font-mono font-bold text-xs flex items-center justify-center shadow-xs group-hover:bg-slate-800 transition-colors">
-                QA
-              </div>
-              <span className="font-bold text-slate-950 text-sm tracking-tight hidden sm:inline-block">
-                AutoQA Platform
-              </span>
-            </Link>
-
-            <span className="text-slate-300">/</span>
-
-            <div className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-800">
-              <Compass className="h-3.5 w-3.5 text-indigo-600" />
-              <span>Job Analytics</span>
-              <span className="rounded bg-slate-200 px-1 py-0.5 text-[10px] font-mono text-slate-700">
-                {runId}
-              </span>
-            </div>
-
-            {/* Navigation Links */}
-            <nav className="hidden md:flex items-center gap-1 border-l border-slate-200 pl-3">
-              <Link
-                href="/dashboard"
-                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-              >
-                Overview
-              </Link>
-              <Link
-                href="/dashboard/runs"
-                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-              >
-                PR Forensics
-              </Link>
-              <Link
-                href="/dashboard/projects"
-                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-              >
-                Projects & Settings
-              </Link>
-              <Link
-                href="/dashboard/analytics"
-                className="rounded-md px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-              >
-                Fleet Analytics
-              </Link>
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 border-l border-slate-200 pl-3">
-              <div className="h-6 w-6 rounded-full bg-slate-900 text-white font-bold text-[10px] flex items-center justify-center">
-                QA
-              </div>
-              <span className="text-xs font-medium text-slate-700 hidden lg:inline-block">
-                {userEmail}
-              </span>
-            </div>
-
-            <form action={logout}>
-              <button
-                type="submit"
-                className="text-xs text-slate-500 hover:text-slate-900 font-medium transition-colors"
-              >
-                Sign out
-              </button>
-            </form>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Container */}
-      <main className="relative z-10 mx-auto max-w-7xl px-6 py-8 space-y-8">
+    <main className="relative z-10 mx-auto max-w-7xl w-full px-4 sm:px-6 py-8 space-y-8 flex-1">
         {/* Job Header Strip */}
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-4">
@@ -257,7 +153,7 @@ export default function JobAnalyticsClient({
                     External Site (Zero Code Access)
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-purple-50 px-2.5 py-0.5 text-xs font-bold text-purple-700 border border-purple-200">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold text-slate-800 border border-slate-300">
                     <Code2 className="h-3.5 w-3.5" />
                     GitHub PR (Full Code Access)
                   </span>
@@ -463,31 +359,10 @@ export default function JobAnalyticsClient({
             </div>
 
             {!isExternal && (
-              <div className="flex flex-col items-end gap-1.5">
-                <button
-                  onClick={handleApplyFix}
-                  disabled={isApplyingFix}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 transition-colors shadow-xs disabled:opacity-60"
-                >
-                  {isApplyingFix ? (
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  ) : appliedFix ? (
-                    <Check className="h-3.5 w-3.5" />
-                  ) : (
-                    <GitPullRequest className="h-3.5 w-3.5" />
-                  )}
-                  {isApplyingFix
-                    ? "Applying Patch to PR..."
-                    : appliedFix
-                    ? "Patch Committed to Branch!"
-                    : "Apply Fix to PR"}
-                </button>
-                {applyFixError && (
-                  <span className="text-[11px] text-red-600 font-medium">
-                    {applyFixError}
-                  </span>
-                )}
-              </div>
+              <ApplyFixButton
+                runId={runId}
+                onSuccess={() => fetchJobAnalytics()}
+              />
             )}
           </div>
 
@@ -514,6 +389,5 @@ export default function JobAnalyticsClient({
           </div>
         </section>
       </main>
-    </div>
   );
 }

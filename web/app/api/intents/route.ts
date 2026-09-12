@@ -9,28 +9,44 @@ function engineHeaders(): Record<string, string> {
   return headers;
 }
 
+import { createAdminClient } from "@/lib/supabase/admin";
+
 export async function GET(request: Request) {
-  if (!ENGINE_API_KEY) {
-    return NextResponse.json({ intents: [], warning: "AGENT_API_KEY not set" }, { status: 200 });
+  const { searchParams } = new URL(request.url);
+  const branch = searchParams.get("branch") || "main";
+
+  if (ENGINE_API_KEY) {
+    try {
+      const targetUrl = `${ENGINE_URL}/bridge/intents/${encodeURIComponent(branch)}`;
+
+      const res = await fetch(targetUrl, {
+        method: "GET",
+        headers: engineHeaders(),
+        cache: "no-store",
+      });
+
+      if (res.ok) {
+        const rawIntents = await res.json();
+        if (Array.isArray(rawIntents) && rawIntents.length > 0) {
+          return NextResponse.json({ intents: rawIntents });
+        }
+      }
+    } catch {}
   }
+
+  // Fallback to Supabase intent_logs table
   try {
-    const { searchParams } = new URL(request.url);
-    const branch = searchParams.get("branch") || "main";
-    const targetUrl = `${ENGINE_URL}/bridge/intents/${encodeURIComponent(branch)}`;
+    const supabase = createAdminClient();
+    const { data: dbLogs, error } = await supabase
+      .from("intent_logs")
+      .select("*")
+      .eq("branch", branch)
+      .order("created_at", { ascending: false });
 
-    const res = await fetch(targetUrl, {
-      method: "GET",
-      headers: engineHeaders(),
-      cache: "no-store",
-    });
-
-    if (!res.ok) {
-      return NextResponse.json({ intents: [] }, { status: 200 });
+    if (!error && dbLogs && dbLogs.length > 0) {
+      return NextResponse.json({ intents: dbLogs });
     }
+  } catch {}
 
-    const rawIntents = await res.json();
-    return NextResponse.json({ intents: Array.isArray(rawIntents) ? rawIntents : [] });
-  } catch {
-    return NextResponse.json({ intents: [] }, { status: 200 });
-  }
+  return NextResponse.json({ intents: [] }, { status: 200 });
 }

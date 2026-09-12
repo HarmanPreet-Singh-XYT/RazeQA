@@ -270,12 +270,12 @@ export function JWTDebugger() {
           </div>
 
           {/* Payload */}
-          <div className="rounded-xl border border-purple-200 bg-purple-50/40 p-5 space-y-3">
-            <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-purple-700">
+          <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-5 space-y-3">
+            <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-slate-700">
               <span>Payload: Data Claims</span>
-              <span className="font-mono text-[10px]">{Object.keys(payload).length} claims</span>
+              <span className="font-mono text-[10px] text-slate-500">{Object.keys(payload).length} claims</span>
             </div>
-            <pre className="font-mono text-xs text-purple-950 bg-white border border-purple-200 rounded-lg p-3 overflow-x-auto max-h-72">
+            <pre className="font-mono text-xs text-slate-900 bg-white border border-slate-200 rounded-lg p-3 overflow-x-auto max-h-72">
               {JSON.stringify(payload, null, 2)}
             </pre>
           </div>
