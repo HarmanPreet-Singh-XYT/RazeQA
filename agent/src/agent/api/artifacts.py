@@ -31,9 +31,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
-RUNS_BASE = Path(__file__).resolve().parents[3] / "artifacts" / "runs"
+RUNS_BASE = Path(os.environ.get("ARTIFACTS_BASE") or (Path(__file__).resolve().parents[3] / "artifacts" / "runs"))
 
-ALLOWED_SUFFIXES = {".webm", ".zip", ".png", ".json"}
+
+ALLOWED_SUFFIXES = {".webm", ".mp4", ".zip", ".png", ".json"}
 
 _CHUNK = 1024 * 256  # 256 KiB chunks
 
@@ -91,10 +92,11 @@ def _range_streaming_response(path: Path, request: Request) -> StreamingResponse
     if status_code == 206:
         headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
+    media_type = "video/mp4" if path.suffix.lower() == ".mp4" else "video/webm"
     return StreamingResponse(
         _iter_file(),
         status_code=status_code,
-        media_type="video/webm",
+        media_type=media_type,
         headers=headers,
     )
 
@@ -133,7 +135,7 @@ async def get_run_artifact(run_dir: str, sub_path: str, request: Request):
     """
     target = _resolve_and_validate(run_dir, sub_path)
 
-    if target.suffix.lower() == ".webm":
+    if target.suffix.lower() in {".webm", ".mp4"}:
         return _range_streaming_response(target, request)
 
     return FileResponse(path=target, filename=target.name)

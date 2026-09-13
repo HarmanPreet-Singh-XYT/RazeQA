@@ -8,8 +8,20 @@ shared with developers.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 REDACTED_LABEL = "[REDACTED]"
+
+#: Header names whose values are replaced wholesale rather than pattern-scanned.
+SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+    "x-csrf-token",
+}
 
 # Regex patterns for common credentials and sensitive tokens
 PASSWORD_REGEX = re.compile(
@@ -62,3 +74,41 @@ def redact_credentials(text: str, custom_secrets: list[str] | None = None) -> st
         sanitized = pattern.sub(replacement, sanitized)
 
     return sanitized
+
+
+def redact_headers(headers: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a copy of an HTTP header map with credential-bearing headers masked."""
+    if not headers:
+        return {}
+    out: dict[str, Any] = {}
+    for name, value in headers.items():
+        if isinstance(name, str) and name.lower() in SENSITIVE_HEADER_NAMES:
+            out[name] = REDACTED_LABEL
+        else:
+            out[name] = value
+    return out
+
+
+def redact_data(value: Any, custom_secrets: list[str] | None = None) -> Any:
+    """Recursively redact credentials from JSON-like structures.
+
+    Applied *before persistence*: network request logs, response headers, DOM
+    snapshots and console output were previously written to `runs.result` and
+    object storage verbatim, so an Authorization/Cookie header or a test
+    password in a rendered form survived in the forensic record.
+    """
+    if isinstance(value, str):
+        return redact_credentials(value, custom_secrets=custom_secrets)
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and key.lower() in SENSITIVE_HEADER_NAMES:
+                redacted[key] = REDACTED_LABEL
+            else:
+                redacted[key] = redact_data(item, custom_secrets=custom_secrets)
+        return redacted
+    if isinstance(value, list):
+        return [redact_data(item, custom_secrets=custom_secrets) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_data(item, custom_secrets=custom_secrets) for item in value)
+    return value

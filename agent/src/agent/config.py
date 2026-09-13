@@ -99,5 +99,48 @@ def load_env(
     return loaded
 
 
-# Automatically load on module import
+#: Secrets that may be supplied as a mounted file instead of an env var.
+SECRET_ENV_NAMES: tuple[str, ...] = (
+    "AGENT_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "CREDENTIAL_STORE_KEY",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_TOKEN",
+    "GITHUB_WEBHOOK_SECRET",
+    "SUPABASE_SECRET_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+)
+
+
+def load_secret_files(names: tuple[str, ...] = SECRET_ENV_NAMES) -> list[str]:
+    """Populate ``<NAME>`` from ``<NAME>_FILE`` when the variable itself is unset.
+
+    Docker/Kubernetes secret mounts and systemd ``LoadCredential`` hand secrets
+    over as files rather than environment variables. An explicit environment
+    value always wins, so this never overrides a directly configured secret.
+    Returns the names that were populated.
+    """
+    populated: list[str] = []
+    for name in names:
+        if os.environ.get(name):
+            continue
+        path = os.environ.get(f"{name}_FILE")
+        if not path:
+            continue
+        try:
+            value = Path(path).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logger.warning("Could not read %s_FILE (%s): %s", name, path, exc)
+            continue
+        if value:
+            os.environ[name] = value
+            populated.append(name)
+    return populated
+
+
+# Automatically load on module import. ``agent/__init__.py`` imports this module,
+# so every entry point (API, CLI, workers) gets both behaviours.
 _loaded_files = load_env()
+_loaded_secret_files = load_secret_files()

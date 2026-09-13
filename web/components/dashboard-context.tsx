@@ -8,6 +8,9 @@ export interface ProjectInfo {
   type?: "git" | "external";
   target_url?: string;
   domain?: string | null;
+  /** Where `domain` came from, when GitHub supplied it. */
+  urlSource?: "deployment" | "repository_homepage" | null;
+  urlEnvironment?: string | null;
   last_commit?: {
     message: string;
     sha?: string;
@@ -41,6 +44,91 @@ interface DashboardContextType {
 }
 
 const DashboardContext = createContext<DashboardContextType | undefined>(undefined);
+
+/** A loopback address is a dev server, not a deployment — never present it as one. */
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "0.0.0.0" ||
+      host === "::1" ||
+      host.endsWith(".local")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Best-effort live URL for an imported repo, resolved from GitHub. Cached for a
+ * while in localStorage because the underlying GitHub data changes rarely and
+ * this must never block the dashboard.
+ */
+async function fetchLiveUrls(
+  repoNames: string[]
+): Promise<Record<string, { url: string; source: string; environment: string | null }>> {
+  const CACHE_KEY = "autoqa_live_urls";
+  const CACHE_TTL_MS = 30 * 60 * 1000;
+  const wanted = Array.from(new Set(repoNames)).sort();
+  if (wanted.length === 0) return {};
+
+  let cache: Record<string, any> = {};
+  try {
+    cache = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}");
+  } catch {
+    cache = {};
+  }
+
+  const now = Date.now();
+  const result: Record<string, { url: string; source: string; environment: string | null }> = {};
+  const missing: string[] = [];
+
+  for (const repo of wanted) {
+    const entry = cache[repo];
+    if (entry?.url && typeof entry.at === "number" && now - entry.at < CACHE_TTL_MS) {
+      result[repo] = { url: entry.url, source: entry.source, environment: entry.environment ?? null };
+    } else {
+      missing.push(repo);
+    }
+  }
+
+  if (missing.length > 0) {
+    try {
+      const res = await fetch("/api/github/repo-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repos: missing.map((repo_full_name) => ({ repo_full_name })) }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        for (const item of data?.results || []) {
+          if (item?.url) {
+            result[item.repo_full_name] = {
+              url: item.url,
+              source: item.source,
+              environment: item.environment ?? null,
+            };
+            cache[item.repo_full_name] = {
+              url: item.url,
+              source: item.source,
+              environment: item.environment ?? null,
+              at: now,
+            };
+          }
+        }
+        try {
+          localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+        } catch {}
+      }
+    } catch {
+      // Offline or rate-limited: fall back to whatever was cached.
+    }
+  }
+
+  return result;
+}
 
 export function DashboardProvider({
   children,
@@ -77,13 +165,32 @@ export function DashboardProvider({
       if (projRes && projRes.ok) {
         const data = await projRes.json();
         if (data.projects && Array.isArray(data.projects)) {
+          // Live URLs are resolved from GitHub rather than invented. Only repos
+          // without one need a round trip.
+          const reposNeedingUrl = data.projects
+            .filter((p: any) => {
+              const explicit = p.settings?.domain;
+              return !explicit || isLoopbackUrl(explicit);
+            })
+            .map((p: any) => p.repo_full_name as string);
+          const liveUrls = await fetchLiveUrls(reposNeedingUrl);
+
           for (const p of data.projects) {
             const repoName = p.repo_full_name.split("/")[1] || p.repo_full_name;
+            const explicitDomain: string | undefined = p.settings?.domain;
+            const usableExplicit =
+              explicitDomain && !isLoopbackUrl(explicitDomain) ? explicitDomain : null;
+            const live = liveUrls[p.repo_full_name];
+
             gitProjects.push({
               repo_full_name: p.repo_full_name,
-              name: repoName,
+              name: p.settings?.name || repoName,
               type: "git",
-              domain: p.settings?.domain || (p.settings?.port ? `http://localhost:${p.settings.port}` : null),
+              domain: usableExplicit || live?.url || null,
+              urlSource: usableExplicit
+                ? null
+                : (live?.source as ProjectInfo["urlSource"]) ?? null,
+              urlEnvironment: usableExplicit ? null : live?.environment ?? null,
               last_commit: p.settings?.last_commit || null,
               github_url: `https://github.com/${p.repo_full_name}`,
               status: "ready",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
@@ -19,6 +19,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FolderGit2,
   GitBranch,
   Globe,
   History,
@@ -46,6 +47,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDashboard, ProjectInfo } from "@/components/dashboard-context";
+import { RepositorySwitcher, RepoOptions, type RepoSwitcherModel } from "@/components/repository-switcher";
 import { ExternalProjectSettings } from "./external-project-settings";
 
 function GithubIcon({ className = "h-4 w-4" }: { className?: string }) {
@@ -140,6 +142,54 @@ const SAFE_BUILD_BINARIES = [
 
 type SettingsTab = "all" | "repo-build" | "roles" | "auto-repair" | "env-vars" | "runs";
 
+/**
+ * The "Target GitHub Repo" field, rendered as a real selector.
+ *
+ * It deliberately looks like the read-only field it replaces, but clicking it
+ * opens the same project/repository list as the header switcher — including
+ * repositories that are accessible but not imported yet.
+ */
+function RepoFieldTrigger({
+  selectedRepo,
+  projects,
+  onSelect,
+  onImported,
+}: {
+  selectedRepo: string | null;
+  projects: ProjectInfo[];
+  onSelect: (repoFullName: string, wasImported: boolean) => void | Promise<void>;
+  onImported?: () => void | Promise<void>;
+}) {
+  return (
+    <RepositorySwitcher
+      className="block w-full"
+      menuClassName="w-full min-w-[22rem]"
+      selectedRepo={selectedRepo}
+      projects={projects}
+      onSelect={onSelect}
+      onImported={onImported}
+      renderTrigger={({ isOpen, toggle, label, model }: {
+        isOpen: boolean;
+        toggle: () => void;
+        label: string;
+        model: RepoSwitcherModel;
+      }) => (
+        <button
+          type="button"
+          onClick={toggle}
+          aria-haspopup="listbox"
+          aria-expanded={isOpen}
+          title="Choose a connected project or import another repository"
+          className="w-full flex items-center justify-between gap-2 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-mono text-slate-900 hover:border-slate-400 focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-colors cursor-pointer"
+        >
+          <span className="truncate">{label}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+        </button>
+      )}
+    />
+  );
+}
+
 export default function ProjectsClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -176,6 +226,8 @@ export default function ProjectsClient() {
   };
 
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+  // Ownerless (agent/webhook-created) projects hidden by strict tenant scoping.
+  const [hiddenUnownedProjects, setHiddenUnownedProjects] = useState(0);
   const [selectedRepo, setSelectedRepo] = useState(dashboardActiveRepo || "");
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -189,7 +241,6 @@ export default function ProjectsClient() {
   }, [dashboardActiveRepo]);
 
   // Modals & dropdowns
-  const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const [isAddRepoModalOpen, setIsAddRepoModalOpen] = useState(false);
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoBranch, setNewRepoBranch] = useState("main");
@@ -250,8 +301,7 @@ export default function ProjectsClient() {
   const [testSuccessRole, setTestSuccessRole] = useState<string | null>(null);
 
   // Manual Run Dispatcher Modal
-  const [isRunModalOpen, setIsRunModalOpen] = useState(false);
-  const [runBranch, setRunBranch] = useState("main");
+  const [isRunModalOpen, setIsRunModalOpen] = useState(false);  const [runBranch, setRunBranch] = useState("main");
   const [runPrNumber, setRunPrNumber] = useState("");
   const [runSha, setRunSha] = useState("HEAD");
   const [runScope, setRunScope] = useState<"changed" | "full">("changed");
@@ -260,39 +310,59 @@ export default function ProjectsClient() {
   const [isDispatchingRun, setIsDispatchingRun] = useState(false);
   const [runDispatchResult, setRunDispatchResult] = useState<any | null>(null);
 
+  // Destructive project deletion. Deleting removes the row from `projects`
+  // together with its run history, so re-importing is the only way back —
+  // hence the typed-name confirmation rather than a single click.
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deleteConfirmName, setDeleteConfirmName] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deletedRunCount, setDeletedRunCount] = useState<number | null>(null);
+
   // Commit Run History state
   const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([]);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
   const [copiedSha, setCopiedSha] = useState<string | null>(null);
 
   // 1. Load Projects List
-  useEffect(() => {
-    async function loadProjects() {
+  //
+  // Returns the fetched rows so callers can read a just-imported project's
+  // settings immediately, without waiting on React state to settle.
+  const loadProjects = useCallback(
+    async (repoOverride?: string): Promise<ProjectItem[]> => {
       try {
         const res = await fetch("/api/projects");
-        if (res.ok) {
-          const data = await res.json();
-          if (data.projects && data.projects.length > 0) {
-            setProjects(data.projects);
-            if (!dashboardActiveRepo) {
-              setSelectedRepo(data.projects[0].repo_full_name);
-              if (data.projects[0].settings) {
-                setSettings((prev) => ({ ...prev, ...data.projects[0].settings }));
-              }
-            } else if (!dashboardActiveRepo.startsWith("external:")) {
-              const matched = data.projects.find((p: any) => p.repo_full_name === dashboardActiveRepo);
-              if (matched && matched.settings) {
-                setSettings((prev) => ({ ...prev, ...matched.settings }));
-              }
-            }
+        if (!res.ok) return [];
+        const data = await res.json();
+        setHiddenUnownedProjects(data.hidden_unowned_projects || 0);
+        const rows: ProjectItem[] = data.projects || [];
+        if (rows.length === 0) return rows;
+
+        setProjects(rows);
+        const target = repoOverride ?? dashboardActiveRepo;
+        if (!target) {
+          setSelectedRepo(rows[0].repo_full_name);
+          if (rows[0].settings) {
+            setSettings((prev) => ({ ...prev, ...rows[0].settings }));
+          }
+        } else if (!target.startsWith("external:")) {
+          const matched = rows.find((p) => p.repo_full_name === target);
+          if (matched?.settings) {
+            setSettings((prev) => ({ ...prev, ...matched.settings }));
           }
         }
+        return rows;
       } catch (err) {
         console.error("Failed to load projects", err);
+        return [];
       }
-    }
+    },
+    [dashboardActiveRepo]
+  );
+
+  useEffect(() => {
     loadProjects();
-  }, [dashboardActiveRepo]);
+  }, [loadProjects]);
 
   // 2. Fetch Run History whenever selectedRepo changes
   const fetchRunHistory = async (repoName: string) => {
@@ -325,10 +395,25 @@ export default function ProjectsClient() {
   const handleSelectRepo = (p: ProjectItem) => {
     setSelectedRepo(p.repo_full_name);
     setDashboardActiveRepo(p.repo_full_name);
-    setIsRepoDropdownOpen(false);
     if (p.settings) {
       setSettings(p.settings);
     }
+  };
+
+  /**
+   * Switch to a project chosen from a repo switcher.
+   *
+   * When `wasImported` is false the row was just created by the switcher, so
+   * this component's `projects` state does not contain it yet — reload before
+   * switching, otherwise the form would render the *previous* project's
+   * settings under the new repo's name.
+   */
+  const handleRepoSelection = async (repo: string, wasImported: boolean) => {
+    if (!wasImported) {
+      await loadProjects(repo);
+    }
+    setSelectedRepo(repo);
+    setDashboardActiveRepo(repo);
   };
 
   // Add new repository to projects list and persist to Supabase
@@ -354,14 +439,26 @@ export default function ProjectsClient() {
     setNewRepoName("");
 
     try {
-      await fetch("/api/projects", {
+      const res = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newProj),
       });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        // Do not leave a phantom project in the list when the server refused it.
+        setProjects((prev) => prev.filter((p) => p.repo_full_name !== trimmed));
+        setSaveError(errorData.error || `Failed to connect repository (HTTP ${res.status}).`);
+        refreshDashboardProjects();
+        return;
+      }
+
+      setSaveError(null);
       refreshDashboardProjects();
-    } catch (err) {
-      console.error("Failed to persist newly connected repo", err);
+    } catch (err: any) {
+      setProjects((prev) => prev.filter((p) => p.repo_full_name !== trimmed));
+      setSaveError(err?.message || "A network error occurred while connecting the repository.");
     }
   };
 
@@ -437,6 +534,66 @@ export default function ProjectsClient() {
       setSaveError(err?.message || "A network error occurred while saving project settings.");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // Delete the selected project (and its stored run history) from the database.
+  const handleDeleteProject = async () => {
+    if (!selectedRepo) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch("/api/projects", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo_full_name: selectedRepo }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setDeleteError(data.error || `Could not delete this project (HTTP ${res.status}).`);
+        return;
+      }
+
+      setDeletedRunCount(typeof data.deleted_runs === "number" ? data.deleted_runs : 0);
+
+      const deletedRepo = selectedRepo;
+      const remaining = projects.filter((p) => p.repo_full_name !== deletedRepo);
+
+      // Re-resolve the project list from the server, then move the selection to
+      // whatever remains. Keeping the deleted repo selected would leave the
+      // settings form bound to a row that no longer exists.
+      await refreshDashboardProjects?.();
+      setDeleteConfirmName("");
+      setIsDeleteModalOpen(false);
+
+      // Nothing left to configure: leave the settings screen, which would
+      // otherwise render an empty form under a "Select project" placeholder.
+      // The confirmation rides along in the query string so it is not lost with
+      // this component's state.
+      if (remaining.length === 0) {
+        // Clear the stored selection so the dashboard does not restore a repo
+        // that no longer exists.
+        try {
+          localStorage.removeItem("autoqa_active_repo");
+        } catch {}
+        setDashboardActiveRepo(null);
+        router.replace(
+          `/dashboard?deleted=${encodeURIComponent(deletedRepo)}&deleted_runs=${
+            typeof data.deleted_runs === "number" ? data.deleted_runs : 0
+          }`
+        );
+        return;
+      }
+
+      const next = remaining[0].repo_full_name;
+      setProjects(remaining);
+      setSelectedRepo(next);
+      setDashboardActiveRepo(next);
+    } catch (err: any) {
+      setDeleteError(err?.message || "A network error occurred while deleting the project.");
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -577,10 +734,12 @@ export default function ProjectsClient() {
   const installationId = currentProject?.installation_id || null;
   const defaultBranch = currentProject?.default_branch || "main";
 
-  // Calculate token savings across run history
+  // Deduplicated (cached) run count. This previously also computed "token savings"
+  // as `totalCachedRuns * 15000` tokens and `totalCachedRuns * 0.45` dollars —
+  // both invented per-run constants, not measurements. SHA deduplication does skip
+  // real work, but the pipeline never records how much, so the count of
+  // deduplicated runs is the only honest number available.
   const totalCachedRuns = runHistory.filter((r) => r.status === "cached").length;
-  const totalTokensSaved = totalCachedRuns * 15000;
-  const totalCostSaved = (totalCachedRuns * 0.45).toFixed(2);
 
   // Visibility filters based on active tab
   const showRepoBuild = activeTab === "all" || activeTab === "repo-build";
@@ -608,6 +767,57 @@ export default function ProjectsClient() {
 
   return (
     <div className="max-w-7xl mx-auto w-full p-4 sm:p-6 lg:p-8 space-y-6 text-slate-900 animate-in fade-in-50 duration-200">
+      {/* Nothing to configure. This happens after deleting the last project in
+          another tab (or with the list still loading out of an empty database);
+          settings for a project that does not exist are not a useful screen. */}
+      {!selectedRepo && projects.length === 0 && (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center space-y-3">
+          <FolderGit2 className="h-8 w-8 text-slate-400 mx-auto" />
+          <div>
+            <p className="text-sm font-semibold text-slate-800">No project selected</p>
+            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+              There are no projects in this workspace. Import a repository to configure
+              its test credentials and trigger policies.
+            </p>
+          </div>
+          <div className="pt-1 flex items-center justify-center gap-2">
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white border border-slate-200 text-slate-800 text-xs font-semibold hover:bg-slate-50 transition-colors shadow-2xs"
+            >
+              <ArrowRight className="h-3.5 w-3.5" />
+              <span>Back to all projects</span>
+            </Link>
+            <Link
+              href="/dashboard/new"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-950 text-white text-xs font-semibold hover:bg-slate-800 transition-colors shadow-2xs"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>Import Repository</span>
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {hiddenUnownedProjects > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900 leading-relaxed">
+          <span className="font-bold">
+            {hiddenUnownedProjects} project{hiddenUnownedProjects === 1 ? "" : "s"} hidden.
+          </span>{" "}
+          This deployment only shows repositories you own. Claim the legacy rows in
+          Supabase (
+          <code className="font-mono">
+            update projects set user_id = &apos;&lt;your-user-id&gt;&apos; where user_id is null;
+          </code>
+          ) or set <code className="font-mono">SHOW_UNOWNED_PROJECTS=true</code>. See{" "}
+          <code className="font-mono">supabase/README.md</code>.
+        </div>
+      )}
+
+      {/* Everything below binds to a selected project. With none selected (and
+          none imported) the empty state above is the whole screen. */}
+      {(selectedRepo || projects.length > 0) && (
+        <>
       {/* Top Banner & Header Controls */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
@@ -617,81 +827,25 @@ export default function ProjectsClient() {
               Repository Settings &amp; Zero-Config Onboarding
             </h1>
 
-            {/* Switch Repository Pill */}
-            <div className="relative inline-block">
-              <button
-                type="button"
-                onClick={() => setIsRepoDropdownOpen(!isRepoDropdownOpen)}
-                className="flex items-center gap-1.5 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200 px-2.5 py-0.5 text-xs font-mono font-bold text-slate-800 transition-colors"
-              >
-                <GitBranch className="h-3 w-3 text-slate-500" />
-                <span className="max-w-[200px] truncate">{selectedRepo || "Select Repo"}</span>
-                <ChevronDown className="h-3 w-3 text-slate-400" />
-              </button>
-
-              {isRepoDropdownOpen && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setIsRepoDropdownOpen(false)} />
-                  <div className="absolute left-0 mt-1.5 w-72 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl z-50 animate-in fade-in-50 zoom-in-95 text-xs">
-                    <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Switch Project
-                    </div>
-                    <div className="max-h-56 overflow-y-auto space-y-0.5">
-                      {dashboardProjects.map((p) => {
-                        const isExt = p.type === "external" || p.repo_full_name.startsWith("external:");
-                        return (
-                          <button
-                            key={p.repo_full_name}
-                            type="button"
-                            onClick={() => {
-                              setSelectedRepo(p.repo_full_name);
-                              setDashboardActiveRepo(p.repo_full_name);
-                              setIsRepoDropdownOpen(false);
-                            }}
-                            className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
-                              selectedRepo === p.repo_full_name
-                                ? "bg-emerald-50 text-emerald-800 font-bold"
-                                : "text-slate-700 hover:bg-slate-100"
-                            }`}
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              {isExt ? (
-                                <Globe className="h-3.5 w-3.5 text-sky-600 shrink-0" />
-                              ) : (
-                                <GitBranch className="h-3.5 w-3.5 text-slate-500 shrink-0" />
-                              )}
-                              <span className="truncate">{p.name || p.repo_full_name}</span>
-                            </div>
-                            {selectedRepo === p.repo_full_name && <Check className="h-3.5 w-3.5 text-emerald-600" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="pt-1.5 mt-1 border-t border-slate-100">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsRepoDropdownOpen(false);
-                          setIsAddRepoModalOpen(true);
-                        }}
-                        className="w-full flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 transition-colors"
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                        <span>Connect New Repository</span>
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
+            {/* Switch Repository Pill — lists imported projects and every repo
+                the GitHub App can reach, importing on selection. */}
+            <RepositorySwitcher
+              selectedRepo={selectedRepo}
+              projects={dashboardProjects}
+              onSelect={(repo) => {
+                setSelectedRepo(repo);
+                setDashboardActiveRepo(repo);
+              }}
+            />
           </div>
           <p className="text-xs sm:text-sm text-slate-600 mt-1">
             Manage multi-role test credentials, manual verification dispatcher, smart token caching, and automated trigger policies.
           </p>
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex items-center gap-2.5 shrink-0">
+        {/* Action Buttons. `flex-wrap` so the destructive action is never
+            pushed off-screen on a laptop-width viewport. */}
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <Button
             onClick={() => setIsRunModalOpen(true)}
             variant="outline"
@@ -699,6 +853,21 @@ export default function ProjectsClient() {
           >
             <Play className="h-3.5 w-3.5 text-emerald-600 fill-emerald-600" />
             <span>Trigger Test Run</span>
+          </Button>
+
+          <Button
+            onClick={() => setIsDeleteModalOpen(true)}
+            variant="outline"
+            disabled={!selectedRepo || selectedRepo.startsWith("external:")}
+            title={
+              selectedRepo?.startsWith("external:")
+                ? "External sites are managed from the external website settings."
+                : "Delete this project"
+            }
+            className="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 font-semibold text-xs px-3 py-1.5 h-8 gap-1.5 shadow-2xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Delete Project</span>
           </Button>
 
           <Button
@@ -739,6 +908,29 @@ export default function ProjectsClient() {
             type="button"
             onClick={() => setSaveError(null)}
             className="text-red-600 hover:text-red-900 font-semibold text-xs ml-4 cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Deletion confirmation: the row is gone from the database, so state the
+          outcome and how much history went with it. */}
+      {deletedRunCount !== null && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 text-xs text-slate-700 flex items-center justify-between shadow-xs animate-in fade-in-50">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+            <span>
+              <span className="font-bold">Project deleted.</span>{" "}
+              {deletedRunCount > 0
+                ? `${deletedRunCount} stored run${deletedRunCount === 1 ? "" : "s"} were removed with it.`
+                : "No run history was stored for it."}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDeletedRunCount(null)}
+            className="text-slate-600 hover:text-slate-900 font-semibold text-xs ml-4 cursor-pointer"
           >
             Dismiss
           </button>
@@ -844,12 +1036,23 @@ export default function ProjectsClient() {
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1">Target GitHub Repo</label>
-                <input
-                  type="text"
-                  value={selectedRepo}
-                  onChange={(e) => setSelectedRepo(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-mono text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                <label className="text-xs font-semibold text-slate-700 block mb-1">
+                  Target GitHub Repo
+                </label>
+                {/* This field used to be a free-text input: the repo name could
+                    be typed but not chosen, and typing it changed nothing on the
+                    server. It is now the switcher's trigger, so there is exactly
+                    one place — and one set of choices — for picking a repo. */}
+                <RepoFieldTrigger
+                  selectedRepo={selectedRepo}
+                  projects={dashboardProjects}
+                  onSelect={handleRepoSelection}
+                  // A freshly imported repo has no settings in this component's
+                  // state yet; reload the list before switching so the form
+                  // shows the project's real saved configuration.
+                  onImported={async () => {
+                    await loadProjects();
+                  }}
                 />
               </div>
 
@@ -954,18 +1157,12 @@ export default function ProjectsClient() {
                 AutoQA automatically fingerprints commit SHAs and diff boundaries. When a commit is already verified green, cached forensics are returned instantly with zero LLM token consumption.
               </p>
 
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-indigo-100/80">
+              <div className="grid grid-cols-1 gap-2 pt-1 border-t border-indigo-100/80">
                 <div className="rounded-lg bg-white p-2.5 border border-indigo-100 shadow-2xs">
-                  <span className="text-[10px] text-slate-500 block">Deduplicated Runs</span>
+                  <span className="text-[10px] text-slate-500 block">Verified Runs Served From Cache</span>
                   <span className="text-base font-bold text-slate-900 font-mono flex items-center gap-1">
                     <Zap className="h-3.5 w-3.5 text-amber-500 fill-amber-500" />
                     {totalCachedRuns}
-                  </span>
-                </div>
-                <div className="rounded-lg bg-white p-2.5 border border-indigo-100 shadow-2xs">
-                  <span className="text-[10px] text-slate-500 block">Est. Token Savings</span>
-                  <span className="text-base font-bold text-emerald-600 font-mono">
-                    ~{totalTokensSaved.toLocaleString()}
                   </span>
                 </div>
               </div>
@@ -1817,6 +2014,96 @@ export default function ProjectsClient() {
           )}
         </div>
       </div>
+        </>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4 animate-in fade-in-50 zoom-in-95">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <Trash2 className="h-4 w-4 text-red-600" />
+                Delete project
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDeleteModalOpen(false);
+                  setDeleteConfirmName("");
+                  setDeleteError(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
+              <p>
+                This permanently removes{" "}
+                <span className="font-mono font-bold text-slate-900">{selectedRepo}</span> from the
+                database, together with its stored settings, credentials, and run history.
+              </p>
+              <p className="text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                There is no undo. To use this repository again you will have to re-import it.
+              </p>
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">
+                  Type <span className="font-mono">{selectedRepo}</span> to confirm
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmName}
+                  onChange={(e) => setDeleteConfirmName(e.target.value)}
+                  placeholder={selectedRepo}
+                  className="w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-xs focus:outline-none focus:border-red-500"
+                />
+              </div>
+              {deleteError && (
+                <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-700">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                  <span>{deleteError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setIsDeleteModalOpen(false);
+                  setDeleteConfirmName("");
+                  setDeleteError(null);
+                }}
+                disabled={isDeleting}
+                className="border-slate-200 text-slate-700 hover:bg-slate-100 text-xs h-8 px-3"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={handleDeleteProject}
+                disabled={isDeleting || deleteConfirmName.trim() !== selectedRepo}
+                className="bg-red-600 hover:bg-red-700 text-white font-semibold text-xs h-8 px-3 gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Delete permanently</span>
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ---------------- Connect New Repository Modal ---------------- */}
       {isAddRepoModalOpen && (

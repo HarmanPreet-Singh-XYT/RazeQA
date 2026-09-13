@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import sync_playwright
 
 from agent.journeys.cursor_overlay import click_with_cursor, fill_with_cursor
+from agent.journeys.web_vitals import WEB_VITALS_INIT_SCRIPT, collect_web_vitals
 
 
 @dataclass
@@ -19,6 +21,9 @@ class JourneyResult:
     video_path: Path | None
     storage_state_path: Path | None = None
     error: str | None = None
+    #: Measured browser Web Vitals for the login navigation, if any were
+    #: observed. ``None`` means the collector observed nothing (never invented).
+    web_vitals: dict[str, Any] | None = None
 
 
 def run_login_journey(
@@ -45,9 +50,13 @@ def run_login_journey(
         context = browser.new_context(record_video_dir=str(video_dir))
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
         page = context.new_page()
+        # Install the Web Vitals collector before any navigation on the login
+        # page too, so its lifecycle is observed just like route journeys.
+        page.add_init_script(WEB_VITALS_INIT_SCRIPT)
 
         error: str | None = None
         passed = False
+        login_vitals: dict[str, Any] | None = None
         try:
             page.goto(f"{base_url}/dashboard", wait_until="networkidle")
             # If not redirected to /login automatically, navigate to /login
@@ -71,6 +80,11 @@ def run_login_journey(
         # Cleanup must run even if tracing.stop() itself raises — otherwise a
         # tracing failure leaks the browser process for the rest of the run.
         video_path: Path | None = None
+        # Read measured vitals while the page is still open.
+        try:
+            login_vitals = collect_web_vitals(page)
+        except Exception:  # noqa: BLE001 - metrics are best-effort, never fatal
+            login_vitals = None
         try:
             context.tracing.stop(path=str(trace_path))
         except Exception:  # noqa: BLE001
@@ -84,10 +98,16 @@ def run_login_journey(
         context.close()
         browser.close()
 
+        if video_path and video_path.exists():
+            from agent.journeys.video_converter import process_recorded_video
+
+            video_path = process_recorded_video(video_path)
+
     return JourneyResult(
         passed=passed,
         trace_path=trace_path,
         video_path=video_path,
         storage_state_path=saved_state_path,
         error=error,
+        web_vitals=login_vitals,
     )

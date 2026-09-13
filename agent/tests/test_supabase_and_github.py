@@ -41,19 +41,24 @@ def test_supabase_fallback_mode() -> None:
 
 
 def test_supabase_secret_key_resolution() -> None:
-    with patch.dict(os.environ, {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_SECRET_KEY": "sb_sec_test"}, clear=False):
-        with patch("supabase.create_client") as mock_create:
-            mock_create.return_value = "mock_client"
-            client = get_supabase_client()
-            assert client == "mock_client"
-            mock_create.assert_called_once_with("https://example.supabase.co", "sb_sec_test")
+    # This test exercises key resolution, so it needs the factory to actually
+    # build a client. The suite-wide guard (get_supabase_client returns None
+    # under pytest, to keep fixture data out of real databases) is lifted here
+    # only because `supabase.create_client` is mocked — no network I/O happens.
+    with patch.dict(os.environ, {"ALLOW_SUPABASE_WRITES_IN_TESTS": "1"}, clear=False):
+        with patch.dict(os.environ, {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_SECRET_KEY": "sb_sec_test"}, clear=False):
+            with patch("supabase.create_client") as mock_create:
+                mock_create.return_value = "mock_client"
+                client = get_supabase_client()
+                assert client == "mock_client"
+                mock_create.assert_called_once_with("https://example.supabase.co", "sb_sec_test")
 
-    with patch.dict(os.environ, {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_SECRET_KEY": "", "SUPABASE_SERVICE_ROLE_KEY": "legacy_service_key"}, clear=False):
-        with patch("supabase.create_client") as mock_create:
-            mock_create.return_value = "mock_client_legacy"
-            client = get_supabase_client()
-            assert client == "mock_client_legacy"
-            mock_create.assert_called_once_with("https://example.supabase.co", "legacy_service_key")
+        with patch.dict(os.environ, {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_SECRET_KEY": "", "SUPABASE_SERVICE_ROLE_KEY": "legacy_service_key"}, clear=False):
+            with patch("supabase.create_client") as mock_create:
+                mock_create.return_value = "mock_client_legacy"
+                client = get_supabase_client()
+                assert client == "mock_client_legacy"
+                mock_create.assert_called_once_with("https://example.supabase.co", "legacy_service_key")
 
 
 def test_github_webhook_signature_verification() -> None:

@@ -14,7 +14,6 @@ import {
   Save,
   Shield,
   Layers,
-  ChevronDown,
   Check,
   Smartphone,
   Monitor,
@@ -23,10 +22,10 @@ import {
   Terminal,
   Activity,
   ArrowUpRight,
-  FolderGit2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProjectInfo } from "@/components/dashboard-context";
+import { RepositorySwitcher } from "@/components/repository-switcher";
 
 interface ExternalProjectSettingsProps {
   selectedRepo: string;
@@ -72,8 +71,6 @@ export function ExternalProjectSettings({
   const [runSuccessMsg, setRunSuccessMsg] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
-
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   // Load persisted routes & headers from localStorage
   useEffect(() => {
@@ -211,63 +208,14 @@ export function ExternalProjectSettings({
               External Website Settings &amp; Verification
             </h1>
 
-            {/* Switch Project Pill */}
-            <div className="relative inline-block">
-              <button
-                type="button"
-                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                className="flex items-center gap-1.5 rounded-full bg-sky-50 hover:bg-sky-100 border border-sky-200 px-2.5 py-0.5 text-xs font-mono font-bold text-sky-900 transition-colors cursor-pointer"
-              >
-                <Globe className="h-3 w-3 text-sky-600" />
-                <span className="max-w-[200px] truncate">{cleanHostname}</span>
-                <span className="text-[10px] uppercase font-mono px-1 py-0.2 rounded bg-sky-200/60 text-sky-800">
-                  External
-                </span>
-                <ChevronDown className="h-3 w-3 text-sky-500" />
-              </button>
-
-              {isDropdownOpen && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setIsDropdownOpen(false)} />
-                  <div className="absolute left-0 mt-1.5 w-72 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl z-50 animate-in fade-in-50 zoom-in-95 text-xs">
-                    <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Switch Project
-                    </div>
-                    <div className="max-h-56 overflow-y-auto space-y-0.5">
-                      {allProjects.map((p) => {
-                        const isExt = p.type === "external" || p.repo_full_name.startsWith("external:");
-                        const isCurrent = selectedRepo === p.repo_full_name;
-                        return (
-                          <button
-                            key={p.repo_full_name}
-                            type="button"
-                            onClick={() => {
-                              onSelectProject(p.repo_full_name);
-                              setIsDropdownOpen(false);
-                            }}
-                            className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition-colors cursor-pointer ${
-                              isCurrent
-                                ? "bg-slate-100 text-slate-950 font-bold"
-                                : "text-slate-700 hover:bg-slate-50"
-                            }`}
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              {isExt ? (
-                                <Globe className="h-3.5 w-3.5 text-sky-600 shrink-0" />
-                              ) : (
-                                <FolderGit2 className="h-3.5 w-3.5 text-slate-600 shrink-0" />
-                              )}
-                              <span className="truncate">{p.name || p.repo_full_name}</span>
-                            </div>
-                            {isCurrent && <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
+            {/* Switch Project Pill — same catalogue as the Git settings tab, so
+                an external site can be swapped straight to a connected repo. */}
+            <RepositorySwitcher
+              selectedRepo={selectedRepo}
+              projects={allProjects}
+              onSelect={(repo) => onSelectProject(repo)}
+              variant="external"
+            />
           </div>
           <p className="text-xs sm:text-sm text-slate-600 mt-1">
             Configure crawl paths, responsive viewports, custom HTTP headers, and automated synthetic verification for live websites.

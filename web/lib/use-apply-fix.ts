@@ -7,6 +7,8 @@ export type ApplyFixErrorType = "missing_api_key" | "backend_unreachable" | "gen
 export interface ApplyFixState {
   isApplying: boolean;
   isSuccess: boolean;
+  /** How the patch landed: "github_contents_api" or "local_worktree". */
+  appliedVia: string | null;
   error: string | null;
   errorType: ApplyFixErrorType;
 }
@@ -15,6 +17,7 @@ export function useApplyFix(runId: string, onApplied?: () => void) {
   const [state, setState] = useState<ApplyFixState>({
     isApplying: false,
     isSuccess: false,
+    appliedVia: null,
     error: null,
     errorType: null,
   });
@@ -29,6 +32,7 @@ export function useApplyFix(runId: string, onApplied?: () => void) {
     setState({
       isApplying: true,
       isSuccess: false,
+      appliedVia: null,
       error: null,
       errorType: null,
     });
@@ -44,6 +48,7 @@ export function useApplyFix(runId: string, onApplied?: () => void) {
         setState({
           isApplying: false,
           isSuccess: true,
+          appliedVia: typeof data.applied_via === "string" ? data.applied_via : null,
           error: null,
           errorType: null,
         });
@@ -63,6 +68,7 @@ export function useApplyFix(runId: string, onApplied?: () => void) {
         setState({
           isApplying: false,
           isSuccess: false,
+          appliedVia: null,
           error: errorMsg,
           errorType: errType,
         });
@@ -71,6 +77,7 @@ export function useApplyFix(runId: string, onApplied?: () => void) {
       setState({
         isApplying: false,
         isSuccess: false,
+        appliedVia: null,
         error: err?.message || "Network error while connecting to AutoQA Engine.",
         errorType: "backend_unreachable",
       });

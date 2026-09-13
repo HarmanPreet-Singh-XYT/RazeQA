@@ -1,30 +1,34 @@
-"""Real synthetic pointer interaction for recorded journeys.
+"""Human-feel synthetic pointer interaction for recorded journeys.
 
-page.click(selector) / page.fill(selector, value) are CDP DOM-level commands
-— Playwright resolves the selector and dispatches synthetic click/input
-events directly on the element. No cursor moves, no mouse button goes down,
-nothing the browser's own rendering reacts to — it's the same mechanism any
-Playwright/Selenium/Cypress E2E test uses, not an agent operating the page
-the way a human with a mouse would.
+Two separate problems are solved here.
 
-This module drives real input instead: page.mouse.move(x, y, steps=N) emits
-interpolated mousemove events Chrome actually renders a cursor for and
-:hover states react to; page.mouse.down()/up() are real button-press events;
-page.keyboard.type() emits individual keydown/keyup pairs per character
-instead of setting the input's value directly. All coordinate-driven off
-each element's real bounding box (DOM/accessibility-tree grounded — fast and
-reliable) rather than vision-driven pixel guessing. This is what actually
-shows up as cursor movement in the CDP screencast video; no OS-level
-integration needed since it stays entirely inside the browser's own input
-pipeline.
+1. **Real input.** ``page.click(selector)`` / ``page.fill(...)`` are CDP
+   DOM-level commands that dispatch synthetic events straight at the element —
+   no cursor moves, no button goes down, nothing the browser renders reacts to.
+   This module drives ``page.mouse`` / ``page.keyboard`` instead, so hover
+   states, focus rings and scroll physics behave as they do for a person.
+
+2. **A visible cursor.** Playwright's ``record_video_dir`` captures a *page*
+   screencast, not the desktop: real mouse events move the browser's input
+   pipeline but the OS pointer is never part of the rendered page, so the
+   recording showed a site apparently operating itself. A DOM overlay cursor is
+   injected into every document and animated along the same path, which is what
+   makes the recording read as a person using the site.
+
+Motion is deliberately non-linear: eased curved paths with a random bow, small
+idle pauses, a hover beat before pressing, and a visible click pulse.
 """
 
 from __future__ import annotations
 
+import logging
+import math
 import random
 import weakref
 
 from playwright.sync_api import Locator, Page
+
+logger = logging.getLogger("agent.journeys.cursor_overlay")
 
 # Tracks the last known cursor position per Page, so movement is continuous
 # ("cursor slides from wherever it was to the next target") instead of every
@@ -37,7 +41,188 @@ from playwright.sync_api import Locator, Page
 # brand-new Page, which would silently inherit a stale cursor position from
 # an unrelated prior run. WeakKeyDictionary entries disappear automatically
 # once the Page itself is collected, closing both gaps.
-_last_position: "weakref.WeakKeyDictionary[Page, tuple[float, float]]" = weakref.WeakKeyDictionary()
+_last_position: weakref.WeakKeyDictionary[Page, tuple[float, float]] = weakref.WeakKeyDictionary()
+
+
+# Injected into every document (add_init_script re-runs per navigation). The
+# cursor is `position: fixed` so it stays put while the page scrolls, and
+# `pointer-events: none` so it is excluded from hit-testing — otherwise it would
+# sit on top of the very elements the reachability checks probe with
+# document.elementFromPoint().
+_CURSOR_OVERLAY_SCRIPT = r"""
+(() => {
+  if (window.__qaCursorInstalled) return;
+  window.__qaCursorInstalled = true;
+
+  const POS_KEY = '__qaCursorPos';
+  const readPos = () => {
+    try {
+      const raw = sessionStorage.getItem(POS_KEY);
+      if (raw) {
+        const parts = raw.split(',');
+        const x = parseFloat(parts[0]);
+        const y = parseFloat(parts[1]);
+        if (isFinite(x) && isFinite(y)) return [x, y];
+      }
+    } catch (e) { /* storage blocked on this page */ }
+    return null;
+  };
+  const writePos = (x, y) => {
+    try { sessionStorage.setItem(POS_KEY, x + ',' + y); } catch (e) { /* ignore */ }
+  };
+
+  const ensure = () => {
+    if (!document.documentElement || window.__qaCursor) return;
+
+    const style = document.createElement('style');
+    style.textContent = `
+      #__qa-cursor { position: fixed; left: 50%; top: 45%; width: 22px; height: 22px;
+        z-index: 2147483647; pointer-events: none; transform: translate(-4px, -2px);
+        transition: transform .07s ease-out; will-change: left, top; }
+      #__qa-cursor svg { display: block; filter: drop-shadow(0 2px 3px rgba(0,0,0,.45)); }
+      .__qa-ripple { position: fixed; width: 14px; height: 14px; border-radius: 9999px;
+        border: 2px solid rgba(220,38,38,.85); pointer-events: none; z-index: 2147483646;
+        transform: translate(-50%,-50%); animation: __qa-pulse .55s ease-out forwards; }
+      .__qa-caption { position: fixed; z-index: 2147483645; pointer-events: none;
+        max-width: 320px; padding: 3px 7px; border-radius: 6px; background: rgba(15,23,42,.92);
+        color: #f8fafc; font: 600 11px/1.35 ui-sans-serif, system-ui, sans-serif;
+        transform: translate(14px, 16px); opacity: 0; transition: opacity .18s ease-out; }
+      .__qa-caption.__qa-on { opacity: 1; }
+      @keyframes __qa-pulse {
+        from { width: 14px; height: 14px; opacity: .9; }
+        to { width: 58px; height: 58px; opacity: 0; }
+      }`;
+    document.documentElement.appendChild(style);
+
+    const el = document.createElement('div');
+    el.id = '__qa-cursor';
+    el.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24">'
+      + '<path d="M4 2 L4 20.5 L9.2 15.4 L12.6 22.4 L15.2 21.2 L11.8 14.3 L18.6 14.1 Z" '
+      + 'fill="#111827" stroke="#ffffff" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+    document.documentElement.appendChild(el);
+
+    const caption = document.createElement('div');
+    caption.className = '__qa-caption';
+    document.documentElement.appendChild(caption);
+
+    // Appear somewhere sensible on the FIRST frame of every document instead of
+    // parked off-screen. A new document is created on every navigation, which is
+    // why the cursor used to vanish after each page change until the next move.
+    const restored = window.__qaPendingCursor || readPos();
+    if (restored) {
+      el.style.left = restored[0] + 'px';
+      el.style.top = restored[1] + 'px';
+      window.__qaPendingCursor = null;
+    }
+
+    window.__qaCursor = {
+      el, caption,
+      move(x, y) {
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+        writePos(x, y);
+      },
+      press() { el.style.transform = 'translate(-4px, -2px) scale(.86)'; },
+      release() { el.style.transform = 'translate(-4px, -2px) scale(1)'; },
+      ripple() {
+        const r = document.createElement('div');
+        r.className = '__qa-ripple';
+        r.style.left = el.style.left;
+        r.style.top = el.style.top;
+        document.documentElement.appendChild(r);
+        setTimeout(() => r.remove(), 600);
+      },
+      label(text) {
+        if (!text) { caption.classList.remove('__qa-on'); return; }
+        caption.textContent = text;
+        caption.style.left = el.style.left;
+        caption.style.top = el.style.top;
+        caption.classList.add('__qa-on');
+      },
+    };
+  };
+
+  window.__qaCursorEnsure = ensure;
+
+  // Self-healing: if a framework wiped the node (hydration, document rewrite),
+  // the next move recreates it rather than silently doing nothing.
+  window.__qaCursorMove = (x, y) => {
+    ensure();
+    if (window.__qaCursor) window.__qaCursor.move(x, y);
+    else window.__qaPendingCursor = [x, y];
+  };
+  window.__qaCursorPress = () => { ensure(); if (window.__qaCursor) window.__qaCursor.press(); };
+  window.__qaCursorRelease = () => { ensure(); if (window.__qaCursor) window.__qaCursor.release(); };
+  window.__qaCursorRipple = () => { ensure(); if (window.__qaCursor) window.__qaCursor.ripple(); };
+  window.__qaCursorLabel = (t) => { ensure(); if (window.__qaCursor) window.__qaCursor.label(t); };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', ensure, { once: true });
+  } else {
+    ensure();
+  }
+})();
+"""
+
+
+def install_cursor_overlay(page: Page) -> None:
+    """Inject the visible cursor overlay for this page and every navigation."""
+    try:
+        page.add_init_script(_CURSOR_OVERLAY_SCRIPT)
+        # Apply to the document already loaded (add_init_script only affects
+        # future navigations).
+        page.evaluate(_CURSOR_OVERLAY_SCRIPT)
+    except Exception as exc:  # noqa: BLE001
+        # Never fail a run because the cosmetic layer could not be installed.
+        logger.debug("Could not install cursor overlay: %s", exc)
+
+
+def _cursor_move(page: Page, x: float, y: float) -> None:
+    try:
+        page.evaluate("([x, y]) => window.__qaCursorMove && window.__qaCursorMove(x, y)", [x, y])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not move overlay cursor: %s", exc)
+
+
+def _cursor_press(page: Page, pressed: bool) -> None:
+    fn = "__qaCursorPress" if pressed else "__qaCursorRelease"
+    try:
+        page.evaluate(f"() => window.{fn} && window.{fn}()")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not press overlay cursor: %s", exc)
+
+
+def _cursor_ripple(page: Page) -> None:
+    try:
+        page.evaluate("() => window.__qaCursorRipple && window.__qaCursorRipple()")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not ripple overlay cursor: %s", exc)
+
+
+def annotate_cursor(page: Page, text: str | None) -> None:
+    """Show a short caption next to the cursor, so a recording is self-explaining."""
+    try:
+        page.evaluate("(t) => window.__qaCursorLabel && window.__qaCursorLabel(t)", text or "")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not caption overlay cursor: %s", exc)
+
+
+def restore_cursor(page: Page) -> None:
+    """Re-show the cursor after a navigation.
+
+    A new document gets a brand-new overlay node, so call this after any
+    ``goto``/click that may have navigated. The overlay also persists its own
+    position in ``sessionStorage``; this is belt-and-braces for the same-origin
+    navigations a QA session performs.
+    """
+    try:
+        page.evaluate("() => window.__qaCursorEnsure && window.__qaCursorEnsure()")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not re-create overlay cursor: %s", exc)
+    try:
+        _cursor_move(page, *_get_last_position(page))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not restore overlay cursor position: %s", exc)
 
 
 def _get_last_position(page: Page) -> tuple[float, float]:
@@ -66,15 +251,70 @@ def _locator_center(locator: Locator) -> tuple[float, float] | None:
     )
 
 
-def move_mouse_to(page: Page, x: float, y: float, steps: int = 18) -> None:
-    """Moves the real synthetic cursor from its last known position to
-    (x, y), emitting interpolated mousemove events along the way (steps > 1
-    is what makes this an actual glide instead of a teleport)."""
-    page.mouse.move(x, y, steps=steps)
+def _ease_in_out(t: float) -> float:
+    """Smoothstep: slow start, fast middle, slow arrival — not linear."""
+    return t * t * (3.0 - 2.0 * t)
+
+
+def human_path(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    steps: int = 14,
+) -> list[tuple[float, float]]:
+    """A curved, eased path between two points.
+
+    Real pointer motion is never a straight line at constant speed: it bows, it
+    accelerates through the middle, and it overshoots slightly on long throws
+    before correcting. Exposed for testing.
+    """
+    x0, y0 = start
+    x1, y1 = end
+    dx, dy = x1 - x0, y1 - y0
+    distance = math.hypot(dx, dy) or 1.0
+
+    # Perpendicular bow, so the path arcs rather than sliding along a rail.
+    mid_x, mid_y = (x0 + x1) / 2, (y0 + y1) / 2
+    normal_x, normal_y = -dy / distance, dx / distance
+    bow = random.uniform(-0.16, 0.16) * distance
+    ctrl_x, ctrl_y = mid_x + normal_x * bow, mid_y + normal_y * bow
+
+    points: list[tuple[float, float]] = []
+    for i in range(1, steps + 1):
+        t = _ease_in_out(i / steps)
+        inv = 1.0 - t
+        px = inv * inv * x0 + 2 * inv * t * ctrl_x + t * t * x1
+        py = inv * inv * y0 + 2 * inv * t * ctrl_y + t * t * y1
+        # Micro-tremor: a hand is never perfectly still.
+        points.append((px + random.uniform(-0.8, 0.8), py + random.uniform(-0.8, 0.8)))
+
+    # Overshoot and correct on long throws.
+    if distance > 320:
+        overshoot = random.uniform(0.02, 0.05)
+        points.append((x1 + dx * overshoot, y1 + dy * overshoot))
+        points.append((x1, y1))
+
+    return points
+
+
+def move_mouse_to(page: Page, x: float, y: float, steps: int = 14) -> None:
+    """Glide the real cursor along a human path to (x, y).
+
+    Each point is emitted through ``page.mouse.move`` (so hover states and the
+    browser's own input pipeline see it) *and* mirrored onto the DOM overlay
+    cursor that the video actually records.
+    """
+    start = _get_last_position(page)
+    for px, py in human_path(start, (x, y), steps=steps):
+        page.mouse.move(px, py)
+        _cursor_move(page, px, py)
+        # Variable inter-sample delay, with an occasional longer hesitation.
+        page.wait_for_timeout(random.randint(6, 16) if random.random() > 0.15 else random.randint(25, 70))
+    page.mouse.move(x, y)
+    _cursor_move(page, x, y)
     _set_last_position(page, x, y)
 
 
-def move_mouse_to_locator(page: Page, locator: Locator, steps: int = 18) -> bool:
+def move_mouse_to_locator(page: Page, locator: Locator, steps: int = 14) -> bool:
     """Moves the cursor to `locator`'s (jittered) center. Returns False if
     the element isn't visible/measurable."""
     target = _locator_center(locator)
@@ -84,15 +324,26 @@ def move_mouse_to_locator(page: Page, locator: Locator, steps: int = 18) -> bool
     return True
 
 
-def click_with_cursor(page: Page, selector: str, timeout: float | None = None, **kwargs) -> None:
-    """Real mouse-driven click: glide the cursor to the element, press down,
-    hold briefly (visible on camera, and closer to real click timing), then
-    release — instead of page.click()'s instant synthetic DOM click event."""
+def click_with_cursor(
+    page: Page,
+    selector: str,
+    timeout: float | None = None,
+    label: str | None = None,
+    **kwargs,
+) -> None:
+    """Human-looking click: glide over, settle, press, release, pulse.
+
+    ``label`` optionally captions the action next to the cursor so a reviewer
+    watching the recording knows what the agent thought it was doing.
+    """
     locator = page.locator(selector).first
     if timeout is not None:
         locator.wait_for(state="visible", timeout=timeout)
     else:
         locator.wait_for(state="visible")
+
+    if label:
+        annotate_cursor(page, label)
 
     if not move_mouse_to_locator(page, locator):
         # Element has no measurable box (display:none, off-screen, etc.) —
@@ -101,27 +352,100 @@ def click_with_cursor(page: Page, selector: str, timeout: float | None = None, *
         page.click(selector, **kwargs)
         return
 
+    # A person pauses on a target before committing to the click.
+    page.wait_for_timeout(random.randint(70, 220))
+    _cursor_press(page, True)
     page.mouse.down()
-    page.wait_for_timeout(random.randint(40, 90))
+    page.wait_for_timeout(random.randint(45, 95))
     page.mouse.up()
+    _cursor_press(page, False)
+    _cursor_ripple(page)
 
 
-def fill_with_cursor(page: Page, selector: str, value: str, **kwargs) -> None:
-    """Real mouse-and-keyboard-driven text entry: glide to the field, click
-    to focus it, then type character-by-character via page.keyboard.type()
-    (individual keydown/keyup events) instead of page.fill()'s instant value
-    assignment."""
+def fill_with_cursor(page: Page, selector: str, value: str, label: str | None = None, **kwargs) -> None:
+    """Human-looking text entry: glide, click to focus, then type per keystroke."""
     locator = page.locator(selector).first
     locator.wait_for(state="visible")
 
+    if label:
+        annotate_cursor(page, label)
+
     if move_mouse_to_locator(page, locator):
+        page.wait_for_timeout(random.randint(60, 160))
+        _cursor_press(page, True)
         page.mouse.down()
-        page.wait_for_timeout(random.randint(30, 60))
+        page.wait_for_timeout(random.randint(35, 70))
         page.mouse.up()
+        _cursor_press(page, False)
+        _cursor_ripple(page)
     else:
         locator.click(**kwargs)
 
     # Clear any existing value the same way a user would (select-all + type
     # over it) rather than programmatically resetting .value.
     page.keyboard.press("ControlOrMeta+A")
-    page.keyboard.type(value, delay=random.randint(25, 60))
+    _type_like_a_human(page, value)
+
+
+def _type_like_a_human(page: Page, value: str) -> None:
+    """Type with per-character jitter and a beat at word boundaries."""
+    for index, char in enumerate(value):
+        page.keyboard.type(char, delay=random.randint(28, 85))
+        if char == " " and index and random.random() > 0.6:
+            page.wait_for_timeout(random.randint(90, 220))
+
+
+def _flick_velocity_profile(steps: int) -> list[float]:
+    """Per-frame speed multipliers for one scroll gesture.
+
+    A real scroll accelerates away from rest, cruises, then decelerates as it
+    lands. Sending the whole distance as a single wheel event instead is what
+    made the page teleport, freeze, teleport.
+    """
+    profile: list[float] = []
+    for index in range(steps):
+        t = (index + 1) / steps
+        if t < 0.2:
+            speed = 0.45 + 2.75 * t  # ramp up
+        elif t > 0.75:
+            speed = max(0.22, 1.0 - ((t - 0.75) / 0.25) * 0.78)  # ease out
+        else:
+            speed = 1.0
+        profile.append(speed)
+    return profile
+
+
+def wheel_human(page: Page, distance: int, momentum: bool = True) -> int:
+    """Perform one human scroll gesture of roughly ``distance`` pixels.
+
+    The distance is decomposed into many small wheel deltas at roughly frame
+    cadence (~20px every 8-15ms) following a velocity profile, plus a short
+    decaying momentum tail. Returns the number of wheel events emitted.
+    """
+    if distance == 0:
+        return 0
+
+    direction = 1 if distance > 0 else -1
+    total = abs(distance)
+    steps = max(6, min(30, int(total / random.uniform(18, 26))))
+    profile = _flick_velocity_profile(steps)
+    per_px = total / sum(profile)
+
+    events = 0
+    for speed in profile:
+        delta = max(1, round(per_px * speed))
+        page.mouse.wheel(0, delta * direction)
+        events += 1
+        page.wait_for_timeout(random.randint(8, 15))
+
+    if momentum:
+        tail = total * random.uniform(0.04, 0.10)
+        for _ in range(random.randint(2, 4)):
+            if tail < 1:
+                break
+            page.mouse.wheel(0, max(1, int(tail)) * direction)
+            events += 1
+            tail *= 0.55
+            page.wait_for_timeout(random.randint(10, 20))
+
+    return events

@@ -357,9 +357,60 @@ class GitHubAppClient:
                         "private": r.get("private", False),
                         "html_url": r.get("html_url") or f"https://github.com/{r.get('full_name')}",
                         "description": r.get("description") or "",
+                        # GitHub's `homepage` is where the deployed site lives for most
+                        # apps (Vercel/Netlify set it, and users set it by hand). The
+                        # dashboard prefers it over inventing a localhost URL.
+                        "homepage": r.get("homepage") or "",
                     })
             except Exception as exc:
                 logger.error("Failed to fetch repositories for installation %s (%s): %s", inst_id, account_login, exc)
 
         return all_repos
+
+    async def list_commits(
+        self,
+        owner: str,
+        repo: str,
+        ref: str | None = None,
+        per_page: int = 30,
+        installation_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """List recent commits reachable from ``ref`` (default branch when omitted).
+
+        Normalised for the first-run briefing's commit picker. Each entry carries
+        ``parents`` so the dashboard can express "only the changes this commit
+        introduced" (``parents[0]...sha``) without a second round trip. Nothing is
+        invented: a commit GitHub does not return simply is not listed.
+        """
+        headers = await self._get_auth_header(installation_id)
+        params: dict[str, Any] = {"per_page": max(1, min(int(per_page), 100))}
+        if ref:
+            params["sha"] = ref
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.get(url, headers=headers, params=params)
+            res.raise_for_status()
+            raw = res.json()
+
+        commits: list[dict[str, Any]] = []
+        for item in raw if isinstance(raw, list) else []:
+            commit = item.get("commit") or {}
+            author = commit.get("author") or {}
+            committer = commit.get("committer") or {}
+            message = (commit.get("message") or "").strip()
+            commits.append(
+                {
+                    "sha": item.get("sha"),
+                    "message": message.splitlines()[0] if message else "(no message)",
+                    "message_full": message,
+                    "author": author.get("name")
+                    or (item.get("author") or {}).get("login")
+                    or "unknown",
+                    "date": author.get("date") or committer.get("date"),
+                    "parents": [p.get("sha") for p in (item.get("parents") or []) if p.get("sha")],
+                    "html_url": item.get("html_url"),
+                }
+            )
+        return commits
 

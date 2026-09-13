@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   ExternalLink,
   ChevronDown,
@@ -24,13 +25,28 @@ import {
   Compass,
   Layers,
   GitBranch,
+  FolderGit2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDashboard } from "@/components/dashboard-context";
 
 export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
-  const { activeRepo } = useDashboard();
-  const projectName = activeRepo ? activeRepo.split("/")[1] || activeRepo : "pingroute-web";
+  const { activeRepo, projects } = useDashboard();
+  const searchParams = useSearchParams();
+  const urlRepo = searchParams?.get("repo");
+  const isOverviewMode = !urlRepo;
+
+  const [projectFilter, setProjectFilter] = useState<string>(urlRepo || "all");
+  const projectName = activeRepo
+    ? activeRepo.split("/")[1] || activeRepo
+    : projects[0]?.name || projects[0]?.repo_full_name?.split("/")[1] || "All Projects";
+
+  const displayProjectName =
+    projectFilter !== "all"
+      ? projectFilter.split("/")[1] || projectFilter
+      : urlRepo
+      ? urlRepo.split("/")[1] || urlRepo
+      : activeRepo?.split("/")[1] || activeRepo;
 
   const [timeRange, setTimeRange] = useState("Last 7 Days");
   const [suiteScope, setSuiteScope] = useState("All Suites");
@@ -49,7 +65,8 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
     async function loadAnalytics() {
       setIsLoading(true);
       try {
-        const repoParam = activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : "";
+        const targetRepo = urlRepo || (projectFilter !== "all" ? projectFilter : null);
+        const repoParam = targetRepo ? `?repo=${encodeURIComponent(targetRepo)}` : "";
         const [analyticsRes, runsRes] = await Promise.all([
           fetch("/api/analytics").catch(() => null),
           fetch(`/api/runs${repoParam}`).catch(() => null),
@@ -71,7 +88,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
       }
     }
     loadAnalytics();
-  }, [activeRepo]);
+  }, [urlRepo, projectFilter, activeRepo]);
 
   const handleAskAI = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -146,15 +163,33 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
         <div>
           <h1 className="text-xl font-bold tracking-tight text-slate-950 flex items-center gap-2">
             <Activity className="h-5 w-5 text-indigo-600" />
-            <span>Test Quality &amp; Reliability Analytics</span>
+            <span>
+              {isOverviewMode && projectFilter === "all"
+                ? "Fleet Quality & Reliability Analytics"
+                : `Quality Analytics · ${displayProjectName}`}
+            </span>
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Real-time test suite metrics, flakiness detection, and failure categorization for{" "}
-            <span className="font-mono font-semibold text-slate-800">{activeRepo || projectName}</span>.
+            {isOverviewMode && projectFilter === "all"
+              ? "Fleet-wide test suite metrics, flakiness detection, and failure categorization across all workspace projects."
+              : `Real-time test suite metrics, flakiness detection, and failure categorization for ${displayProjectName}.`}
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+            className="bg-white border border-slate-200 text-xs font-semibold text-slate-700 px-3 py-1.5 rounded-md focus:outline-hidden focus:border-slate-400 cursor-pointer shadow-2xs"
+          >
+            <option value="all">All Projects ({projects.length})</option>
+            {projects.map((p) => (
+              <option key={p.repo_full_name} value={p.repo_full_name}>
+                {p.name || p.repo_full_name.split("/")[1] || p.repo_full_name}
+              </option>
+            ))}
+          </select>
+
           <select
             value={suiteScope}
             onChange={(e) => setSuiteScope(e.target.value)}

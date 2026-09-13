@@ -1,0 +1,29 @@
+# Shared sandbox toolchain image: git + Node.js + Python in one image.
+#
+# Why one image for every framework: the pipeline clones the repo *inside* the
+# container, so the framework is not known until after the clone. Choosing a
+# node-vs-python base at `docker run` time is therefore impossible. Boot from
+# this single pre-built toolchain instead, then detect and use whichever runtime
+# the project actually needs.
+#
+# This image is built once and reused by every sandbox run (see
+# docker_sandbox.ensure_toolchain_image) — it is deliberately generic and
+# contains no project code.
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        curl \
+        gnupg \
+        tar \
+        xz-utils \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node's own package managers that projects commonly pin in package.json.
+RUN corepack enable || true
+
+WORKDIR /app

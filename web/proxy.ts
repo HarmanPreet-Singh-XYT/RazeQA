@@ -65,12 +65,19 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
+  // The public Dev Tools Hub (/tools) includes utilities that cannot run in the
+  // browser — OpenGraph/sitemap/schema extraction, TLS certificate probing and
+  // CORS preflight testing — because of cross-origin restrictions. Those two
+  // endpoints are therefore intentionally reachable without a session: each one
+  // is SSRF-guarded (validateExternalTarget resolves DNS and rejects
+  // private/loopback/link-local/metadata targets and non-http(s) ports) and
+  // rate-limited per client. Nothing tenant-scoped is exposed here.
   const isPublicApiRoute =
     pathname.startsWith("/api/charge") ||
     pathname.startsWith("/api/checkout") ||
     pathname.startsWith("/api/health") ||
-    pathname.startsWith("/api/github") ||
-    (pathname === "/api/projects" && request.method === "GET");
+    pathname.startsWith("/api/tools/scrape") ||
+    pathname.startsWith("/api/tools/probe");
 
   if (isApiRoute && !isPublicApiRoute && !user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

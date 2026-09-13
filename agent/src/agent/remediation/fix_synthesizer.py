@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from agent.analyzer.diff_analyzer import AnalysisResult
 from agent.bridge.models import IntentEvent
 from agent.credentials.redaction import redact_credentials
+from agent.remediation.generated_files import is_generated_or_dependency_artifact
 
 logger = logging.getLogger("agent.remediation.fix_synthesizer")
 
@@ -193,16 +194,40 @@ def create_unified_diff(file_path: str, original: str, replacement: str) -> str:
     return "\n".join(diff)
 
 
+class _AutoKey:
+    """Sentinel meaning "resolve the API key from the environment"."""
+
+    def __repr__(self) -> str:  # pragma: no cover - debug aid
+        return "AUTO_API_KEY"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+#: Pass as api_key to explicitly force the offline deterministic heuristic.
+#: Distinguishing this from None matters: None means "not supplied, fall back to
+#: env keys", so a test that wanted the heuristic but passed api_key=None would
+#: silently make real LLM calls as soon as any provider key was configured —
+#: non-deterministic, network-dependent unit tests.
+NO_LLM = _AutoKey()
+AUTO_API_KEY = _AutoKey()
+
+
 class FixSynthesizer:
     """Synthesizes high-fidelity, context-aware code patches for detected regressions."""
 
-    def __init__(self, api_key: str | None = None) -> None:
-        self.api_key = (
-            api_key
-            or os.environ.get("ANTHROPIC_API_KEY")
-            or os.environ.get("GEMINI_API_KEY")
-            or os.environ.get("GOOGLE_API_KEY")
-        )
+    def __init__(self, api_key: str | None | _AutoKey = AUTO_API_KEY) -> None:
+        if api_key is NO_LLM:
+            self.api_key = None
+        elif isinstance(api_key, _AutoKey):
+            self.api_key = (
+                os.environ.get("ANTHROPIC_API_KEY")
+                or os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("GOOGLE_API_KEY")
+            )
+        else:
+            # Explicit string (including "") wins over the environment.
+            self.api_key = api_key
 
     def synthesize(
         self,
@@ -412,6 +437,11 @@ class FixSynthesizer:
                     "Rejected file_path from LLM fix synthesis not in allowlist: %r", fpath
                 )
                 continue
+            if is_generated_or_dependency_artifact(fpath):
+                logger.warning(
+                    "Rejected generated/dependency artifact from fix synthesis: %r", fpath
+                )
+                continue
 
             orig = redact_credentials(p.get("original_snippet", ""))
             repl = redact_credentials(p.get("replacement_snippet", ""))
@@ -427,7 +457,16 @@ class FixSynthesizer:
             )
 
         return FixProposal(
-            target_files=parsed.get("target_files", []),
+            # `target_files` is model-supplied too, so it gets the same filtering
+            # as the patches: paths that were never shown, and generated
+            # artifacts, must not appear as the fix's subject.
+            target_files=[
+                tf
+                for tf in parsed.get("target_files", [])
+                if isinstance(tf, str)
+                and tf in allowed_paths
+                and not is_generated_or_dependency_artifact(tf)
+            ],
             styling_paradigm=parsed.get("styling_paradigm", detected_paradigm),
             root_cause=redact_credentials(parsed.get("root_cause", "")),
             explanation=redact_credentials(parsed.get("explanation", "")),

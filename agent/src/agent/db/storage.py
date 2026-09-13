@@ -7,6 +7,7 @@ allowing callers to fall back to local disk-based artifact URLs.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +136,90 @@ class SupabaseArtifactStorage:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to re-sign URL for %s: %s", clean_dest, exc)
             return None
+
+    # ------------------------------------------------------------------
+    # Retention
+    # ------------------------------------------------------------------
+    def _list_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        client = self.client
+        if not client:
+            return []
+        try:
+            entries = client.storage.from_(self.bucket).list(prefix, {"limit": 1000})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not list Supabase storage prefix '%s': %s", prefix, exc)
+            return []
+        return entries or []
+
+    def collect_objects_older_than(
+        self,
+        max_age_seconds: float,
+        prefix: str = "runs",
+        max_depth: int = 6,
+    ) -> list[str]:
+        """Return storage object paths under ``prefix`` older than the cutoff.
+
+        Buckets are a virtual hierarchy (`runs/<run>/<category>/<file>`), and the
+        storage API lists one directory level at a time, so this walks the tree.
+        Folders are entries with no `id`; files carry `created_at` metadata.
+        """
+        if not self.client:
+            return []
+
+        cutoff = datetime.now(UTC) - timedelta(seconds=max_age_seconds)
+        stale: list[str] = []
+        stack: list[tuple[str, int]] = [(prefix, 0)]
+        seen: set[str] = set()
+
+        while stack:
+            current, depth = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+
+            for entry in self._list_prefix(current):
+                name = entry.get("name")
+                if not name:
+                    continue
+                child = f"{current}/{name}" if current else name
+                # A `null` id marks a virtual folder rather than an object.
+                if entry.get("id") is None:
+                    if depth + 1 < max_depth:
+                        stack.append((child, depth + 1))
+                    continue
+
+                created_raw = entry.get("created_at") or entry.get("updated_at")
+                if not created_raw:
+                    continue
+                try:
+                    created = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if created < cutoff:
+                    stale.append(child)
+
+        return stale
+
+    def delete_objects(self, paths: list[str]) -> int:
+        """Delete storage objects in batches; returns how many were removed."""
+        client = self.client
+        if not client or not paths:
+            return 0
+
+        removed = 0
+        for start in range(0, len(paths), 100):
+            batch = paths[start : start + 100]
+            try:
+                client.storage.from_(self.bucket).remove(batch)
+                removed += len(batch)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to delete %d object(s) from Supabase bucket '%s': %s",
+                    len(batch),
+                    self.bucket,
+                    exc,
+                )
+        return removed
 
 
 default_artifact_storage = SupabaseArtifactStorage()

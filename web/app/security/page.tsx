@@ -46,7 +46,7 @@ export default function SecurityPage() {
               <span>Containerized Sandbox Isolation</span>
             </div>
             <p className="text-xs text-slate-600">
-              Every PR verification run occurs in a single-tenant, rootless Docker sandbox. Sandboxes are provisioned on-demand, strictly network-segregated, and destroyed immediately after forensic telemetry is recorded.
+              Every PR verification run boots a single-tenant Docker container for the app under test, capped on memory, CPU and PIDs, with all capabilities dropped (plus DAC_OVERRIDE) and <code className="font-mono">no-new-privileges</code> set. The container is created on demand and removed with <code className="font-mono">--rm</code> when the run completes.
             </p>
           </div>
 
@@ -63,10 +63,10 @@ export default function SecurityPage() {
           <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2">
             <div className="flex items-center gap-2 text-slate-950 font-bold">
               <Key className="h-4 w-4 text-amber-600" />
-              <span>Vault Encryption &amp; Masked Credential Storage</span>
+              <span>Encrypted Credential Storage</span>
             </div>
             <p className="text-xs text-slate-600">
-              User and Administrator credentials specified for end-to-end user journeys are encrypted in Supabase Vault using AES-256-GCM. Unchanged credentials remain masked and never leak to browser DOMs or forensic reports.
+              Test-user credentials are encrypted at rest with AES-256-GCM using a key supplied out-of-band via <code className="font-mono">CREDENTIAL_STORE_KEY</code> (required when running in production). Credentials are injected into the sandbox as environment variables at boot and are excluded from intent logs, LLM prompts, and generated remediation text.
             </p>
           </div>
 

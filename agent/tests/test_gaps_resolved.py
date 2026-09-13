@@ -150,17 +150,15 @@ async def test_pipeline_collects_findings_and_uses_stored_credentials(tmp_path: 
     from agent.runner.pipeline import run_pipeline
 
     # owner/repo here are fictitious test fixtures, not a real GitHub repo.
-    # Two things must be stubbed so this test never touches the network or
-    # Docker: `ensure_clone` (agent.runner.pipeline treats any owner/repo
-    # other than "local"/"default" as a real GitHub repo to `git clone`) and
-    # SANDBOX_MODE=disabled (skips the real Docker sandbox boot in
-    # agent.runner.pipeline._sandbox_for_sha). This test only exercises
-    # journey orchestration / credential handling, which is what it asserts on.
+    # SANDBOX_MODE=disabled is what keeps this test off the network and off
+    # Docker: no sandbox container is booted and no in-container clone happens,
+    # so diff/route-discovery fall back to the local app repo. This test only
+    # exercises journey orchestration / credential handling, which is what it
+    # asserts on.
     monkeypatch.setenv("SANDBOX_MODE", "disabled")
 
     with patch("agent.runner.pipeline.run_login_journey") as mock_login, \
-         patch("agent.journeys.browser_agent.run_route_journey") as mock_route, \
-         patch("agent.sandbox.clone.ensure_clone", return_value=tmp_path):
+         patch("agent.journeys.browser_agent.run_route_journey") as mock_route:
 
         # Mock successful login with storage state export
         storage_file = tmp_path / "storage_state.json"

@@ -83,72 +83,44 @@ async def github_webhook(
                                     "name": r.get("name"),
                                     "full_name": r.get("full_name"),
                                     "private": r.get("private", False),
+                                    "default_branch": r.get("default_branch", "main"),
+                                    "html_url": r.get("html_url", ""),
                                 }
                                 for r in repos
                             ],
                         },
                         on_conflict="installation_id",
                     ).execute()
+                    # NOTE: intentionally no `projects` insert here. Installing the
+                    # GitHub App grants *access* to repositories; it does not mean the
+                    # user wants each of them configured as an AutoQA project. Rows in
+                    # `projects` are created only by an explicit import from the
+                    # dashboard (POST /api/projects).
 
-                    for r in repos:
-                        full_name = r.get("full_name")
-                        if full_name:
-                            existing = (
-                                supabase.table("projects")
-                                .select("id")
-                                .eq("repo_full_name", full_name)
-                                .maybe_single()
-                                .execute()
-                            )
-                            if not existing or not existing.data:
-                                supabase.table("projects").insert(
-                                    {
-                                        "installation_id": inst_id,
-                                        "repo_full_name": full_name,
-                                        "settings": {
-                                            "framework": "nextjs",
-                                            "package_manager": "npm",
-                                            "build_command": "npm run build",
-                                            "start_command": "npm start",
-                                            "port": 3000,
-                                            "scope": "changed",
-                                            "test_type": "functional",
-                                            "enable_on_push": True,
-                                            "enable_on_pr": True,
-                                        },
-                                    }
-                                ).execute()
-
-                elif x_github_event == "installation_repositories" and action == "added":
-                    added_repos = payload.get("repositories_added", [])
-                    for r in added_repos:
-                        full_name = r.get("full_name")
-                        if full_name:
-                            existing = (
-                                supabase.table("projects")
-                                .select("id")
-                                .eq("repo_full_name", full_name)
-                                .maybe_single()
-                                .execute()
-                            )
-                            if not existing or not existing.data:
-                                supabase.table("projects").insert(
-                                    {
-                                        "installation_id": inst_id,
-                                        "repo_full_name": full_name,
-                                        "settings": {
-                                            "framework": "nextjs",
-                                            "package_manager": "npm",
-                                            "build_command": "npm run build",
-                                            "start_command": "npm start",
-                                            "port": 3000,
-                                            "scope": "changed",
-                                            "test_type": "functional",
-                                            "enable_on_push": True,
-                                            "enable_on_pr": True,
-                                        },
-                                    }
-                                ).execute()
+                elif x_github_event == "installation_repositories" and action in ("added", "removed"):
+                    # Re-fetch the authoritative repository set rather than merging the
+                    # webhook delta, so the discovery catalogue cannot drift.
+                    repo_data = await github_client.get_installation_repositories(inst_id)
+                    repos = repo_data.get("repositories", [])
+                    supabase.table("installations").upsert(
+                        {
+                            "installation_id": inst_id,
+                            "account_login": account_login,
+                            "account_id": account_id,
+                            "repositories": [
+                                {
+                                    "id": r.get("id"),
+                                    "name": r.get("name"),
+                                    "full_name": r.get("full_name"),
+                                    "private": r.get("private", False),
+                                    "default_branch": r.get("default_branch", "main"),
+                                    "html_url": r.get("html_url", ""),
+                                }
+                                for r in repos
+                            ],
+                        },
+                        on_conflict="installation_id",
+                    ).execute()
 
                 elif x_github_event == "installation" and action == "deleted":
                     supabase.table("installations").delete().eq("installation_id", inst_id).execute()
@@ -490,6 +462,25 @@ async def github_webhook(
             repo=full_name,
         )
 
+        # Post a native Check Run for the pushed commit too. Previously only
+        # PR and issue-comment triggers created one, so push-triggered runs
+        # produced no GitHub status at all.
+        check_run_id: int | None = None
+        try:
+            check_run_id = await github_client.create_check_run(
+                owner=owner,
+                repo=repo_name,
+                head_sha=sha,
+                installation_id=installation_id,
+            )
+        except GitHubNotConfiguredError:
+            logger.warning(
+                "GitHub App not configured; push run for %s will not post a Check Run.",
+                full_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not create push Check Run for %s: %s", full_name, exc)
+
         async def _push_coro(job: Any) -> dict[str, Any]:
             return await run_pipeline(
                 owner=owner,
@@ -498,6 +489,7 @@ async def github_webhook(
                 base_branch=base_branch,
                 sha=sha,
                 installation_id=installation_id,
+                check_run_id=check_run_id,
                 intents=default_intent_store.get(branch, repo=full_name),
                 scope="changed",
                 test_type="functional",
@@ -522,6 +514,7 @@ async def github_webhook(
             "job_id": job.id,
             "branch": branch,
             "sha": sha,
+            "check_run_id": check_run_id,
         }
 
     # --------------------------------------------------------------------------

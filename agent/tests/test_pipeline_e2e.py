@@ -44,7 +44,7 @@ def test_trigger_run_dispatches_background_task():
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_executes_exploratory_and_baseline():
+async def test_run_pipeline_executes_exploratory_and_baseline(tmp_path: Path):
     """Verify run_pipeline analyzes diff/intent, runs journeys, and updates run record."""
     branch = "feature/e2e-test"
     sha = "11223344556677889900"
@@ -73,6 +73,20 @@ async def test_run_pipeline_executes_exploratory_and_baseline():
         "trace_path": "artifacts/runs/test/checkout-trace.zip",
         "video_path": "artifacts/runs/test/video/video2.webm",
         "screenshot_path": "artifacts/runs/test/checkout-visual.png",
+        # Real measured journey outputs, as run_route_journey would produce.
+        "duration_ms": 1400.0,
+        "action_timings_ms": [120.0, 280.0],
+        "web_vitals": {
+            "lcp_ms": 1420.0,
+            "cls": 0.04,
+            "inp_ms": None,
+            "fcp_ms": 700.0,
+            "ttfb_ms": 110.0,
+            "tti_ms": 1600.0,
+            "measured": True,
+            "measured_metrics": ["fcp_ms", "lcp_ms", "cls", "ttfb_ms", "tti_ms"],
+            "source": "browser_performance_api",
+        },
     }
 
     with (
@@ -97,7 +111,40 @@ async def test_run_pipeline_executes_exploratory_and_baseline():
         assert any("checkout" in j for j in result["passed_journeys"])
         assert result["baseline_comparison"]["has_new_regressions"] is False
 
+        # Measured browser Web Vitals and real action timings must survive the
+        # whole pipeline into the evaluator's report.
+        quality = result["quality_dimensions"]
+        assert quality["web_vitals"]["measured"] is True
+        assert quality["web_vitals"]["lcp_ms"] == 1420.0
+        # No interaction occurred -> INP stays None, never invented.
+        assert quality["web_vitals"]["inp_ms"] is None
+        assert "inp_ms" not in quality["web_vitals"]["measured_metrics"]
+        assert quality["cost_metrics"]["total_actions_metered"] == 2
+        assert quality["cost_metrics"]["avg_action_latency_ms"] == 200.0
+        # This run recorded no LLM usage -> tokens/cost stay None (honest).
+        assert quality["cost_metrics"]["total_tokens"] is None
+        assert quality["cost_metrics"]["inference_cost_usd"] is None
+
         # Verify store updated to completed
         rec = run_store.find_latest_by_sha(branch=branch, sha=sha)
         assert rec is not None
         assert rec.status == "completed"
+
+        # Timing must describe real phases and must include a total. Every
+        # completed run used to report "0s" in the dashboard because no total was
+        # ever recorded, and "analysis" and "journeys" always held the same value
+        # because both timers started at the same instant.
+        timing = result["timing"]
+        assert timing["total_duration_s"] >= 0
+        assert timing["analysis_duration_s"] >= 0
+        assert timing["journeys_duration_s"] >= 0
+        assert timing["total_duration_s"] == pytest.approx(
+            timing["analysis_duration_s"] + timing["journeys_duration_s"], abs=0.01
+        )
+        # Top-level key the run list reads for its duration column.
+        assert result["duration_s"] == timing["total_duration_s"]
+
+        # The session-replay slot must always be reported (None when there was
+        # only one route to record), so the dashboard can label the replay
+        # honestly instead of claiming a stitched session that does not exist.
+        assert "session_replay_url" in result

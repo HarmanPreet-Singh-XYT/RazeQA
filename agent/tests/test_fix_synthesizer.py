@@ -9,6 +9,7 @@ from agent.remediation.fix_synthesizer import (
     FilePatch,
     FixProposal,
     FixSynthesizer,
+    NO_LLM,
     apply_patch_to_text,
     create_unified_diff,
     detect_styling_and_logic_paradigm,
@@ -102,7 +103,7 @@ export default function CheckoutPage() {
         encoding="utf-8",
     )
 
-    synthesizer = FixSynthesizer(api_key=None)  # Test deterministic heuristic
+    synthesizer = FixSynthesizer(api_key=NO_LLM)  # Test deterministic heuristic
     analysis = AnalysisResult(
         affected_surfaces=["/checkout"],
         risk_tag="High",
@@ -133,7 +134,7 @@ export default function CheckoutPage() {
 
 
 def test_credential_redaction_in_diff():
-    synth = FixSynthesizer(api_key=None)
+    synth = FixSynthesizer(api_key=NO_LLM)
     analysis = AnalysisResult(affected_surfaces=["/checkout"], risk_tag="High")
     intents = [
         IntentEvent(

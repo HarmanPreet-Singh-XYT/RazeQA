@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException
 
 from agent.db.supabase import get_supabase_client
@@ -28,12 +29,62 @@ async def list_github_app_repos() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Failed to query GitHub API: {exc}") from exc
 
 
+@router.get("/commits")
+async def list_repo_commits(
+    repo: str,
+    ref: str | None = None,
+    per_page: int = 30,
+    installation_id: int | None = None,
+) -> dict[str, Any]:
+    """List recent commits for a repository, newest first.
+
+    Powers the first-run briefing's commit picker and commit-range selector. The
+    listing is read-only and never creates a project or a run. ``ref`` defaults to
+    whatever GitHub treats as the repository's default branch so the picker works
+    before the caller knows the branch name.
+    """
+    if "/" not in repo:
+        raise HTTPException(status_code=400, detail="repo must be in 'owner/repository' form.")
+
+    owner, name = repo.split("/", 1)
+    if not owner or not name:
+        raise HTTPException(status_code=400, detail="repo must be in 'owner/repository' form.")
+
+    client = GitHubAppClient()
+    try:
+        commits = await client.list_commits(
+            owner=owner,
+            repo=name,
+            ref=ref,
+            per_page=per_page,
+            installation_id=installation_id,
+        )
+        return {"repo": repo, "ref": ref or "default", "commits": commits, "count": len(commits)}
+    except GitHubNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        detail = (
+            "GitHub denied access to this repository's commits. Confirm the App is "
+            "installed on it and the branch exists."
+            if status in (401, 403, 404)
+            else f"GitHub returned {status} while listing commits."
+        )
+        raise HTTPException(status_code=502 if status >= 500 else status, detail=detail) from exc
+    except Exception as exc:
+        logger.error("Failed to list commits for %s: %s", repo, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to list commits: {exc}") from exc
+
+
 @router.post("/sync")
 async def sync_github_app_repos() -> dict[str, Any]:
-    """Fetch all installed repositories from GitHub App and synchronize them into Supabase.
+    """Fetch all installed repositories from GitHub App and catalogue them in Supabase.
 
-    Upserts installation records into the `installations` table and registers default
-    project records in the `projects` table for any newly discovered repositories.
+    Upserts installation records into the `installations` table only. This
+    endpoint is *discovery*, not import: it must never create `projects` rows,
+    because a project is something the user explicitly opts into from the
+    dashboard. Auto-creating one per installed repo made every granted
+    repository show up as an already-configured project the user never imported.
     """
     client = GitHubAppClient()
     try:
@@ -85,41 +136,6 @@ async def sync_github_app_repos() -> dict[str, Any]:
                     ).execute()
                 except Exception as db_err:
                     logger.warning("Failed to upsert installation %s into Supabase: %s", inst_id, db_err)
-
-                # Upsert into projects table for each repo if not already present
-                for r in repos:
-                    full_name = r.get("full_name")
-                    if not full_name:
-                        continue
-                    try:
-                        # Only insert if not exists to avoid overwriting user custom settings
-                        existing = (
-                            supabase.table("projects")
-                            .select("id")
-                            .eq("repo_full_name", full_name)
-                            .maybe_single()
-                            .execute()
-                        )
-                        if not existing or not existing.data:
-                            supabase.table("projects").insert(
-                                {
-                                    "installation_id": inst_id,
-                                    "repo_full_name": full_name,
-                                    "settings": {
-                                        "framework": "nextjs",
-                                        "package_manager": "npm",
-                                        "build_command": "npm run build",
-                                        "start_command": "npm start",
-                                        "port": 3000,
-                                        "scope": "changed",
-                                        "test_type": "functional",
-                                        "enable_on_push": True,
-                                        "enable_on_pr": True,
-                                    },
-                                }
-                            ).execute()
-                    except Exception as proj_err:
-                        logger.warning("Failed to register project %s: %s", full_name, proj_err)
 
             for r in repos:
                 synced_repos.append({

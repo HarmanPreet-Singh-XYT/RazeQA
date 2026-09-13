@@ -198,10 +198,17 @@ def generate_pr_summary_comment(
     custom_secrets: see generate_remediation_markdown — real known secret
     values to redact verbatim before this text is posted publicly on the PR.
     """
-    icon = "✅" if status == "success" else "❌"
+    icon = {"success": "✅", "inconclusive": "⚠️"}.get(status, "❌")
     header = f"## {icon} Autonomous PR Verification: **{status.upper()}**"
 
     body_parts = [header, ""]
+    if status == "inconclusive":
+        body_parts.append(
+            "No journeys were executed for this run (no routes discovered, no test "
+            "credentials configured, or the login flow was disabled), so nothing was "
+            "verified. This is **not** a pass."
+        )
+        body_parts.append("")
     body_parts.append(f"**Risk Level:** `{analysis.risk_tag}` — {analysis.rationale}")
     body_parts.append("")
 

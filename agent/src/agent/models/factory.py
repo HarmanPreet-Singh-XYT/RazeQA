@@ -29,6 +29,8 @@ from strands.models.bedrock import BedrockModel
 from strands.models.gemini import GeminiModel
 from strands.models.model import Model
 
+from agent.models.usage import record_agent_usage
+
 logger = logging.getLogger("agent.models.factory")
 
 # Anthropic Claude defaults
@@ -339,6 +341,44 @@ def get_model_for_role(
     raise ValueError(f"Unknown ModelRole: {role}")
 
 
+def resolve_model_id(
+    role: ModelRole | str,
+    provider: str | None = None,
+    model_id: str | None = None,
+) -> str:
+    """Resolve the concrete model id that :func:`get_model_for_role` would use.
+
+    This mirrors the env-var/default resolution in the ``get_*_model`` helpers
+    without instantiating a client, so telemetry can report the *actually
+    configured* model rather than a hardcoded string. It is intentionally kept
+    next to those helpers so the two stay in sync.
+    """
+    role_val = role.value if isinstance(role, ModelRole) else role
+    target_provider = provider or get_active_provider_for_role(role_val)
+    if model_id:
+        return model_id
+
+    if target_provider == "bedrock":
+        if role_val == ModelRole.VISUAL_INSPECTION.value:
+            return os.environ.get("VISION_MODEL_ID") or DEFAULT_BEDROCK_VISION_MODEL
+        if role_val == ModelRole.BROWSER_NAVIGATION.value:
+            return os.environ.get("NAV_MODEL_ID") or DEFAULT_BEDROCK_NAV_MODEL
+        return os.environ.get("CODE_MODEL_ID") or DEFAULT_BEDROCK_CODE_MODEL
+
+    if target_provider == "gemini":
+        if role_val == ModelRole.VISUAL_INSPECTION.value:
+            return os.environ.get("VISION_MODEL_ID") or DEFAULT_GEMINI_VISION_MODEL
+        if role_val == ModelRole.BROWSER_NAVIGATION.value:
+            return os.environ.get("NAV_MODEL_ID") or DEFAULT_GEMINI_NAV_MODEL
+        return os.environ.get("CODE_MODEL_ID") or DEFAULT_GEMINI_CODE_MODEL
+
+    if role_val == ModelRole.VISUAL_INSPECTION.value:
+        return os.environ.get("VISION_MODEL_ID") or DEFAULT_ANTHROPIC_VISION_MODEL
+    if role_val == ModelRole.BROWSER_NAVIGATION.value:
+        return os.environ.get("NAV_MODEL_ID") or DEFAULT_NAV_MODEL
+    return os.environ.get("CODE_MODEL_ID") or DEFAULT_CODE_MODEL
+
+
 def has_api_key_for_role(role: ModelRole | str) -> bool:
     """Check if the environment has credentials for the resolved provider of a given role."""
     has_ant = has_anthropic_key()
@@ -385,9 +425,13 @@ def create_strands_agent(
 ) -> Agent:
     """Construct a configured Strands Agent using the role-specialized model."""
     model = get_model_for_role(role, provider=provider, **model_kwargs)
-    return Agent(
+    agent = Agent(
         model=model,
         system_prompt=system_prompt,
         tools=tools,
         structured_output_model=structured_output_model,
     )
+    # Register with the active usage accumulator (no-op outside a usage_scope)
+    # so real provider-reported token usage can be aggregated for the run.
+    record_agent_usage(agent)
+    return agent

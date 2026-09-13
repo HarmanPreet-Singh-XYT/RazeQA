@@ -101,11 +101,10 @@ export function AuthForm({ initialTab = "login" }: { initialTab?: "login" | "reg
     {}
   );
 
-  const handleFillSandbox = () => {
-    setEmailInput("qa@example.com");
-    setPasswordInput("changeme123");
-    setMode("login");
-  };
+  // Public one-click demo sign-in is opt-in; the server action independently
+  // enforces ENABLE_SANDBOX_LOGIN, this only decides whether to render it.
+  const sandboxLoginEnabled =
+    process.env.NEXT_PUBLIC_ENABLE_SANDBOX_LOGIN === "true";
 
   const handleGithubOAuth = async () => {
     setOauthLoading(true);
@@ -488,29 +487,23 @@ export function AuthForm({ initialTab = "login" }: { initialTab?: "login" | "reg
             </div>
           </div>
 
-          {/* Development & Sandbox Runner Callout */}
-          <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-3 opacity-90 transition-opacity hover:opacity-100">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-                <Terminal className="h-3.5 w-3.5 text-slate-500" />
-                <span>Docker Sandbox Mode</span>
+          {/* Sandbox runner callout — only when the deployment opted in. */}
+          {sandboxLoginEnabled && (
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-3 opacity-90 transition-opacity hover:opacity-100">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                  <Terminal className="h-3.5 w-3.5 text-slate-500" />
+                  <span>Docker Sandbox Mode</span>
+                </div>
+                <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-mono text-slate-500">
+                  Test Account
+                </span>
               </div>
-              <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-mono text-slate-500">
-                Test Account
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-500 leading-relaxed mb-2.5">
-              Automated journeys run against the seeded test user (<code className="font-mono text-slate-700 bg-white px-1 py-0.5 rounded border border-slate-200">qa@example.com</code>).
-            </p>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleFillSandbox}
-                className="flex-1 rounded-lg border border-slate-300/80 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors shadow-2xs text-center cursor-pointer"
-              >
-                Fill Credentials
-              </button>
-              <form action={sandboxAction} className="flex-1">
+              <p className="text-[11px] text-slate-500 leading-relaxed mb-2.5">
+                Sign in with the seeded automation account configured for this deployment
+                (<code className="font-mono text-slate-700 bg-white px-1 py-0.5 rounded border border-slate-200">TEST_USER_EMAIL</code>).
+              </p>
+              <form action={sandboxAction}>
                 <button
                   type="submit"
                   disabled={sandboxPending}
@@ -519,13 +512,13 @@ export function AuthForm({ initialTab = "login" }: { initialTab?: "login" | "reg
                   {sandboxPending ? "Signing in…" : "Quick Sandbox Sign In"}
                 </button>
               </form>
+              {sandboxState?.error ? (
+                <div className="mt-2 rounded-lg border border-red-200 bg-red-50/80 p-2 text-[11px] text-red-700 font-medium">
+                  {sandboxState.error}
+                </div>
+              ) : null}
             </div>
-            {sandboxState?.error ? (
-              <div className="mt-2 rounded-lg border border-red-200 bg-red-50/80 p-2 text-[11px] text-red-700 font-medium">
-                {sandboxState.error}
-              </div>
-            ) : null}
-          </div>
+          )}
         </CardContent>
       </Card>
 
@@ -667,7 +660,7 @@ export default function LoginPage() {
           AutoQA
         </h1>
         <p className="text-xs text-slate-500 mt-1 max-w-xs">
-          Autonomous testing platform for Claude Code &amp; Cursor
+          Autonomous testing platform for Claude Code
         </p>
       </div>
 

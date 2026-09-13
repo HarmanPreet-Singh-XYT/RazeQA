@@ -32,6 +32,7 @@ from agent.models.factory import (
     is_aws_environment,
     is_bedrock_enabled,
     is_multi_model_enabled,
+    resolve_model_id,
 )
 
 __all__ = [
@@ -59,4 +60,5 @@ __all__ = [
     "is_aws_environment",
     "is_bedrock_enabled",
     "is_multi_model_enabled",
+    "resolve_model_id",
 ]

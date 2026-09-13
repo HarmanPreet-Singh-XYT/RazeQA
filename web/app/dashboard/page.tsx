@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { DashboardOverviewClient } from "./dashboard-overview-client";
@@ -13,6 +14,15 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  return <DashboardOverviewClient userEmail={session} />;
+  // The overview reads `?deleted=` (set when a project is deleted from Project
+  // Settings) via useSearchParams, which needs a Suspense boundary.
+  return (
+    <Suspense
+      fallback={
+        <div className="p-8 text-xs text-slate-500">Loading workspace overview...</div>
+      }
+    >
+      <DashboardOverviewClient userEmail={session} />
+    </Suspense>
+  );
 }
-

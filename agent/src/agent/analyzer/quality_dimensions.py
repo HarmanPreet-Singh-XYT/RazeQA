@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent.credentials.redaction import REDACTION_PATTERNS, redact_credentials
+from agent.models.usage import estimate_cost_usd
 
 logger = logging.getLogger("agent.analyzer.quality_dimensions")
 
@@ -24,15 +25,105 @@ LATENCY_P95_POOR_MS = 5000
 PAYLOAD_OPTIMAL_KB = 450
 PAYLOAD_POOR_KB = 2500
 
+# Web Vitals rating boundaries (Google's published "good"/"needs improvement"
+# limits). These are scoring thresholds, not measurements.
+LCP_GOOD_MS = 2500.0
+LCP_NEEDS_MS = 4000.0
+CLS_GOOD = 0.1
+CLS_NEEDS = 0.25
+INP_GOOD_MS = 200.0
+INP_NEEDS_MS = 500.0
+
+#: Flakiness score (0-10) rating bands, applied only to a score derived from
+#: repeated executions of the same path.
+FLAKINESS_RATING_BANDS = ((2.0, "Deterministic"), (5.0, "Mild Jitter"), (7.5, "Flaky Hydration"))
+FLAKINESS_RATING_MAX = "High Non-Determinism"
+FLAKINESS_RATING_UNKNOWN = "Unknown"
+
+
+def _as_optional_float(value: Any) -> float | None:
+    """Return a finite float, or None. Never coerces None/'' to a number."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if result != result or result in (float("inf"), float("-inf")):
+        return None
+    return result
+
+
+def _optional_mean(samples: list[float], digits: int = 1) -> float | None:
+    """Mean of the measured samples, or None when nothing was measured."""
+    if not samples:
+        return None
+    return round(sum(samples) / len(samples), digits)
+
 
 @dataclass
 class CoreWebVitals:
-    lcp_ms: float = 1180.0  # Largest Contentful Paint (ms)
-    cls: float = 0.02  # Cumulative Layout Shift
-    inp_ms: float = 45.0  # Interaction to Next Paint (ms)
-    fcp_ms: float = 620.0  # First Contentful Paint (ms)
-    ttfb_ms: float = 160.0  # Time to First Byte (ms)
-    tti_ms: float = 1350.0  # Time to Interactive (ms)
+    """Browser-measured Web Vitals.
+
+    Every metric field defaults to ``None``, meaning NOT MEASURED. Values are
+    only ever populated from real browser Performance API observations threaded
+    through ``evaluate_path(web_vitals=...)`` — there is deliberately no
+    duration- or DOM-derived fallback. ``measured_metrics`` records exactly
+    which metrics were observed so "0" and "not observed" stay distinguishable.
+    """
+
+    lcp_ms: float | None = None  # Largest Contentful Paint (ms)
+    cls: float | None = None  # Cumulative Layout Shift
+    inp_ms: float | None = None  # Interaction to Next Paint (ms)
+    fcp_ms: float | None = None  # First Contentful Paint (ms)
+    ttfb_ms: float | None = None  # Time to First Byte (ms)
+    tti_ms: float | None = None  # Time to Interactive (ms; see tti_source)
+    measured: bool = False
+    source: str = "unmeasured"
+    measured_metrics: list[str] = field(default_factory=list)
+    #: Set when tti_ms is an approximation rather than a direct measurement
+    #: (browsers do not expose TTI), e.g. "long_task_quiet_window_approx".
+    tti_source: str | None = None
+
+    @staticmethod
+    def _status(value: float | None, good_max: float, needs_max: float) -> str:
+        if value is None:
+            return "unknown"
+        if value <= good_max:
+            return "good"
+        if value <= needs_max:
+            return "needs_improvement"
+        return "poor"
+
+    @classmethod
+    def from_measurement(cls, measurement: dict[str, Any] | None) -> "CoreWebVitals":
+        """Build from a browser measurement dict; missing values stay None."""
+        if not isinstance(measurement, dict):
+            return cls()
+        vitals = cls(
+            lcp_ms=_as_optional_float(measurement.get("lcp_ms")),
+            cls=_as_optional_float(measurement.get("cls")),
+            inp_ms=_as_optional_float(measurement.get("inp_ms")),
+            fcp_ms=_as_optional_float(measurement.get("fcp_ms")),
+            ttfb_ms=_as_optional_float(measurement.get("ttfb_ms")),
+            tti_ms=_as_optional_float(measurement.get("tti_ms")),
+            measured=bool(measurement.get("measured")),
+            source=str(measurement.get("source") or "unmeasured"),
+            measured_metrics=[
+                str(name) for name in (measurement.get("measured_metrics") or []) if name
+            ],
+            tti_source=(
+                str(measurement.get("tti_source")) if measurement.get("tti_source") else None
+            ),
+        )
+        if not vitals.measured_metrics:
+            vitals.measured_metrics = [
+                name
+                for name in ("lcp_ms", "cls", "inp_ms", "fcp_ms", "ttfb_ms", "tti_ms")
+                if getattr(vitals, name) is not None
+            ]
+        vitals.measured = bool(vitals.measured or vitals.measured_metrics)
+        return vitals
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,53 +133,107 @@ class CoreWebVitals:
             "fcp_ms": self.fcp_ms,
             "ttfb_ms": self.ttfb_ms,
             "tti_ms": self.tti_ms,
-            "lcp_status": "good" if self.lcp_ms <= 2500 else "needs_improvement" if self.lcp_ms <= 4000 else "poor",
-            "cls_status": "good" if self.cls <= 0.1 else "needs_improvement" if self.cls <= 0.25 else "poor",
-            "inp_status": "good" if self.inp_ms <= 200 else "needs_improvement" if self.inp_ms <= 500 else "poor",
+            "measured": self.measured,
+            "source": self.source,
+            "measured_metrics": list(self.measured_metrics),
+            "tti_source": self.tti_source,
+            "lcp_status": self._status(self.lcp_ms, LCP_GOOD_MS, LCP_NEEDS_MS),
+            "cls_status": self._status(self.cls, CLS_GOOD, CLS_NEEDS),
+            "inp_status": self._status(self.inp_ms, INP_GOOD_MS, INP_NEEDS_MS),
         }
 
 
 @dataclass
 class CostMetrics:
-    prompt_tokens: int = 1420
-    completion_tokens: int = 380
-    total_tokens: int = 1800
-    inference_cost_usd: float = 0.0016
-    avg_action_latency_ms: float = 185.0
-    total_actions_metered: int = 6
-    model_name: str = "claude-3-5-haiku"
-    cost_saved_usd_estimate: float = 0.45
+    """Real LLM token/cost telemetry plus real browser action timings.
+
+    ``prompt_tokens``/``completion_tokens``/``total_tokens`` come from the
+    Strands SDK's own usage accounting and are ``None`` when no LLM call was
+    metered. ``inference_cost_usd`` is only computed when real tokens are
+    available AND the model id matches a documented pricing entry, otherwise
+    ``None``. ``avg_action_latency_ms``/``total_actions_metered`` come from real
+    wall-clock browser action durations.
+
+    ``cost_saved_usd_estimate`` is intentionally unpopulated: a dollar estimate
+    of "cost saved" would require human-effort assumptions that this engine
+    cannot measure, so it stays ``None`` rather than a marketing constant.
+    """
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    inference_cost_usd: float | None = None
+    avg_action_latency_ms: float | None = None
+    total_actions_metered: int | None = None
+    model_name: str | None = None
+    cost_saved_usd_estimate: float | None = None
+    measured: bool = False
+    source: str = "unmeasured"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
-            "inference_cost_usd": round(self.inference_cost_usd, 5),
-            "avg_action_latency_ms": round(self.avg_action_latency_ms, 1),
+            "inference_cost_usd": (
+                round(self.inference_cost_usd, 5) if self.inference_cost_usd is not None else None
+            ),
+            "avg_action_latency_ms": (
+                round(self.avg_action_latency_ms, 1) if self.avg_action_latency_ms is not None else None
+            ),
             "total_actions_metered": self.total_actions_metered,
             "model_name": self.model_name,
-            "cost_saved_usd_estimate": round(self.cost_saved_usd_estimate, 2),
+            "cost_saved_usd_estimate": (
+                round(self.cost_saved_usd_estimate, 2) if self.cost_saved_usd_estimate is not None else None
+            ),
+            "measured": self.measured,
+            "source": self.source,
         }
 
 
 @dataclass
 class FlakinessDiagnostic:
-    flakiness_score: float = 0.8  # 0.0 to 10.0 scale
-    rating: str = "Deterministic"  # Deterministic, Mild Jitter, Flaky Hydration, High Non-Determinism
-    timing_jitter_ms: float = 42.0
-    hydration_delay_ms: float = 38.0
-    network_status_variance: float = 0.0
-    rerun_pass_consistency_pct: float = 98.5
+    """Flakiness signals derived ONLY from repeated executions of a path.
+
+    A single execution cannot establish jitter or rerun consistency, so every
+    field stays ``None`` (rating "Unknown") unless the same path was actually
+    observed more than once. Hydration delay has no reliable per-run browser
+    signal and is therefore always unmeasured.
+    """
+
+    flakiness_score: float | None = None  # 0.0 to 10.0 scale
+    rating: str = FLAKINESS_RATING_UNKNOWN
+    timing_jitter_ms: float | None = None
+    hydration_delay_ms: float | None = None
+    network_status_variance: float | None = None
+    rerun_pass_consistency_pct: float | None = None
+    measured: bool = False
+    source: str = "unmeasured"
+    sample_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "flakiness_score": round(self.flakiness_score, 2),
+            "flakiness_score": (
+                round(self.flakiness_score, 2) if self.flakiness_score is not None else None
+            ),
             "rating": self.rating,
-            "timing_jitter_ms": round(self.timing_jitter_ms, 1),
-            "hydration_delay_ms": round(self.hydration_delay_ms, 1),
-            "network_status_variance": round(self.network_status_variance, 2),
-            "rerun_pass_consistency_pct": round(self.rerun_pass_consistency_pct, 1),
+            "timing_jitter_ms": (
+                round(self.timing_jitter_ms, 1) if self.timing_jitter_ms is not None else None
+            ),
+            "hydration_delay_ms": (
+                round(self.hydration_delay_ms, 1) if self.hydration_delay_ms is not None else None
+            ),
+            "network_status_variance": (
+                round(self.network_status_variance, 2) if self.network_status_variance is not None else None
+            ),
+            "rerun_pass_consistency_pct": (
+                round(self.rerun_pass_consistency_pct, 1)
+                if self.rerun_pass_consistency_pct is not None
+                else None
+            ),
+            "measured": self.measured,
+            "source": self.source,
+            "sample_count": self.sample_count,
         }
 
 
@@ -236,7 +381,7 @@ class QualityDimensionsReport:
     visual_regressions: list[dict[str, Any]] = field(default_factory=list)
     accessibility_violations: list[dict[str, Any]] = field(default_factory=list)
     per_step_latency: list[dict[str, Any]] = field(default_factory=list)
-    synchronized_replay_steps: list[dict[str, Any]] = field(default_factory=list)
+    session_timeline: list[dict[str, Any]] = field(default_factory=list)
     silent_errors: list[dict[str, Any]] = field(default_factory=list)
     api_telemetry: list[dict[str, Any]] = field(default_factory=list)
     fuzzing_robustness: list[dict[str, Any]] = field(default_factory=list)
@@ -248,8 +393,8 @@ class QualityDimensionsReport:
     funnel_completion: list[dict[str, Any]] = field(default_factory=list)
     click_distance_to_value: dict[str, Any] = field(default_factory=dict)
     dark_pattern_flags: list[dict[str, Any]] = field(default_factory=list)
-    test_maintenance_reduction_pct: float = 76.5
-    regression_mttd_seconds: float = 14.8
+    test_maintenance_reduction_pct: float | None = None
+    regression_mttd_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -283,7 +428,7 @@ class QualityDimensionsReport:
             "visual_regressions": self.visual_regressions,
             "accessibility_violations": self.accessibility_violations,
             "per_step_latency": self.per_step_latency,
-            "synchronized_replay_steps": self.synchronized_replay_steps,
+            "session_timeline": self.session_timeline,
             "silent_errors": self.silent_errors,
             "api_telemetry": self.api_telemetry,
             "fuzzing_robustness": self.fuzzing_robustness,
@@ -300,6 +445,114 @@ class QualityDimensionsReport:
         }
 
 
+def _aggregate_web_vitals(path_metrics: list["PathQualityMetrics"]) -> CoreWebVitals:
+    """Average each Web Vital across only the paths that actually measured it."""
+    values: dict[str, float | None] = {}
+    measured_metrics: list[str] = []
+    for name in ("lcp_ms", "inp_ms", "fcp_ms", "ttfb_ms", "tti_ms", "cls"):
+        samples = [
+            value
+            for value in (getattr(m.web_vitals, name) for m in path_metrics)
+            if value is not None
+        ]
+        values[name] = _optional_mean(samples, 4 if name == "cls" else 1)
+        if samples:
+            measured_metrics.append(name)
+    any_measured = any(m.web_vitals.measured for m in path_metrics)
+    return CoreWebVitals(
+        **values,
+        measured=any_measured,
+        source="aggregated_browser_performance_api" if any_measured else "unmeasured",
+        measured_metrics=measured_metrics,
+        tti_source=(
+            "long_task_quiet_window_approx" if values.get("tti_ms") is not None else None
+        ),
+    )
+
+
+def _compute_run_flakiness(journeys: list[dict[str, Any]]) -> FlakinessDiagnostic:
+    """Derive flakiness ONLY from repeated executions of the same route.
+
+    With one sample per route there is no rerun consistency and no timing
+    jitter to speak of, so the diagnostic stays unmeasured (all ``None``,
+    rating "Unknown") instead of reporting invented numbers.
+    """
+    samples_by_route: dict[str, list[dict[str, Any]]] = {}
+    for j in journeys:
+        route = j.get("route") or j.get("name") or "/"
+        samples_by_route.setdefault(route, []).append(j)
+
+    repeated = {route: samples for route, samples in samples_by_route.items() if len(samples) > 1}
+    if not repeated:
+        return FlakinessDiagnostic()
+
+    consistencies: list[float] = []
+    jitters: list[float] = []
+    variances: list[float] = []
+    sample_count = 0
+    for samples in repeated.values():
+        sample_count += len(samples)
+        passed_flags = [bool(s.get("passed", not bool(s.get("error")))) for s in samples]
+        consistencies.append(100.0 * sum(1 for p in passed_flags if p) / len(passed_flags))
+
+        durations = [
+            value
+            for value in (_as_optional_float(s.get("duration_ms")) for s in samples)
+            if value is not None
+        ]
+        if len(durations) > 1:
+            jitters.append(max(durations) - min(durations))
+
+        failure_counts = [
+            sum(
+                1
+                for r in (s.get("network_requests") or [])
+                if int(r.get("status", 200) or 200) >= 400
+            )
+            for s in samples
+        ]
+        if len(failure_counts) > 1:
+            mean_failures = sum(failure_counts) / len(failure_counts)
+            variances.append(
+                sum((count - mean_failures) ** 2 for count in failure_counts) / len(failure_counts)
+            )
+
+    consistency = _optional_mean(consistencies, 1)
+    # 0 = every rerun agreed, 10 = reruns were fully inconsistent.
+    score = round(min(10.0, (100.0 - consistency) / 10.0), 2) if consistency is not None else None
+    rating = FLAKINESS_RATING_UNKNOWN
+    if score is not None:
+        rating = FLAKINESS_RATING_MAX
+        for threshold, label in FLAKINESS_RATING_BANDS:
+            if score < threshold:
+                rating = label
+                break
+
+    return FlakinessDiagnostic(
+        flakiness_score=score,
+        rating=rating,
+        timing_jitter_ms=_optional_mean(jitters, 1),
+        # No reliable per-run browser signal for hydration delay exists here.
+        hydration_delay_ms=None,
+        network_status_variance=_optional_mean(variances, 2),
+        rerun_pass_consistency_pct=consistency,
+        measured=True,
+        source="repeated_journey_runs",
+        sample_count=sample_count,
+    )
+
+
+def _resolve_configured_model_name() -> str | None:
+    """The actually-configured code-reasoning model id (never a hardcoded string)."""
+    try:
+        from agent.models.factory import ModelRole, resolve_model_id
+
+        return resolve_model_id(ModelRole.CODE_REASONING)
+    except Exception as exc:  # noqa: BLE001 - telemetry is best-effort
+        logger.debug("Could not resolve configured model name: %s", exc)
+        return None
+
+
 class QualityDimensionsEvaluator:
     """Calculates non-functional quality dimensions and per-path scorecards."""
 
@@ -313,8 +566,17 @@ class QualityDimensionsEvaluator:
         response_headers: dict[str, str] | None = None,
         is_external: bool = False,
         base_url: str | None = None,
+        web_vitals: dict[str, Any] | None = None,
+        action_timings_ms: list[float] | None = None,
     ) -> PathQualityMetrics:
-        """Calculates granular quality dimensions for an individual path/route."""
+        """Calculates granular quality dimensions for an individual path/route.
+
+        ``web_vitals`` must be a real browser measurement dict (as produced by
+        ``agent.journeys.web_vitals.collect_web_vitals``); when omitted, the
+        Web Vitals stay unmeasured (``None``) rather than being derived from
+        duration or DOM size. ``action_timings_ms`` are real wall-clock browser
+        action durations.
+        """
         dom_snapshot = dom_snapshot or ""
         network_requests = network_requests or []
         console_errors = console_errors or []
@@ -474,56 +736,26 @@ class QualityDimensionsEvaluator:
         clean_js_errors = [redact_credentials(e) for e in console_errors]
         clean_failed_requests = [redact_credentials(req_url) for req_url in failed_requests]
 
-        # 7. Real Web Vitals computation
-        lcp = round(max(450.0, min(duration_ms * 0.75, 4500.0)), 1)
-        cls_val = 0.01 if contrast_issues_count == 0 else 0.05
-        inp = round(35.0 + min(180.0, dom_node_count * 0.08), 1)
-        fcp = round(max(320.0, min(duration_ms * 0.45, 2000.0)), 1)
-        ttfb = round(max(80.0, min(duration_ms * 0.15, 600.0)), 1)
-        tti = round(max(750.0, min(duration_ms * 0.9, 5000.0)), 1)
-        web_vitals = CoreWebVitals(
-            lcp_ms=lcp,
-            cls=cls_val,
-            inp_ms=inp,
-            fcp_ms=fcp,
-            ttfb_ms=ttfb,
-            tti_ms=tti,
-        )
+        # 7. Browser-measured Web Vitals. Never derived from duration_ms or DOM
+        #    size: unobserved metrics stay None with status "unknown".
+        path_web_vitals = CoreWebVitals.from_measurement(web_vitals)
 
-        # 8. Real Cost Metrics per path (based on DOM token length & agent interaction complexity)
-        prompt_tokens = max(350, int(len(dom_snapshot) / 4.2)) + (len(network_requests) * 25)
-        completion_tokens = 180 + (len(clean_js_errors) * 65) + (missing_aria_count * 30)
-        total_tokens = prompt_tokens + completion_tokens
-        cost_usd = (prompt_tokens * 0.00000025) + (completion_tokens * 0.00000125)
+        # 8. Per-path cost. LLM token usage is only attributable at run level in
+        #    this codebase, so per-path tokens/cost stay unmeasured (None). Real
+        #    browser action timings ARE available per path.
+        measured_actions = [
+            value for value in (_as_optional_float(t) for t in (action_timings_ms or [])) if value is not None
+        ]
         path_cost = CostMetrics(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            inference_cost_usd=cost_usd,
-            avg_action_latency_ms=round(duration_ms / max(interactive_count, 1), 1),
-            total_actions_metered=max(1, min(interactive_count, 12)),
-            model_name="claude-3-5-haiku",
-            cost_saved_usd_estimate=0.45,
+            avg_action_latency_ms=_optional_mean(measured_actions),
+            total_actions_metered=len(measured_actions),
+            measured=bool(measured_actions),
+            source="browser_action_timings" if measured_actions else "unmeasured",
         )
 
-        # 9. Real Flakiness & Non-Deterministic Timing Diagnostic
-        timing_jitter = round(abs(duration_ms - 1250.0) * 0.12, 1)
-        hydration_delay = round(min(250.0, dom_node_count * 0.15), 1)
-        flakiness_score_val = round(min(10.0, (len(clean_js_errors) * 2.5) + (timing_jitter / 40.0) + (hydration_delay / 80.0)), 2)
-        flakiness_rating = (
-            "Deterministic" if flakiness_score_val < 2.0
-            else "Mild Jitter" if flakiness_score_val < 5.0
-            else "Flaky Hydration" if flakiness_score_val < 7.5
-            else "High Non-Determinism"
-        )
-        path_flakiness = FlakinessDiagnostic(
-            flakiness_score=flakiness_score_val,
-            rating=flakiness_rating,
-            timing_jitter_ms=timing_jitter,
-            hydration_delay_ms=hydration_delay,
-            network_status_variance=0.0 if not failed_requests else 0.4,
-            rerun_pass_consistency_pct=max(60.0, 100.0 - (flakiness_score_val * 4.0)),
-        )
+        # 9. Flakiness cannot be derived from a single path execution. Repeated
+        #    runs are aggregated in evaluate_run(); here it stays unmeasured.
+        path_flakiness = FlakinessDiagnostic()
 
         # 10. Form boundary & mutation robustness signals from actual DOM inputs
         fuzzing_signals = []
@@ -659,7 +891,7 @@ class QualityDimensionsEvaluator:
             passed=passed,
             ai_summary=ai_summary,
             remediation_suggestion=remediation_suggestion,
-            web_vitals=web_vitals,
+            web_vitals=path_web_vitals,
             cost=path_cost,
             flakiness=path_flakiness,
             keyboard_trap_detected=False,
@@ -677,8 +909,14 @@ class QualityDimensionsEvaluator:
         repo_dir: str | None = None,
         git_diff: str | None = None,
         dependency_graph: Any | None = None,
+        llm_usage: dict[str, Any] | None = None,
     ) -> QualityDimensionsReport:
-        """Evaluates an entire run (GitHub PR or External Site) across all 30 quality & analytics categories."""
+        """Evaluates an entire run (GitHub PR or External Site) across all 30 quality & analytics categories.
+
+        ``llm_usage`` is the real aggregated token usage from the run's Strands
+        agent invocations (see ``agent.models.usage``). When absent, the
+        run-level cost metrics stay unmeasured rather than guessed.
+        """
         run_id = getattr(run_record, "run_id", "run_unknown")
         scope = getattr(run_record, "scope", "changed")
         is_external = scope == "external" or repo_dir is None
@@ -712,6 +950,9 @@ class QualityDimensionsEvaluator:
                 errs = j.get("console_errors", [])
                 hdrs = j.get("response_headers", {})
                 j_base = j.get("base_url") or target_base_url
+                # Real browser measurements threaded through from the journey.
+                measured_vitals = j.get("web_vitals")
+                action_timings = j.get("action_timings_ms") or []
 
                 metrics = self.evaluate_path(
                     path=route_path,
@@ -722,6 +963,8 @@ class QualityDimensionsEvaluator:
                     response_headers=hdrs,
                     is_external=is_external,
                     base_url=j_base,
+                    web_vitals=measured_vitals if isinstance(measured_vitals, dict) else None,
+                    action_timings_ms=action_timings,
                 )
                 path_metrics_list.append(metrics)
                 per_path_analysis[route_path] = metrics.to_dict()
@@ -909,6 +1152,13 @@ class QualityDimensionsEvaluator:
         }
 
         # 3. Intent vs Outcome Alignment
+        #
+        # intent/action/target_selector describe the cookie-cutter journey the
+        # planner issues per route — structural context, not a measurement.
+        # `observed_dom_response` is real (measured node/interactive counts) and
+        # `alignment_status` is the real pass/fail verdict. A `confidence` field
+        # (0.98 when passing, 0.65 when failing) used to be attached here; it was a
+        # constant with no evaluator behind it, so it is gone.
         intent_vs_outcome = []
         for idx, m in enumerate(path_metrics_list):
             intent_vs_outcome.append({
@@ -918,82 +1168,116 @@ class QualityDimensionsEvaluator:
                 "target_selector": f"url: {m.path}",
                 "observed_dom_response": f"DOM loaded with {m.dom_node_count} nodes, {m.interactive_count} interactive controls.",
                 "alignment_status": "aligned" if m.passed else "diverged",
-                "confidence": 0.98 if m.passed else 0.65,
             })
 
-        # 4. Self-Healing & Selector Drift (from actual journey events or element robustness verification)
+        # 4. Self-Healing & Selector Drift — from ACTUAL recorded healing events only.
+        #
+        # There used to be a fallback here that, whenever a journey recorded no
+        # healing event, regex-scraped the first <button id=...> out of the DOM and
+        # emitted a fabricated entry claiming a selector had drifted and been
+        # "healed" via semantic text matching with `confidence_score: 96.2`. None of
+        # that happened: no drift was observed, no heal was performed, and the
+        # confidence number was a constant. Empty list = no healing was exercised.
         self_healing_locators = []
         for j in journeys:
             for heal in j.get("self_healing_events", []):
                 self_healing_locators.append(heal)
-            if not self_healing_locators:
-                dom = j.get("dom_snapshot") or j.get("html") or ""
-                btn_m = re.search(r"<button[^>]*id=['\"]([^'\"]+)['\"][^>]*>([^<]+)</button>", dom, re.IGNORECASE)
-                if btn_m:
-                    btn_id = btn_m.group(1)
-                    btn_txt = btn_m.group(2).strip()
-                    self_healing_locators.append({
-                        "original_selector": f"button#{btn_id}",
-                        "drifted_reason": "Dynamic hydration ID variation verified",
-                        "healed_selector": f"button:has-text('{btn_txt}')",
-                        "strategy": "semantic_text_matching",
-                        "confidence_score": 96.2,
-                        "resolved": True,
-                    })
 
         # 5. Hallucination Diagnostics
+        #
+        # Only meaningful when the planner/repair agent actually asserted something
+        # that could be checked against the DOM or diff. This pipeline does not yet
+        # perform that verification, so the counts stay None ("not evaluated")
+        # rather than reporting a rate of 0.0% over a denominator that was itself
+        # invented (previously `len(path_metrics_list) * 4`).
         hallucination_diagnostics = {
-            "rate_pct": 0.0,
-            "misalignment_count": 0,
-            "total_evaluations": len(path_metrics_list) * 4,
+            "rate_pct": None,
+            "misalignment_count": None,
+            "total_evaluations": None,
             "instances": [],
+            "status": "not_evaluated",
         }
 
-        # 6. Cost Tracking Aggregate
-        total_prompt = sum(m.cost.prompt_tokens for m in path_metrics_list)
-        total_completion = sum(m.cost.completion_tokens for m in path_metrics_list)
-        total_toks = total_prompt + total_completion
-        tot_cost = round((total_prompt * 0.00000025) + (total_completion * 0.00000125), 5)
+        # 6. Cost Tracking Aggregate — real Strands token usage only. Without a
+        #    measured usage payload these stay None rather than estimated.
+        usage = llm_usage if isinstance(llm_usage, dict) else {}
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        total_tokens = usage.get("total_tokens")
+        model_names = [str(name) for name in (usage.get("model_names") or []) if name]
+        configured_model = model_names[0] if model_names else _resolve_configured_model_name()
+        tokens_measured = prompt_tokens is not None and completion_tokens is not None
+        cost_usd = (
+            estimate_cost_usd(configured_model, prompt_tokens, completion_tokens)
+            if tokens_measured
+            else None
+        )
+
+        # Real per-action timings, weighted by how many actions each path metered.
+        action_pairs = [
+            (m.cost.avg_action_latency_ms, m.cost.total_actions_metered or 0)
+            for m in path_metrics_list
+            if m.cost.avg_action_latency_ms is not None and (m.cost.total_actions_metered or 0) > 0
+        ]
+        total_actions_metered = sum(count for _, count in action_pairs)
+        avg_action_latency_ms = (
+            round(sum(avg * count for avg, count in action_pairs) / total_actions_metered, 1)
+            if total_actions_metered
+            else None
+        )
+
         run_cost_metrics = CostMetrics(
-            prompt_tokens=total_prompt,
-            completion_tokens=total_completion,
-            total_tokens=total_toks,
-            inference_cost_usd=tot_cost,
-            avg_action_latency_ms=round(sum(m.latency_ms for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-            total_actions_metered=sum(m.cost.total_actions_metered for m in path_metrics_list),
-            model_name="claude-3-5-haiku",
-            cost_saved_usd_estimate=0.45 * max(len(path_metrics_list), 1),
+            prompt_tokens=int(prompt_tokens) if prompt_tokens is not None else None,
+            completion_tokens=int(completion_tokens) if completion_tokens is not None else None,
+            total_tokens=int(total_tokens) if total_tokens is not None else None,
+            inference_cost_usd=cost_usd,
+            avg_action_latency_ms=avg_action_latency_ms,
+            total_actions_metered=total_actions_metered,
+            model_name=configured_model,
+            measured=bool(tokens_measured or total_actions_metered),
+            source=(
+                "strands_agent_usage"
+                if tokens_measured
+                else ("browser_action_timings" if total_actions_metered else "unmeasured")
+            ),
         )
 
-        # 7. Aggregate Web Vitals
-        run_web_vitals = CoreWebVitals(
-            lcp_ms=round(sum(m.web_vitals.lcp_ms for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-            cls=round(sum(m.web_vitals.cls for m in path_metrics_list) / max(len(path_metrics_list), 1), 3),
-            inp_ms=round(sum(m.web_vitals.inp_ms for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-            fcp_ms=round(sum(m.web_vitals.fcp_ms for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-            ttfb_ms=round(sum(m.web_vitals.ttfb_ms for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-            tti_ms=round(sum(m.web_vitals.tti_ms for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-        )
+        # 7. Aggregate Web Vitals (only across paths that measured each metric)
+        run_web_vitals = _aggregate_web_vitals(path_metrics_list)
 
-        # 8. Synchronized Replay Steps
-        synchronized_replay_steps = []
+        # 8. Session timeline — measured journey facts only.
+        #
+        # This previously emitted `synchronized_replay_steps` with an invented
+        # `timestamp_offset_ms` (index * 1200), a hardcoded action_type of
+        # "page.goto", a fabricated `target_selector`, a synthesized DOM preview
+        # and a one-entry network waterfall whose status was hardcoded to 200.
+        # The dashboard rendered all of it as a "synchronized replay".
+        #
+        # Each route journey is recorded as its own clip and trace, so there is
+        # no shared timeline to synchronize against. This reports only what was
+        # actually captured per journey.
+        session_timeline = []
         video_url = getattr(run_record, "video_url", None)
         trace_url = getattr(run_record, "trace_url", None)
+        screenshot_url = getattr(run_record, "screenshot_url", None)
         for idx, m in enumerate(path_metrics_list):
-            synchronized_replay_steps.append({
+            vitals = m.web_vitals
+            if hasattr(vitals, "to_dict"):
+                vitals = vitals.to_dict()
+            elif not isinstance(vitals, dict):
+                vitals = None
+            session_timeline.append({
                 "step_index": idx + 1,
-                "timestamp_offset_ms": int(idx * 1200),
-                "action_type": "page.goto",
                 "route": m.path,
-                "target_selector": f"route: {m.path}",
-                "screenshot_url": getattr(run_record, "screenshot_url", None),
+                "duration_ms": m.latency_ms,
+                "dom_node_count": m.dom_node_count,
+                "console_errors": m.js_errors,
+                "failed_requests": m.failed_requests,
+                "transfer_size_kb": m.transfer_size_kb,
+                "web_vitals": vitals,
                 "video_url": video_url,
                 "trace_url": trace_url,
-                "dom_snapshot_preview": f"<{m.path}> root element with {m.dom_node_count} nodes",
-                "console_logs": m.js_errors,
-                "network_waterfall": [
-                    {"url": f"{m.path}", "status": 200, "duration_ms": m.latency_ms, "size_kb": m.transfer_size_kb},
-                ],
+                "screenshot_url": screenshot_url,
             })
 
         # 9. Silent Errors & API Telemetry
@@ -1009,156 +1293,121 @@ class QualityDimensionsEvaluator:
                     "impact": "Uncaught exception logged by browser engine",
                 })
             for req in m.failed_requests:
+                # The journey only retains the failed URL, not its status or
+                # timing, so those stay unmeasured rather than assumed.
                 api_telemetry.append({
                     "step_index": idx + 1,
                     "url": req,
-                    "method": "GET",
-                    "status_code": 500,
-                    "latency_ms": 320.0,
-                    "payload_size_bytes": 450,
-                    "failure_reason": "HTTP 500 Internal Server Error",
+                    "method": None,
+                    "status_code": None,
+                    "latency_ms": None,
+                    "payload_size_bytes": None,
+                    "failure_reason": "Failed network request observed during journey",
                 })
 
         for j in journeys:
             for req in j.get("network_requests", []):
                 if len(api_telemetry) < 25:
+                    recorded_latency = _as_optional_float(req.get("duration_ms"))
                     api_telemetry.append({
                         "step_index": len(api_telemetry) + 1,
                         "url": req.get("url", ""),
                         "method": req.get("method", "GET"),
                         "status_code": req.get("status", 200),
-                        "latency_ms": round(float(req.get("duration_ms", 45.0)), 1),
+                        "latency_ms": round(recorded_latency, 1) if recorded_latency is not None else None,
                         "payload_size_bytes": int(req.get("size", 0)),
                         "failure_reason": f"HTTP {req.get('status')}" if int(req.get("status", 200)) >= 400 else None,
                     })
 
-        # 10. Multi-Environment & Cross-Context Matrix from actual DOM scans
-        viewport_matrix = [
-            {
-                "viewport": "Desktop (1920x1080)",
-                "status": "Passed",
-                "touch_targets_valid": True,
-                "hidden_element_violations": 0,
-                "overflow_detected": False,
-                "notes": "Optimal layout hierarchy with zero clipping",
-            },
-            {
-                "viewport": "Tablet (768x1024)",
-                "status": "Passed",
-                "touch_targets_valid": True,
-                "hidden_element_violations": 0,
-                "overflow_detected": False,
-                "notes": "Responsive grid gracefully collapsed to 2 columns",
-            },
-            {
-                "viewport": "Mobile (375x812)",
-                "status": "Warning" if any(m.usability_score < 80 for m in path_metrics_list) else "Passed",
-                "touch_targets_valid": True,
-                "hidden_element_violations": 0,
-                "overflow_detected": False,
-                "notes": "Touch targets satisfy 48x48px min bounding requirement",
-            },
-        ]
+        # 10. Multi-Environment & Cross-Context matrix.
+        #
+        # The viewport and localization matrices were removed entirely rather than
+        # emitted empty-with-notes: every journey in this pipeline runs at one
+        # default viewport and in the app's own default locale. Reporting three
+        # device sizes as "Passed" (with notes like "Responsive grid gracefully
+        # collapsed to 2 columns") and four locales as "Valid" asserted coverage
+        # that was never exercised. The genuine i18n observations — hardcoded string
+        # count, RTL directionality, localized currency/date formatting — remain
+        # available on each path's metrics. `QualityDimensionsReport.viewport_matrix`
+        # and `.localization_matrix` are therefore always empty and the dashboard
+        # renders no section for them.
 
-        total_hardcoded = sum(m.hardcoded_strings_count for m in path_metrics_list)
-        any_rtl = any(m.rtl_supported for m in path_metrics_list)
-        any_currency = any(m.currency_date_formatted for m in path_metrics_list)
+        # Throttled-load projections are only computable from a measured LCP;
+        # without one they stay None instead of assuming a base value.
+        total_transfer_kb = sum(m.transfer_size_kb for m in path_metrics_list)
 
-        localization_matrix = [
-            {
-                "locale": "en-US (Default Base)",
-                "status": "Valid",
-                "text_clipping_count": 0,
-                "missing_keys_count": total_hardcoded,
-                "notes": f"Primary content scanned: {total_hardcoded} raw string node(s) detected in DOM.",
-            },
-            {
-                "locale": "ar-SA (RTL BiDi Script)",
-                "status": "Valid" if any_rtl else "Warning",
-                "text_clipping_count": 0 if any_rtl else 1,
-                "missing_keys_count": 0,
-                "notes": "dir='rtl' directional layout active" if any_rtl else "No RTL directionality tags detected in DOM.",
-            },
-            {
-                "locale": "de-DE (Dynamic Formatting)",
-                "status": "Valid" if any_currency else "Warning",
-                "text_clipping_count": 0,
-                "missing_keys_count": 0,
-                "notes": "Dynamic locale formatting verified." if any_currency else "No localized currency/date formatters found in DOM.",
-            },
-            {
-                "locale": "ja-JP (CJK Multi-byte)",
-                "status": "Valid",
-                "text_clipping_count": 0,
-                "missing_keys_count": 0,
-                "notes": "Full-width line wrapping and typography intact.",
-            },
-        ]
+        def _throttled_load_time(mbps: float | None) -> float | None:
+            if run_web_vitals.lcp_ms is None:
+                return None
+            base = run_web_vitals.lcp_ms
+            if mbps:
+                base += total_transfer_kb * 8 / mbps
+            return round(base, 1)
 
+        # Throttled-load PROJECTIONS. `load_time_ms` is derived arithmetically from
+        # the measured LCP plus the measured transfer size at each bandwidth, which
+        # is a genuine model. `graceful_recovery` / `offline_ui_displayed` used to be
+        # hardcoded True/False — no throttled or offline profile was ever actually
+        # run, so they claimed tested behaviour. They are now None (= not tested).
+        # Offline capability is reported separately as `has_service_worker`, which
+        # is a real observation from the captured DOM.
+        has_service_worker = any(
+            "serviceWorker" in (j.get("dom_snapshot", "") or "") for j in journeys
+        )
         network_throttling_impact = [
             {
                 "profile": "Broadband (Unthrottled)",
-                "load_time_ms": round(run_web_vitals.lcp_ms, 1),
-                "graceful_recovery": True,
-                "offline_ui_displayed": False,
+                "load_time_ms": _throttled_load_time(None),
+                "graceful_recovery": None,
+                "offline_ui_displayed": None,
             },
             {
-                "profile": "Fast 3G (1.6 Mbps / 150ms RTT)",
-                "load_time_ms": round(run_web_vitals.lcp_ms + (sum(m.transfer_size_kb for m in path_metrics_list) * 8 / 1.6), 1),
-                "graceful_recovery": True,
-                "offline_ui_displayed": False,
+                "profile": "1.6 Mbps",
+                "load_time_ms": _throttled_load_time(1.6),
+                "graceful_recovery": None,
+                "offline_ui_displayed": None,
             },
             {
-                "profile": "Slow 3G (400 Kbps / 400ms RTT)",
-                "load_time_ms": round(run_web_vitals.lcp_ms + (sum(m.transfer_size_kb for m in path_metrics_list) * 8 / 0.4), 1),
-                "graceful_recovery": True,
-                "offline_ui_displayed": False,
+                "profile": "0.4 Mbps",
+                "load_time_ms": _throttled_load_time(0.4),
+                "graceful_recovery": None,
+                "offline_ui_displayed": None,
             },
             {
                 "profile": "Offline Mode",
-                "load_time_ms": 0.0,
-                "graceful_recovery": any("serviceWorker" in (j.get("dom_snapshot", "") or "") for j in journeys),
-                "offline_ui_displayed": any("serviceWorker" in (j.get("dom_snapshot", "") or "") for j in journeys),
+                "load_time_ms": None,
+                "graceful_recovery": None,
+                "offline_ui_displayed": None,
+                "has_service_worker": has_service_worker,
             },
         ]
 
-        # 11. Business & Journey Telemetry from ACTUAL journeys/routes
+        # 11. Business & Journey Telemetry from ACTUAL journeys/routes.
+        #
+        # One funnel per journey actually executed. A previous fallback branch
+        # invented two funnels ("Initial Route Hydration", "Core Journey
+        # Verification") with 100% completion whenever fewer than two journeys ran
+        # — reporting funnel conversion for journeys that never happened. With no
+        # journeys there is nothing to report, so the list stays empty.
         funnel_completion = []
-        if len(journeys) >= 2:
-            for j in journeys:
-                j_name = j.get("name", "Journey").replace("exploratory:", "Route ").replace("_", " ").title()
-                j_passed = bool(j.get("passed", not bool(j.get("error"))))
-                j_err = j.get("error")
-                funnel_completion.append({
-                    "funnel_name": j_name,
-                    "completion_rate_pct": 100.0 if j_passed else 0.0,
-                    "dropoff_step": None if j_passed else (j_err or "Journey Assertion Failed"),
-                    "conversion_status": "Completed" if j_passed else "Failed",
-                })
-        else:
-            all_passed = all(m.passed for m in path_metrics_list) if path_metrics_list else True
-            first_path = path_metrics_list[0].path if path_metrics_list else "/"
-            funnel_completion = [
-                {
-                    "funnel_name": f"Initial Route Hydration ({first_path})",
-                    "completion_rate_pct": 100.0,
-                    "dropoff_step": None,
-                    "conversion_status": "Completed",
-                },
-                {
-                    "funnel_name": f"Core Journey Verification ({first_path})",
-                    "completion_rate_pct": 100.0 if all_passed else 0.0,
-                    "dropoff_step": None if all_passed else (path_metrics_list[0].js_errors[0] if (path_metrics_list and path_metrics_list[0].js_errors) else "Assertion Failed"),
-                    "conversion_status": "Completed" if all_passed else "Failed",
-                },
-            ]
+        for j in journeys:
+            j_name = j.get("name", "Journey").replace("exploratory:", "Route ").replace("_", " ").title()
+            j_passed = bool(j.get("passed", not bool(j.get("error"))))
+            j_err = j.get("error")
+            funnel_completion.append({
+                "funnel_name": j_name,
+                "completion_rate_pct": 100.0 if j_passed else 0.0,
+                "dropoff_step": None if j_passed else (j_err or "Journey Assertion Failed"),
+                "conversion_status": "Completed" if j_passed else "Failed",
+            })
 
+        # Real per-path aggregates. `optimal_distance_ratio` (const 1.0) and
+        # `friction_delay_ms` (const 0.0) used to be emitted here; neither is
+        # measured, and a hardcoded "this is optimal" ratio reads as a verdict.
         click_distance_to_value = {
             "total_steps": len(path_metrics_list),
             "dom_traversed_count": sum(m.dom_node_count for m in path_metrics_list),
             "duration_to_value_ms": round(sum(m.latency_ms for m in path_metrics_list), 1),
-            "optimal_distance_ratio": 1.0,
-            "friction_delay_ms": 0.0,
         }
 
         dark_pattern_flags = []
@@ -1179,15 +1428,8 @@ class QualityDimensionsEvaluator:
         for m in path_metrics_list:
             all_fuzzing.extend(m.fuzzing_signals)
 
-        # Real flakiness calculation for run
-        run_flakiness = FlakinessDiagnostic(
-            flakiness_score=round(sum(m.flakiness.flakiness_score for m in path_metrics_list) / max(len(path_metrics_list), 1), 2),
-            rating="Deterministic" if all(m.flakiness.rating == "Deterministic" for m in path_metrics_list) else "Mild Jitter",
-            timing_jitter_ms=round(sum(m.flakiness.timing_jitter_ms for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-            hydration_delay_ms=round(sum(m.flakiness.hydration_delay_ms for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-            network_status_variance=0.0,
-            rerun_pass_consistency_pct=round(sum(m.flakiness.rerun_pass_consistency_pct for m in path_metrics_list) / max(len(path_metrics_list), 1), 1),
-        )
+        # Flakiness across the run, derived only from repeated route executions.
+        run_flakiness = _compute_run_flakiness(journeys)
 
         return QualityDimensionsReport(
             run_id=run_id,
@@ -1218,31 +1460,41 @@ class QualityDimensionsEvaluator:
             visual_regressions=[],
             accessibility_violations=[],
             per_step_latency=[
-                {"step_index": idx + 1, "route": m.path, "latency_ms": m.latency_ms, "dom_settle_ms": 45.0, "lcp_ms": m.web_vitals.lcp_ms, "cls": m.web_vitals.cls, "memory_mb": 64.2}
+                {"step_index": idx + 1, "route": m.path, "latency_ms": m.latency_ms, "dom_settle_ms": None, "lcp_ms": m.web_vitals.lcp_ms, "cls": m.web_vitals.cls, "memory_mb": None}
                 for idx, m in enumerate(path_metrics_list)
             ],
-            synchronized_replay_steps=synchronized_replay_steps,
+            session_timeline=session_timeline,
             silent_errors=silent_errors,
             api_telemetry=api_telemetry,
             fuzzing_robustness=all_fuzzing,
-            race_condition_signals=[
-                {
-                    "trigger": "rapid_sequential_clicks",
-                    "route": path_metrics_list[0].path if path_metrics_list else "/",
-                    "detected": False,
-                    "details": "Client debounces state updates cleanly; no duplicate mutations detected.",
-                    "severity": "None",
-                }
-            ],
+            # Race-condition detection is not implemented: nothing in this pipeline
+            # issues concurrent/duplicate interactions and measures the result.
+            # Reporting a fixed "detected: False, no duplicate mutations" result
+            # asserted a property that was never exercised. Empty = not measured.
+            race_condition_signals=[],
             flakiness_score=run_flakiness,
-            viewport_matrix=viewport_matrix,
-            localization_matrix=localization_matrix,
+            # Both of these asserted coverage that never happened: the viewport
+            # matrix reported three device sizes as "Passed" while every journey
+            # ran at a single default viewport, and the localization matrix
+            # reported locales as "Valid" that were never rendered. Empty rather
+            # than fabricated; the real per-path i18n signals (hardcoded string
+            # count, RTL and currency/date formatting support) live on
+            # PathQualityMetrics and are still reported there.
+            viewport_matrix=[],
+            localization_matrix=[],
             network_throttling_impact=network_throttling_impact,
             funnel_completion=funnel_completion,
             click_distance_to_value=click_distance_to_value,
             dark_pattern_flags=dark_pattern_flags,
-            test_maintenance_reduction_pct=78.4,
-            regression_mttd_seconds=14.2,
+            # `test_maintenance_reduction_pct` (78.4) and `regression_mttd_seconds`
+            # (14.2) used to be emitted here as constants. Neither is derivable
+            # from anything this pipeline observes — maintenance reduction needs a
+            # longitudinal comparison against a manual-QA baseline, and MTTD needs
+            # commit-to-detection timestamps that are not recorded. They are now
+            # None so the UI reports them as not measured instead of showing
+            # made-up precision.
+            test_maintenance_reduction_pct=None,
+            regression_mttd_seconds=None,
         )
 
 

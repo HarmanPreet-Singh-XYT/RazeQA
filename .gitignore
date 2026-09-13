@@ -22,6 +22,7 @@ Thumbs.db
 !**/.env.example
 *.pem
 *.key
+.credential_key
 
 # Python / uv / Virtual Environments
 __pycache__/
@@ -71,6 +72,10 @@ agent/artifacts/runs/
 agent/artifacts/temp/
 *.webm
 *.zip
+
+# Coding Agent Bridge transient state (last captured user prompt)
+.claude/.bridge_last_prompt
+web/.claude/.bridge_last_prompt
 
 # IDE & Editor files
 .vscode/

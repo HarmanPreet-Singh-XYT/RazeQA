@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { getTestUser } from "@/lib/auth";
+import { getTestUser, isSandboxLoginEnabled } from "@/lib/auth";
 import { isFieldFilled } from "@/lib/form-validation";
 import { createClient } from "@/lib/supabase/server";
 
@@ -85,12 +85,30 @@ export async function registerWithEmail(
  * bypass) — convenience button for demoing the sandbox's automated login
  * flow. The account must actually exist in Supabase; if it doesn't, this
  * surfaces the same error a real failed login would.
+ *
+ * Disabled unless ENABLE_SANDBOX_LOGIN=true is set explicitly, and requires
+ * TEST_USER_EMAIL/TEST_USER_PASSWORD to be configured. This is the server-side
+ * enforcement of the same flag the UI reads (NEXT_PUBLIC_ENABLE_SANDBOX_LOGIN).
  */
 export async function loginWithSandbox(
   _prevState: AuthState,
   _formData: FormData
 ): Promise<AuthState> {
+  if (!isSandboxLoginEnabled()) {
+    return {
+      error:
+        "Sandbox sign-in is disabled in this deployment. Set ENABLE_SANDBOX_LOGIN=true to enable it.",
+    };
+  }
+
   const testUser = getTestUser();
+  if (!testUser) {
+    return {
+      error:
+        "Sandbox sign-in is enabled but TEST_USER_EMAIL / TEST_USER_PASSWORD are not configured.",
+    };
+  }
+
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signInWithPassword({
     email: testUser.email,

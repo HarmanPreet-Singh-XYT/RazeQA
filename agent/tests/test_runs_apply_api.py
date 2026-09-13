@@ -107,7 +107,11 @@ def test_trigger_run_caching_and_force(mock_pipeline, client):
     data = res.json()
     assert data["status"] == "cached"
     assert data["fresh"] is False
-    assert data["tokens_saved_estimate"] == 15000
+    # A cache hit reports no token/cost savings: the avoided usage of the run
+    # that never happened is not measurable, so the response omits it rather
+    # than inventing a figure.
+    assert "tokens_saved_estimate" not in data
+    assert "cost_saved_usd_estimate" not in data
 
     # Trigger with force=True -> should bypass cache and dispatch new run
     res_force = client.post(
@@ -164,5 +168,108 @@ def test_trigger_run_forced_rate_limiting(mock_pipeline, client):
     )
     assert res_blocked.status_code == 429
     assert "rate limit exceeded" in res_blocked.json()["detail"].lower()
+
+
+@patch("agent.runner.pipeline.run_pipeline", new_callable=AsyncMock)
+def test_apply_run_fix_reaches_github_contents_api(mock_pipeline, client, monkeypatch):
+    """A run that carries repository identity must commit through the Contents API.
+
+    Regression: `run_result` never contained owner/repo, so `owner` fell back to
+    "local" and the GitHub branch was unreachable; even when reached,
+    `get_file_content`'s (text, sha) tuple was treated as a dict and every patch
+    was skipped. The endpoint then still answered "applied" with zero files.
+    """
+    monkeypatch.setenv("GITHUB_TOKEN", "test-installation-token")
+
+    record = run_store.create(branch="feature/github-apply", sha="abc1234", repo="acme/app")
+    fix_proposal = {
+        "summary": "Fix button color",
+        "target_files": ["components/button.tsx"],
+        "paradigm": "tailwind",
+        "patches": [
+            {
+                "file_path": "components/button.tsx",
+                "original_snippet": "bg-red-500",
+                "replacement_snippet": "bg-emerald-500",
+            }
+        ],
+        "unified_diff": "- bg-red-500\n+ bg-emerald-500",
+    }
+    run_store.update(
+        record.run_id,
+        status="failed",
+        result={
+            "fix_proposals": [fix_proposal],
+            "owner": "acme",
+            "repo": "app",
+            "installation_id": 4242,
+        },
+    )
+
+    get_file = AsyncMock(return_value=("export const c = 'bg-red-500';", "blob-sha-1"))
+    update_file = AsyncMock(return_value={"commit": {"sha": "new-sha-9"}})
+
+    with (
+        patch("agent.github.app.GitHubAppClient.get_file_content", get_file),
+        patch("agent.github.app.GitHubAppClient.update_file_content", update_file),
+    ):
+        res = client.post(f"/runs/{record.run_id}/apply", headers=AUTH_HEADERS)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "applied"
+    assert data["applied_via"] == "github_contents_api"
+    assert data["applied_files"] == ["components/button.tsx"]
+    assert data["new_sha"] == "new-sha-9"
+
+    # The installation-scoped call must unpack the (text, sha) tuple correctly.
+    get_file.assert_awaited_once()
+    assert get_file.await_args.kwargs["installation_id"] == 4242
+    update_file.assert_awaited_once()
+    assert update_file.await_args.kwargs["sha"] == "blob-sha-1"
+    assert update_file.await_args.kwargs["branch"] == "feature/github-apply"
+
+
+@patch("agent.runner.pipeline.run_pipeline", new_callable=AsyncMock)
+def test_apply_run_fix_reports_when_nothing_matched(mock_pipeline, client, tmp_path, monkeypatch):
+    """When no patch can be applied the endpoint must not claim success."""
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "components" / "button.tsx"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("export const c = 'unchanged';")
+
+    record = run_store.create(branch="feat/no-match", sha="deadbee")
+    run_store.update(
+        record.run_id,
+        status="failed",
+        result={
+            "owner": "local",
+            "repo": "web",
+            "fix_proposals": [
+                {
+                    "summary": "Nope",
+                    "target_files": ["components/button.tsx"],
+                    "paradigm": "tailwind",
+                    "patches": [
+                        {
+                            "file_path": "components/button.tsx",
+                            "original_snippet": "does-not-exist",
+                            "replacement_snippet": "whatever",
+                        }
+                    ],
+                    "unified_diff": "",
+                }
+            ],
+        },
+    )
+
+    res = client.post(f"/runs/{record.run_id}/apply", headers=AUTH_HEADERS)
+    assert res.status_code == 409
+    body = res.json()
+    assert body["status"] == "no_changes_applied"
+    assert body["applied_files"] == []
+    assert "no patch could be applied" in body["error"].lower()
+    # Nothing landed, so no re-verification run may be enqueued.
+    assert not mock_pipeline.called
 
 

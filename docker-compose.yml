@@ -31,6 +31,9 @@ services:
       - PORT=8000
       - PLATFORM_URL=http://localhost:8000
       - CREDENTIAL_STORE_PATH=/app/artifacts/credentials.enc
+      # Arms the credential-store production guard: CREDENTIAL_STORE_KEY must be
+      # supplied via ./agent/.env or ./.env (no local key-file fallback).
+      - ENVIRONMENT=production
       - PYTHONUNBUFFERED=1
       # AGENT_API_KEY and SUPABASE_URL / SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY) are REQUIRED —
       # set them in ./agent/.env or ./.env (see agent/.env.example). The API
@@ -44,7 +47,8 @@ services:
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
       - APP_REPO_DIR=/app/repo/web
     volumes:
-      # Persistent forensic artifacts: videos, traces, DOM snapshots, and encrypted keys
+      # Persistent forensic artifacts: videos, traces, DOM snapshots. The
+      # credential key is NOT stored here — supply CREDENTIAL_STORE_KEY instead.
       - ./artifacts:/app/artifacts
       # Host Docker socket so the engine can launch sibling sandbox containers.
       - /var/run/docker.sock:/var/run/docker.sock
@@ -81,13 +85,11 @@ services:
       - HOSTNAME=0.0.0.0
       # Route server-side proxy requests to the engine service in Docker network
       - PLATFORM_URL=http://engine:8000
-      # Seeded test account for automated sandbox login (must be a real,
-      # pre-provisioned Supabase user — see README for the seed script).
-      - TEST_USER_EMAIL=qa@example.com
-      - TEST_USER_PASSWORD=changeme123
-      # REQUIRED — set in ./web/.env or ./.env (see web/.env.example). There
-      # is no mock/local-simulation auth mode; the app refuses to serve
-      # protected routes without these.
+      # Seeded test account and the sandbox sign-in toggle come from ./web/.env
+      # (see web/.env.example). No default credentials are shipped here.
+      # REQUIRED — set Supabase creds in ./web/.env or ./.env (see
+      # web/.env.example). There is no mock/local-simulation auth mode; the app
+      # refuses to serve protected routes without them.
     depends_on:
       engine:
         condition: service_healthy

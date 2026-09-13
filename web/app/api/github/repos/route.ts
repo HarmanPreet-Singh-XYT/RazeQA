@@ -1,63 +1,64 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { discoverRepositories } from "@/lib/github/discovery";
 
+/**
+ * List repositories made available by the GitHub App installation(s).
+ *
+ * This endpoint exists to populate the *import* picker, so it deliberately does
+ * NOT create anything. Repositories are annotated with `imported`, which the UI
+ * uses to separate "available to import" from "already connected". A `projects`
+ * row is only ever created by an explicit POST /api/projects from the import
+ * flow.
+ */
 export async function GET() {
-  const platformUrl = process.env.PLATFORM_URL || "http://localhost:8000";
-  const agentKey = process.env.AGENT_API_KEY;
-
-  // 1. Try querying the agent backend for real-time GitHub App data
-  try {
-    const res = await fetch(`${platformUrl}/api/github/repos`, {
-      headers: {
-        ...(agentKey ? { Authorization: `Bearer ${agentKey}` } : {}),
-      },
-      next: { revalidate: 30 },
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      return NextResponse.json(data);
-    }
-  } catch {
-    // Backend may be offline; fallback to Supabase installations below
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // 2. Fallback: Query Supabase installations table directly
-  try {
-    const supabase = await createClient();
-    const { data: installations, error } = await supabase
-      .from("installations")
-      .select("*")
-      .order("created_at", { ascending: false });
+  const discovered = await discoverRepositories(supabase);
 
-    if (!error && installations && installations.length > 0) {
-      const allRepos: any[] = [];
-      for (const inst of installations) {
-        const repos = Array.isArray(inst.repositories) ? inst.repositories : [];
-        for (const r of repos) {
-          allRepos.push({
-            installation_id: inst.installation_id,
-            account: inst.account_login,
-            repo_full_name: r.full_name || r.name,
-            repo_name: r.name,
-            default_branch: r.default_branch || "main",
-            private: !!r.private,
-            html_url: r.html_url || `https://github.com/${r.full_name || r.name}`,
-          });
-        }
-      }
-      return NextResponse.json({ repositories: allRepos, count: allRepos.length, source: "supabase" });
-    }
-  } catch (err: any) {
-    console.error("Failed to query fallback installations from Supabase:", err);
+  // Annotate with import state using the elevated client (the projects table is
+  // RLS-protected and the picker needs a truthful "already imported" flag).
+  let importedNames = new Set<string>();
+  try {
+    const admin = createAdminClient();
+    const { data: projects } = await admin.from("projects").select("repo_full_name");
+    importedNames = new Set(
+      (projects || []).map((p: any) => String(p.repo_full_name).toLowerCase())
+    );
+  } catch (err) {
+    console.error("Failed to resolve imported project state:", err);
   }
 
-  return NextResponse.json({ repositories: [], count: 0 });
+  const repositories = discovered.map((r) => ({
+    ...r,
+    imported: importedNames.has(r.repo_full_name.toLowerCase()),
+  }));
+
+  return NextResponse.json({
+    repositories,
+    count: repositories.length,
+    imported_count: repositories.filter((r) => r.imported).length,
+  });
 }
 
 export async function POST() {
   const platformUrl = process.env.PLATFORM_URL || "http://localhost:8000";
   const agentKey = process.env.AGENT_API_KEY;
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   try {
     const res = await fetch(`${platformUrl}/api/github/sync`, {

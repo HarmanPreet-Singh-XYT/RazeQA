@@ -24,6 +24,10 @@ from pydantic import BaseModel, Field, field_validator
 from agent.analyzer.diff_analyzer import AnalysisResult
 from agent.bridge.models import IntentEvent
 from agent.credentials.redaction import redact_credentials
+from agent.remediation.generated_files import (
+    is_generated_or_dependency_artifact,
+    strip_generated_files_from_diff,
+)
 
 logger = logging.getLogger("agent.remediation.agentic_repair")
 
@@ -203,20 +207,34 @@ class GuardrailedLocalEnvironment:
         cwd: str,
         custom_secrets: list[str] | None = None,
         timeout: int = 60,
+        container: str | None = None,
     ) -> None:
-        from minisweagent.environments.local import LocalEnvironment
+        from agent.sandbox.docker_exec_environment import DockerExecEnvironment
 
-        self.cwd = str(Path(cwd).resolve())
         self.custom_secrets = custom_secrets or []
         self.trajectory: list[TrajectoryStep] = []
         self._step_counter = 0
+        self.container = container
 
-        # Delegate to mini-swe-agent LocalEnvironment
-        self.inner_env = LocalEnvironment(
-            cwd=self.cwd,
-            timeout=timeout,
-            env={"PAGER": "cat", "CI": "true"},
-        )
+        if container:
+            # Repair inside the sandbox: `cwd` is an in-container path, so it must
+            # not be host-resolved.
+            self.cwd = cwd or "/app"
+            self.inner_env = DockerExecEnvironment(
+                container=container,
+                cwd=self.cwd,
+                timeout=timeout,
+            )
+        else:
+            from minisweagent.environments.local import LocalEnvironment
+
+            self.cwd = str(Path(cwd).resolve())
+            # Delegate to mini-swe-agent LocalEnvironment
+            self.inner_env = LocalEnvironment(
+                cwd=self.cwd,
+                timeout=timeout,
+                env={"PAGER": "cat", "CI": "true"},
+            )
 
     def execute(self, action: dict, cwd: str = "", *, timeout: int | None = None) -> dict[str, Any]:
         """Execute action with security guardrails and telemetry capture."""
@@ -274,25 +292,38 @@ class AgenticRepairEngine:
 
     def run_repair(
         self,
-        workspace_dir: Path | str,
-        journey_name: str,
-        error: str,
+        workspace_dir: Path | str | None = None,
+        journey_name: str = "",
+        error: str = "",
         analysis: AnalysisResult | None = None,
         intents: list[IntentEvent] | None = None,
         dom_snapshot: str | None = None,
         custom_secrets: list[str] | None = None,
+        container: str | None = None,
+        container_cwd: str = "/app",
     ) -> RepairResult:
-        """Executes an end-to-end autonomous repair loop on the given workspace directory."""
+        """Executes an end-to-end autonomous repair loop on the given workspace.
+
+        When ``container`` is provided, every action and verification runs via
+        ``docker exec`` inside the live sandbox container at ``container_cwd``, so
+        the repo under test never has to exist on the host. ``workspace_dir`` is
+        then only used for the non-containerized development path.
+        """
         from minisweagent.agents.default import DefaultAgent
         from minisweagent.models.litellm_model import LitellmModel
 
-        root_path = Path(workspace_dir).resolve()
-        if not root_path.exists():
-            return RepairResult(
-                success=False,
-                exit_status="workspace_not_found",
-                error_message=f"Workspace directory does not exist: {root_path}",
-            )
+        if container:
+            root_path = Path(container_cwd)
+            working_dir = container_cwd
+        else:
+            root_path = Path(workspace_dir).resolve() if workspace_dir else Path(os.getcwd())
+            if not root_path.exists():
+                return RepairResult(
+                    success=False,
+                    exit_status="workspace_not_found",
+                    error_message=f"Workspace directory does not exist: {root_path}",
+                )
+            working_dir = str(root_path)
 
         # Sanitize diagnostics before building prompt
         clean_error = redact_credentials(error, custom_secrets=custom_secrets)
@@ -395,9 +426,10 @@ Important rules:
             )
 
         env = GuardrailedLocalEnvironment(
-            cwd=str(root_path),
+            cwd=working_dir,
             custom_secrets=custom_secrets,
             timeout=60,
+            container=container,
         )
 
         agent = DefaultAgent(
@@ -411,15 +443,15 @@ Important rules:
         )
 
         try:
-            agent_result = agent.run(task=task_prompt, cwd=str(root_path))
+            agent_result = agent.run(task=task_prompt, cwd=working_dir)
             exit_status = agent_result.get("exit_status", "completed")
         except Exception as exc:
             logger.warning("mini-swe-agent run halted with exception: %s", exc)
             exit_status = f"halted: {exc}"
 
         # 4. Post-run build verification & Git Diff extraction
-        build_passed, build_out = self._run_build_check(root_path, build_cmd)
-        diff_str, target_files = self._extract_git_diff(root_path)
+        build_passed, build_out = self._run_build_check(root_path, build_cmd, container=container)
+        diff_str, target_files = self._extract_git_diff(root_path, container=container)
 
         success = (
             bool(diff_str.strip())
@@ -443,42 +475,74 @@ Important rules:
             custom_secrets=custom_secrets,
         )
 
-    def _run_build_check(self, root_path: Path, build_cmd: str) -> tuple[bool, str]:
-        """Runs the project build command to confirm build passes."""
+    def _run_build_check(
+        self,
+        root_path: Path,
+        build_cmd: str,
+        container: str | None = None,
+    ) -> tuple[bool, str]:
+        """Runs the project build command to confirm the fix builds.
+
+        With a container, the build runs inside the sandbox via `docker exec`
+        against the live checkout; otherwise against the host workspace.
+        """
         try:
             argv = validate_build_command(build_cmd)
-            res = subprocess.run(
-                argv,
-                shell=False,
-                cwd=str(root_path),
-                capture_output=True,
-                text=True,
-                timeout=90,
-            )
+            if container:
+                res = subprocess.run(
+                    ["docker", "exec", "-w", str(root_path), container, *argv],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+            else:
+                res = subprocess.run(
+                    argv,
+                    shell=False,
+                    cwd=str(root_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                )
             out = res.stdout if res.returncode == 0 else (res.stderr or res.stdout)
             return (res.returncode == 0, out[-2000:])
         except Exception as exc:
             return (False, f"Build execution failed: {exc}")
 
-    def _extract_git_diff(self, root_path: Path) -> tuple[str, list[str]]:
-        """Retrieves git diff and modified file list from workspace."""
-        try:
-            diff_res = subprocess.run(
-                ["git", "diff", "HEAD"],
+    def _extract_git_diff(
+        self,
+        root_path: Path,
+        container: str | None = None,
+    ) -> tuple[str, list[str]]:
+        """Retrieves git diff and modified file list from the workspace under repair.
+
+        Dependency lockfiles and build-output directories are excluded. The
+        verification build (`npm run build`, `npm install`, ...) runs in the same
+        workspace immediately before this, so it dirties those files as a side
+        effect; without filtering, a repair that changed nothing meaningful was
+        reported as "the fix" with a package-lock.json diff.
+        """
+        def _git(args: list[str], timeout: int) -> subprocess.CompletedProcess:
+            if container:
+                return subprocess.run(
+                    ["docker", "exec", "-w", str(root_path), container, "git", *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            return subprocess.run(
+                ["git", *args],
                 cwd=str(root_path),
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=timeout,
             )
+
+        try:
+            diff_res = _git(["diff", "HEAD"], timeout=30 if container else 10)
             diff_text = diff_res.stdout if diff_res.returncode == 0 else ""
 
-            status_res = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=str(root_path),
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            status_res = _git(["status", "--porcelain"], timeout=30 if container else 10)
             files: list[str] = []
             if status_res.returncode == 0:
                 for line in status_res.stdout.splitlines():
@@ -489,9 +553,10 @@ Important rules:
                         if " -> " in raw_file:
                             raw_file = raw_file.split(" -> ", 1)[1]
                         cleaned_file = raw_file.strip().strip('"').strip("'")
-                        if cleaned_file:
+                        if cleaned_file and not is_generated_or_dependency_artifact(cleaned_file):
                             files.append(cleaned_file)
 
+            diff_text = strip_generated_files_from_diff(diff_text)
             return diff_text, files
         except Exception as exc:
             logger.warning("Could not extract git diff: %s", exc)

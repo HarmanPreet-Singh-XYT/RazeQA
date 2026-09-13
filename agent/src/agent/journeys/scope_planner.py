@@ -60,6 +60,9 @@ class TestingConfig(BaseModel):
     cost_limit_usd: float = Field(default=0.5, ge=0.01, le=5.0)
     wall_time_limit_seconds: int = Field(default=60, ge=10, le=300)
     model_name: str | None = None
+    # Run the agentic exploration session (one continuous, model-driven browser
+    # session whose notes are advisory). On by default; disable per project.
+    agentic_exploration: bool = True
 
 
 class PlannedRoute(BaseModel):
@@ -111,19 +114,33 @@ class ReadOnlyGuardrailedEnvironment:
         cwd: str,
         custom_secrets: list[str] | None = None,
         timeout: int = 60,
+        container: str | None = None,
     ) -> None:
-        from minisweagent.environments.local import LocalEnvironment
+        from agent.sandbox.docker_exec_environment import DockerExecEnvironment
 
-        self.cwd = str(Path(cwd).resolve())
         self.custom_secrets = custom_secrets or []
         self.trajectory: list[TrajectoryStep] = []
         self._step_counter = 0
+        self.container = container
 
-        self.inner_env = LocalEnvironment(
-            cwd=self.cwd,
-            timeout=timeout,
-            env={"PAGER": "cat", "CI": "true"},
-        )
+        if container:
+            # Container run: inspect the repo under test where it actually lives.
+            # `cwd` is an in-container path here, so it must NOT be host-resolved.
+            self.cwd = cwd or "/app"
+            self.inner_env = DockerExecEnvironment(
+                container=container,
+                cwd=self.cwd,
+                timeout=timeout,
+            )
+        else:
+            from minisweagent.environments.local import LocalEnvironment
+
+            self.cwd = str(Path(cwd).resolve())
+            self.inner_env = LocalEnvironment(
+                cwd=self.cwd,
+                timeout=timeout,
+                env={"PAGER": "cat", "CI": "true"},
+            )
 
     def execute(self, action: dict, cwd: str = "", *, timeout: int | None = None) -> dict[str, Any]:
         """Execute command in read-only environment, recording trajectory and blocking mutations."""
@@ -224,13 +241,28 @@ class ScopePlanner:
 
     def plan_test_scope(
         self,
-        workspace_dir: Path | str,
-        discovered_routes: list[str],
+        workspace_dir: Path | str | None = None,
+        discovered_routes: list[str] | None = None,
         analysis: AnalysisResult | None = None,
         git_diff: str = "",
         custom_secrets: list[str] | None = None,
+        container: str | None = None,
+        container_cwd: str = "/app",
+        scope: str = "changed",
     ) -> ScopePlanResult:
-        """Runs the autonomous scope planner to select routes to test."""
+        """Runs the autonomous scope planner to select routes to test.
+
+        ``scope`` is ``"changed"`` (narrow to the diff's blast radius) or
+        ``"full"`` (a whole-app sweep of every discovered route). It changes the
+        planner's mission, never the allowlist: even a full sweep may only select
+        routes that were actually discovered in the workspace.
+
+        When ``container`` is provided the planner's read-only inspection commands
+        run via ``docker exec`` inside the live sandbox container, whose
+        ``container_cwd`` holds the repo under test. ``workspace_dir`` is then only
+        a fallback for the non-containerized development path.
+        """
+        discovered_routes = discovered_routes or []
         if not discovered_routes:
             return ScopePlanResult(
                 planned_routes=[],
@@ -248,7 +280,13 @@ class ScopePlanner:
                 error_message="No LLM API key available",
             )
 
-        root_path = Path(workspace_dir).resolve()
+        # A container run inspects /app inside the sandbox; the local path is only
+        # meaningful for the non-containerized dev path.
+        if container:
+            working_dir = container_cwd
+        else:
+            root_path = Path(workspace_dir).resolve() if workspace_dir else Path(os.getcwd())
+            working_dir = str(root_path) if root_path.exists() else os.getcwd()
 
         # Sanitize and frame developer testing instructions to prevent prompt injection
         testing_instr_block = ""
@@ -269,6 +307,28 @@ class ScopePlanner:
         affected_surfaces = analysis.affected_surfaces if analysis else []
         risk_tag = analysis.risk_tag if analysis else "Unknown"
 
+        if scope == "full":
+            scope_directive = (
+                "Requested scope: FULL REGRESSION SWEEP.\n"
+                f"Select EVERY discovered route (up to the {self.config.max_routes}-route cap), "
+                "not only the diff-affected ones. Treat the diff as useful context about where "
+                "attention is warranted, never as a filter on which routes get visited."
+            )
+            mission_step_3 = (
+                f"3. Select every discovered route you can cover, up to {self.config.max_routes} routes. "
+                "This is a full sweep: do not omit a route merely because the diff did not touch it. "
+                "Every selected route MUST strictly be one of the static discovered routes listed above."
+            )
+        else:
+            scope_directive = (
+                "Requested scope: CHANGED SURFACES.\n"
+                "Prioritise the routes the diff and its blast radius actually affect."
+            )
+            mission_step_3 = (
+                f"3. Select up to {self.config.max_routes} routes to test, preferring those the diff "
+                "affects. Every selected route MUST strictly be one of the static discovered routes listed above."
+            )
+
         task_prompt = f"""You are determining the optimal set of routes to test for this web application.
 
 Static Discovered Routes in Workspace:
@@ -282,11 +342,12 @@ Git Diff Snippet:
 ```diff
 {clean_diff}
 ```
+{scope_directive}
 {testing_instr_block}
 Your Mission:
 1. Review the discovered routes and the changes.
 2. If needed, inspect repo files using read-only commands (`ls`, `cat`, `grep`, `git diff`) to check middleware or auth requirements.
-3. Select up to {self.config.max_routes} routes to test. Every selected route MUST strictly be one of the static discovered routes listed above.
+{mission_step_3}
 4. For each selected route, specify a short natural-language note on what to check (e.g. {{"route": "/checkout", "focus": "form validation and payment flow"}}).
 5. Output the result in JSON array format by running:
 echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
@@ -337,9 +398,10 @@ CRITICAL RULES:
             )
 
         env = ReadOnlyGuardrailedEnvironment(
-            cwd=str(root_path) if root_path.exists() else os.getcwd(),
+            cwd=working_dir,
             custom_secrets=custom_secrets,
             timeout=30,
+            container=container,
         )
 
         agent = DefaultAgent(
@@ -355,7 +417,7 @@ CRITICAL RULES:
         submission_text = ""
         exit_status = "completed"
         try:
-            agent_result = agent.run(task=task_prompt, cwd=str(root_path) if root_path.exists() else os.getcwd())
+            agent_result = agent.run(task=task_prompt, cwd=working_dir)
             exit_status = agent_result.get("exit_status", "completed")
             submission_text = agent_result.get("submission", "")
         except Exception as exc:

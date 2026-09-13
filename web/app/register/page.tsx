@@ -46,7 +46,7 @@ export default function RegisterPage() {
           AutoQA Platform
         </h1>
         <p className="text-xs text-slate-500 mt-1 max-w-xs">
-          Autonomous testing platform for Claude Code &amp; Cursor
+          Autonomous testing platform for Claude Code
         </p>
       </div>
 

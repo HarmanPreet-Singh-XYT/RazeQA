@@ -21,12 +21,17 @@ create table if not exists installations (
 );
 
 -- 2. Projects (Registered Repositories)
+-- A row here means the user explicitly imported the repository. Discovery
+-- (GitHub App installations) never creates rows — see
+-- supabase/migrations/20260912000000_project_import_rls.sql.
 create table if not exists projects (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references auth.users(id) on delete set null,
   installation_id bigint references installations(installation_id) on delete set null,
   repo_full_name text not null unique,
+  default_branch text default 'main',
   encrypted_test_credentials text,
+  imported_at timestamptz default now(),
   settings jsonb default '{"scope": "changed", "test_type": "functional"}'::jsonb,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
@@ -84,6 +89,9 @@ drop policy if exists "Service role full access on projects" on projects;
 drop policy if exists "Service role full access on intent_logs" on intent_logs;
 drop policy if exists "Service role full access on runs" on runs;
 drop policy if exists "Users can view own projects" on projects;
+drop policy if exists "Users can insert own projects" on projects;
+drop policy if exists "Users can update own projects" on projects;
+drop policy if exists "Users can delete own projects" on projects;
 drop policy if exists "Users can view runs for own projects" on runs;
 
 -- Service role has full access
@@ -97,6 +105,14 @@ create policy "Users can view own projects" on projects for select using (auth.u
 create policy "Users can view runs for own projects" on runs for select using (
   exists (select 1 from projects where projects.id = runs.project_id and projects.user_id = auth.uid())
 );
+
+-- Owners may import/update/delete their own projects (see
+-- supabase/migrations/20260912000000_project_import_rls.sql). The dashboard
+-- writes through the secret key; these policies are defence in depth so a
+-- publishable-key write can never create an unowned or cross-tenant row.
+create policy "Users can insert own projects" on projects for insert with check (auth.uid() = user_id);
+create policy "Users can update own projects" on projects for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "Users can delete own projects" on projects for delete using (auth.uid() = user_id);
 
 -- 6. Storage Bucket for Forensic Run Artifacts (Videos, Traces, Screenshots)
 insert into storage.buckets (id, name, public)

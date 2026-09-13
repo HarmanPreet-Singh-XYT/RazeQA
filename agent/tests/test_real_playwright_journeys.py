@@ -10,7 +10,7 @@ whole pitch depends on (idea.md Section 3.2 step 7: "forensic-grade proof").
 
 These tests stand up a tiny local HTTP server serving a real login form and
 dashboard page, then call run_login_journey / run_route_journey directly
-(the real functions, unpatched) and assert real .webm video and .zip trace
+(the real functions, unpatched) and assert real video (.mp4 or .webm) and .zip trace
 files land on disk with nonzero size — the actual claim the rest of the
 system relies on.
 """
@@ -93,7 +93,8 @@ def test_real_login_journey_records_video_and_trace(local_app_server: str, tmp_p
 
     assert result.video_path is not None
     assert result.video_path.exists()
-    assert result.video_path.stat().st_size > 0, "video.webm was created but is empty"
+    assert result.video_path.stat().st_size > 0, "video was created but is empty"
+    assert result.video_path.suffix in {".mp4", ".webm"}
 
     assert result.storage_state_path is not None
     assert result.storage_state_path.exists()
@@ -117,6 +118,36 @@ def test_real_exploratory_journey_records_video_and_trace(local_app_server: str,
     video_path = Path(res["video_path"])
     assert video_path.exists()
     assert video_path.stat().st_size > 0
+
+
+def test_real_exploratory_journey_measures_web_vitals(local_app_server: str, tmp_path: Path) -> None:
+    """The collector is installed before navigation, so the real browser
+    observes FCP/LCP/TTFB for the page. INP is honestly None because the
+    journey performed no user interaction."""
+    res = run_route_journey(
+        route="/checkout",
+        base_url=local_app_server,
+        artifacts_dir=tmp_path,
+        test_type="functional",
+    )
+
+    assert res["passed"] is True, res.get("error")
+
+    vitals = res.get("web_vitals")
+    assert isinstance(vitals, dict)
+    assert vitals["measured"] is True
+    assert vitals["source"] == "browser_performance_api"
+    assert vitals["fcp_ms"] is not None and vitals["fcp_ms"] > 0
+    assert vitals["lcp_ms"] is not None and vitals["lcp_ms"] > 0
+    assert vitals["ttfb_ms"] is not None
+    # No interaction occurred, so INP genuinely cannot be measured.
+    assert vitals["inp_ms"] is None
+    assert "inp_ms" not in vitals["measured_metrics"]
+
+    # Journey duration and action timings are wall-clock measured, not defaults.
+    assert res["duration_ms"] > 0
+    assert isinstance(res["action_timings_ms"], list)
+    assert len(res["action_timings_ms"]) >= 1
 
 
 def test_real_login_journey_captures_artifacts_on_failure(tmp_path: Path) -> None:

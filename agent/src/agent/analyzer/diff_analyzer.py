@@ -38,9 +38,6 @@ risk_tag rather than a lower one — recommending an unnecessary journey is
 cheap; missing a real regression is not.
 """
 
-DEFAULT_MODEL_ID = "claude-sonnet-4-5-20250929"
-
-
 _RISK_RANK = {"Low": 0, "Medium": 1, "High": 2}
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -10,10 +11,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger("agent.api.runs")
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+# Mirrors the sandbox's `_SAFE_GIT_REF`. Validating here means an unsafe ref is
+# rejected with a clear 422 at the API boundary instead of surfacing later as an
+# opaque sandbox-boot failure.
+_SAFE_BASE_REF = re.compile(r"^[A-Za-z0-9._/@+-]+$")
 
 
 def _normalize_artifact_urls(data: dict) -> dict:
@@ -52,6 +59,50 @@ class RunRequest(BaseModel):
     force: bool = False
     pr_number: int | None = None
     commit_range: str | None = None
+    # Git ref or SHA to diff the tested commit against. When omitted, the diff
+    # base is the repository's base branch (``main``). The first-run briefing
+    # uses this to express "only the changes in this commit" (``<parent>``) and
+    # "the changes across this range" (``<range start>``) without changing which
+    # commit is actually built and tested (``sha``).
+    base_ref: str | None = None
+    # Human-readable label for where this run came from (e.g. "first-run
+    # briefing"). Stored on nothing sensitive; used only for display.
+    trigger: str | None = None
+    # Whether a run on the base branch may redefine the baseline other runs
+    # compare against. Only true for a run of the branch as it is now; verifying
+    # an older commit or a past range must not overwrite it with stale results.
+    update_baseline: bool = True
+
+    @field_validator("base_ref")
+    @classmethod
+    def _validate_base_ref(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        candidate = value.strip()
+        if not candidate:
+            return None
+        if not _SAFE_BASE_REF.match(candidate):
+            raise ValueError(
+                "base_ref may only contain letters, digits and . _ - / @ +"
+            )
+        return candidate
+
+    def resolved_base_ref(self) -> str | None:
+        """The explicit diff base, accepting ``commit_range`` as a fallback.
+
+        ``a..b`` / ``a...b`` is a range *ending* at the tested commit, so its
+        start is the diff base. A bare value is treated as the base itself.
+        """
+        if self.base_ref and self.base_ref.strip():
+            return self.base_ref.strip()
+        raw = (self.commit_range or "").strip()
+        if not raw:
+            return None
+        for sep in ("...", ".."):
+            if sep in raw:
+                start = raw.split(sep, 1)[0].strip()
+                return start or None
+        return raw or None
 
 
 class ExternalRunRequest(BaseModel):
@@ -187,6 +238,26 @@ class RunStore:
         with self._lock:
             self._runs.clear()
 
+    def delete_older_than(self, cutoff_iso: str) -> int:
+        """Delete in-memory runs created before ``cutoff_iso`` (interface parity
+        with SupabaseRunStore; used by the opt-in run-history retention sweep)."""
+        try:
+            cutoff = datetime.fromisoformat(cutoff_iso.replace("Z", "+00:00"))
+        except ValueError:
+            return 0
+
+        def _created(rec: RunRecord) -> datetime:
+            try:
+                return datetime.fromisoformat(rec.created_at.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                return datetime.now(UTC)
+
+        with self._lock:
+            expired = [rid for rid, rec in self._runs.items() if _created(rec) < cutoff]
+            for rid in expired:
+                del self._runs[rid]
+        return len(expired)
+
 
 run_store = RunStore()
 
@@ -251,8 +322,9 @@ async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) ->
                     "scope": existing.scope,
                     "test_type": existing.test_type,
                     "message": "Result returned from cache for this exact commit SHA.",
-                    "tokens_saved_estimate": 15000,
-                    "cost_saved_usd_estimate": 0.45,
+                    # No tokens/cost are reported for a cache hit: the avoided
+                    # usage of the run that never happened is not measurable,
+                    # and inventing a savings figure would be fabrication.
                     "created_at": existing.created_at,
                     "completed_at": existing.completed_at,
                     "result": existing.result,
@@ -294,6 +366,8 @@ async def trigger_run(payload: RunRequest, background_tasks: BackgroundTasks) ->
         scope=payload.scope,
         test_type=payload.test_type,
         pr_number=payload.pr_number,
+        diff_base=payload.resolved_base_ref(),
+        update_baseline=payload.update_baseline,
     )
 
     return {
@@ -408,17 +482,21 @@ async def apply_run_fix(run_id: str, background_tasks: BackgroundTasks) -> dict[
         )
 
     applied_files: list[str] = []
-    owner = result.get("owner", "local")
-    repo = result.get("repo", "web")
+    owner = result.get("owner") or "local"
+    repo = result.get("repo") or "web"
     branch = record.branch
     new_sha = record.sha
+    # Needed for GitHub App auth: a JWT alone cannot read repo contents, the
+    # App must exchange it for an installation token scoped to this repo.
+    installation_id = result.get("installation_id")
 
     github_client = GitHubAppClient()
-    # Attempt GitHub Contents API apply if configured
+    # Attempt the GitHub Contents API only when this run actually came from a
+    # real repository and GitHub credentials are configured.
     is_github_ready = (
         github_client.token is not None
         or (github_client.app_id is not None and github_client.private_key is not None)
-    ) and owner != "local"
+    ) and owner not in ("", "local", "default", None)
 
     if is_github_ready:
         for prop in proposals:
@@ -429,23 +507,52 @@ async def apply_run_fix(run_id: str, background_tasks: BackgroundTasks) -> dict[
                 except ValueError as exc:
                     logger.warning("Skipping unsafe patch from run %s: %s", run_id, exc)
                     continue
-                file_info = await github_client.get_file_content(owner, repo, patch.file_path, ref=branch)
-                if not file_info or "content" not in file_info:
-                    continue
-                updated_text, ok = apply_patch_to_text(file_info["content"], patch)
-                if ok:
-                    commit_res = await github_client.update_file_content(
-                        owner=owner,
-                        repo=repo,
-                        path=patch.file_path,
-                        message=f"fix({patch.file_path}): apply autonomous remediation [skip-pr-agent]",
-                        content=updated_text,
-                        sha=file_info["sha"],
-                        branch=branch,
+
+                try:
+                    # get_file_content returns (text, blob_sha); the previous
+                    # code treated that tuple as a dict and skipped every patch.
+                    current_text, blob_sha = await github_client.get_file_content(
+                        owner,
+                        repo,
+                        patch.file_path,
+                        ref=branch,
+                        installation_id=installation_id,
                     )
-                    if commit_res and "commit" in commit_res:
-                        new_sha = commit_res["commit"].get("sha", new_sha)
-                    applied_files.append(patch.file_path)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Could not fetch %s from %s/%s@%s for patch application: %s",
+                        patch.file_path,
+                        owner,
+                        repo,
+                        branch,
+                        exc,
+                    )
+                    continue
+
+                if not current_text:
+                    continue
+
+                updated_text, ok = apply_patch_to_text(current_text, patch)
+                if not ok:
+                    logger.warning(
+                        "Patch for %s did not match the current file contents; skipping.",
+                        patch.file_path,
+                    )
+                    continue
+
+                commit_res = await github_client.update_file_content(
+                    owner=owner,
+                    repo=repo,
+                    path=patch.file_path,
+                    message=f"fix({patch.file_path}): apply autonomous remediation [skip-pr-agent]",
+                    content=updated_text,
+                    sha=blob_sha,
+                    branch=branch,
+                    installation_id=installation_id,
+                )
+                if commit_res and "commit" in commit_res:
+                    new_sha = commit_res["commit"].get("sha", new_sha)
+                applied_files.append(patch.file_path)
     else:
         # Local mode: apply to workspace files directly
         # Determine base directory: workspace root or web directory
@@ -482,7 +589,33 @@ async def apply_run_fix(run_id: str, background_tasks: BackgroundTasks) -> dict[
                         target_path.write_text(updated, encoding="utf-8")
                         applied_files.append(patch.file_path)
 
-    # Dispatch re-verification run
+    # Nothing matched the current file contents (or no GitHub credentials /
+    # repository identity were available). Report that honestly instead of
+    # claiming "applied" with an empty file list, and do not burn a
+    # re-verification run on an unchanged tree.
+    if not applied_files:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "no_changes_applied",
+                "run_id": run_id,
+                "applied_files": [],
+                "applied_via": "none",
+                "error": (
+                    "No patch could be applied: the synthesized fix did not match the "
+                    "current contents of any target file"
+                    + (
+                        " and this run is not associated with a GitHub repository."
+                        if not is_github_ready
+                        else "."
+                    )
+                    + " Re-run verification to regenerate a fix."
+                ),
+            },
+        )
+
+    # Dispatch re-verification run against the updated revision only once a
+    # change actually landed.
     new_record = store.create(
         branch=record.branch,
         sha=new_sha,
@@ -502,14 +635,20 @@ async def apply_run_fix(run_id: str, background_tasks: BackgroundTasks) -> dict[
         run_id=new_record.run_id,
         scope=record.scope,
         test_type=record.test_type,
+        installation_id=installation_id,
     )
 
+    applied_via = "github_contents_api" if is_github_ready else "local_worktree"
     return {
         "status": "applied",
-        "message": f"Successfully applied fix across {len(applied_files)} file(s). Re-verification enqueued.",
+        "message": (
+            f"Applied fix to {len(applied_files)} file(s) via {applied_via}. "
+            "Re-verification enqueued."
+        ),
         "run_id": run_id,
         "new_run_id": new_record.run_id,
         "applied_files": applied_files,
+        "applied_via": applied_via,
         "new_sha": new_sha,
     }
 

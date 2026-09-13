@@ -28,7 +28,7 @@ export function ApplyFixButton({
   className,
   buttonLabel = "Apply Fix to PR",
 }: ApplyFixButtonProps) {
-  const { isApplying, isSuccess, error, errorType, applyFix, clearError } =
+  const { isApplying, isSuccess, appliedVia, error, errorType, applyFix, clearError } =
     useApplyFix(runId, onSuccess);
 
   return (
@@ -58,7 +58,11 @@ export function ApplyFixButton({
         {isSuccess && (
           <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700 font-semibold animate-in fade-in-50">
             <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-            <span>Patch committed &amp; pushed to PR branch!</span>
+            <span>
+              {appliedVia === "github_contents_api"
+                ? "Patch committed to the PR branch!"
+                : "Patch applied to the local working tree; re-verification enqueued."}
+            </span>
           </span>
         )}
       </div>

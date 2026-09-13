@@ -80,7 +80,7 @@ export default function ToolsHubPage() {
         <div className="text-center max-w-3xl mx-auto space-y-3">
           <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-2xs">
             <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
-            <span>100% Client-Side Privacy • Zero Server Latency</span>
+            <span>Runs in your browser • SSL, CORS &amp; OpenGraph checks use a rate-limited server request</span>
           </div>
           <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-slate-900">
             Webmaster & Developer Utility Suite

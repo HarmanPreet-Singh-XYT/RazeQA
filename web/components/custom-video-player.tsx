@@ -225,7 +225,7 @@ export function CustomVideoPlayer({
             className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
           >
             <Download className="h-3.5 w-3.5" />
-            Download .webm file
+            Download video file
           </a>
         </div>
       ) : (
@@ -236,7 +236,6 @@ export function CustomVideoPlayer({
         poster={poster}
         playsInline
         autoPlay={autoPlay}
-        crossOrigin="anonymous"
         onTimeUpdate={() => {
           if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
         }}
@@ -259,7 +258,7 @@ export function CustomVideoPlayer({
             1: "Playback aborted — the download was interrupted.",
             2: "Network error loading video. Check your connection.",
             3: "Video is unplayable — the recording may be incomplete because the test run timed out mid-session. Download to view locally in VLC.",
-            4: "Unsupported video format. Download the .webm file and open it in VLC or Chrome.",
+            4: "Unsupported video format. Download the video file to open it in a media player.",
           };
           setVideoError(messages[code ?? 0] ?? "Could not play video. Try downloading the file.");
         }}

@@ -91,9 +91,14 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
 
   const projectName = activeRepo
     ? activeRepo.split("/")[1] || activeRepo
-    : (projects[0]?.repo_full_name.split("/")[1] || "pingroute-web");
+    : (projects[0]?.name || projects[0]?.repo_full_name?.split("/")[1] || "Workspace");
 
-  const activeProjectSlug = activeRepo || projects[0]?.repo_full_name || "HarmanPreet-Singh-XYT/pingroute-web";
+  const activeProjectSlug = activeRepo || projects[0]?.repo_full_name || "";
+
+  // External projects live in browser storage; the copilot needs their target
+  // URL to be able to dispatch an audit for them.
+  const activeTargetUrl =
+    projects.find((p) => p.repo_full_name === activeProjectSlug)?.domain || null;
 
   // Breadcrumb title resolution
   const getBreadcrumbTitle = () => {
@@ -179,7 +184,15 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
     { href: "#agent", label: "Autonomous Agent", icon: Cpu, isAgentTrigger: true },
   ];
 
-  const isOverviewPage = pathname === "/dashboard";
+  const repoQuery = searchParams ? searchParams.get("repo") : null;
+  const isOverviewPage =
+    !repoQuery &&
+    (pathname === "/dashboard" ||
+      pathname === "/dashboard/runs" ||
+      pathname === "/dashboard/tools" ||
+      pathname === "/dashboard/journeys" ||
+      pathname === "/dashboard/logs" ||
+      pathname === "/dashboard/analytics");
 
   if (isOverviewPage) {
     return (
@@ -319,35 +332,55 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
           <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 flex items-center gap-1 overflow-x-auto text-xs font-medium text-slate-600 no-scrollbar">
             <Link
               href="/dashboard"
-              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-slate-950 text-slate-950 font-bold transition-colors whitespace-nowrap"
+              className={`flex items-center gap-1.5 px-3 py-2 border-b-2 transition-colors whitespace-nowrap ${
+                pathname === "/dashboard"
+                  ? "border-slate-950 text-slate-950 font-bold"
+                  : "border-transparent hover:text-slate-950 hover:border-slate-300"
+              }`}
             >
               <LayoutGrid className="h-3.5 w-3.5" />
               <span>Projects</span>
             </Link>
             <Link
               href="/dashboard/runs"
-              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent hover:text-slate-950 hover:border-slate-300 transition-colors whitespace-nowrap"
+              className={`flex items-center gap-1.5 px-3 py-2 border-b-2 transition-colors whitespace-nowrap ${
+                pathname.startsWith("/dashboard/runs")
+                  ? "border-slate-950 text-slate-950 font-bold"
+                  : "border-transparent hover:text-slate-950 hover:border-slate-300"
+              }`}
             >
               <Layers className="h-3.5 w-3.5" />
               <span>Activity &amp; Runs</span>
             </Link>
             <Link
               href="/dashboard/tools"
-              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent hover:text-slate-950 hover:border-slate-300 transition-colors whitespace-nowrap"
+              className={`flex items-center gap-1.5 px-3 py-2 border-b-2 transition-colors whitespace-nowrap ${
+                pathname.startsWith("/dashboard/tools") || pathname.startsWith("/dashboard/journeys")
+                  ? "border-slate-950 text-slate-950 font-bold"
+                  : "border-transparent hover:text-slate-950 hover:border-slate-300"
+              }`}
             >
               <Compass className="h-3.5 w-3.5" />
               <span>User Journeys</span>
             </Link>
             <Link
               href="/dashboard/logs"
-              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent hover:text-slate-950 hover:border-slate-300 transition-colors whitespace-nowrap"
+              className={`flex items-center gap-1.5 px-3 py-2 border-b-2 transition-colors whitespace-nowrap ${
+                pathname.startsWith("/dashboard/logs")
+                  ? "border-slate-950 text-slate-950 font-bold"
+                  : "border-transparent hover:text-slate-950 hover:border-slate-300"
+              }`}
             >
               <Terminal className="h-3.5 w-3.5" />
               <span>Execution Logs</span>
             </Link>
             <Link
               href="/dashboard/analytics"
-              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent hover:text-slate-950 hover:border-slate-300 transition-colors whitespace-nowrap"
+              className={`flex items-center gap-1.5 px-3 py-2 border-b-2 transition-colors whitespace-nowrap ${
+                pathname.startsWith("/dashboard/analytics")
+                  ? "border-slate-950 text-slate-950 font-bold"
+                  : "border-transparent hover:text-slate-950 hover:border-slate-300"
+              }`}
             >
               <BarChart3 className="h-3.5 w-3.5" />
               <span>Quality Analytics</span>
@@ -364,6 +397,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
           isOpen={isAgentModalOpen}
           onClose={() => setIsAgentModalOpen(false)}
           activeRepo={activeRepo}
+          targetUrl={activeTargetUrl}
         />
         <CommandPalette
           isOpen={isCommandPaletteOpen}
@@ -754,7 +788,13 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
 
               {/* Help / Feedback */}
               <Link
-                href="https://github.com/HarmanPreet-Singh-XYT/pingroute-web"
+                href={
+                  activeRepo && !activeRepo.startsWith("external:")
+                    ? `https://github.com/${activeRepo}`
+                    : projects[0]?.repo_full_name && !projects[0].repo_full_name.startsWith("external:")
+                    ? `https://github.com/${projects[0].repo_full_name}`
+                    : "https://github.com"
+                }
                 target="_blank"
                 title="GitHub Repo"
                 className="p-1.5 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100 transition-colors hidden sm:inline-flex"
@@ -873,6 +913,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
         isOpen={isAgentModalOpen}
         onClose={() => setIsAgentModalOpen(false)}
         activeRepo={activeProjectSlug}
+        targetUrl={activeTargetUrl}
       />
 
       <CommandPalette

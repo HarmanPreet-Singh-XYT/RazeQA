@@ -17,16 +17,54 @@ from typing import Any
 
 from agent.api.runs import RunRecord, run_store
 from agent.bridge.models import FileIntentStore, IntentEvent, IntentStore
+from agent.config import _is_pytest
 
 logger = logging.getLogger("agent.db.supabase")
+
+#: Explicit opt-in for integration tests that genuinely need a database.
+#: Points at a throwaway Supabase project; the suites that write should set this
+#: to a dedicated test instance and never to a live one.
+ALLOW_DB_IN_TESTS_ENV = "ALLOW_SUPABASE_WRITES_IN_TESTS"
 
 
 class SupabaseConfigError(RuntimeError):
     """Raised when SUPABASE_URL is set but the client cannot be initialized."""
 
 
+def _supabase_use_allowed() -> bool:
+    """Whether the process may talk to Supabase at all.
+
+    The test suite must not read from — nor, far more importantly, write to — a
+    real database. Running pytest with the developer's or a deployment's
+    ``SUPABASE_*`` variables present used to insert fixture runs
+    (`acme-corp`, `acme-api-test`, …) straight into the live `runs` table, where
+    they appeared in the dashboard as if they were real verifications.
+
+    Returning ``None`` makes every store fall back to its in-memory
+    implementation, which is what the unit tests are actually exercising.
+    Set ``ALLOW_SUPABASE_WRITES_IN_TESTS=1`` (with a throwaway Supabase project
+    in ``SUPABASE_URL``) for the rare test that needs real persistence.
+    """
+    if not _is_pytest():
+        return True
+    return os.environ.get(ALLOW_DB_IN_TESTS_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def get_supabase_client() -> Any | None:
     """Instantiate Supabase client if credentials exist in environment."""
+    if not _supabase_use_allowed():
+        logger.warning(
+            "Refusing to use Supabase while running under pytest: in-memory storage "
+            "is in use. Set %s=1 with a dedicated test project to opt in.",
+            ALLOW_DB_IN_TESTS_ENV,
+        )
+        return None
+
     url = os.environ.get("SUPABASE_URL")
     key = (
         os.environ.get("SUPABASE_SECRET_KEY")
@@ -40,7 +78,7 @@ def get_supabase_client() -> Any | None:
 
         client: Client = create_client(url, key)
         return client
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise SupabaseConfigError(
             f"SUPABASE_URL is set but the Supabase client failed to initialize: {exc}"
         ) from exc
@@ -331,6 +369,29 @@ class SupabaseRunStore:
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to list runs from Supabase: %s", exc)
             return []
+
+    def delete_older_than(self, cutoff_iso: str) -> int:
+        """Delete run rows created before ``cutoff_iso``; returns rows removed.
+
+        Opt-in (see ``RUN_HISTORY_RETENTION_SECONDS``): run rows are the
+        dashboard's history, so they are kept by default. This exists so a
+        deployment that must not retain the payloads inside ``runs.result``
+        (DOM snapshots, remediation text) can expire them on the same schedule
+        as the artifacts themselves.
+        """
+        if not self.client:
+            return 0
+        try:
+            res = (
+                self.client.table("runs")
+                .delete()
+                .lt("created_at", cutoff_iso)
+                .execute()
+            )
+            return len(res.data or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to purge runs older than %s: %s", cutoff_iso, exc)
+            return 0
 
 
 # Storage instances with automatic Supabase detection and local fallback

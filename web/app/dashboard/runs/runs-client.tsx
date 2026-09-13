@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Layers,
   Search,
@@ -29,12 +29,15 @@ import {
   GitCommit,
   BarChart3,
   Activity,
+  FolderGit2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDashboard } from "@/components/dashboard-context";
 import { CustomVideoPlayer } from "@/components/custom-video-player";
 import { ApplyFixButton } from "@/components/apply-fix-button";
 import { FixProposalViewer } from "@/components/fix-proposal-viewer";
+import { RunConfigDialog } from "@/components/run-config-dialog";
+import type { RunDispatchRecord } from "@/lib/first-run";
 
 export type TestRunRecord = {
   id: string;
@@ -59,16 +62,29 @@ export type TestRunRecord = {
   consoleErrors?: string[];
   remediationPrompt?: string;
   fixProposals?: any[];
+  repo?: string;
 };
 
 export function RunsClient({ userEmail }: { userEmail: string }) {
   const router = useRouter();
-  const { activeRepo } = useDashboard();
+  const searchParams = useSearchParams();
+  const urlRepo = searchParams ? searchParams.get("repo") : null;
+  const isOverviewMode = !urlRepo;
+  const { activeRepo, projects } = useDashboard();
+
+  const [projectFilter, setProjectFilter] = useState<string>(urlRepo || "all");
   const [runs, setRuns] = useState<TestRunRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isTriggering, setIsTriggering] = useState(false);
+  const [isRunDialogOpen, setIsRunDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"All" | "Passed" | "Failed" | "main" | "pr">("All");
+
+  // Keep project filter in sync if urlRepo changes
+  useEffect(() => {
+    if (urlRepo) {
+      setProjectFilter(urlRepo);
+    }
+  }, [urlRepo]);
 
   // Forensics Modal
   const [selectedRun, setSelectedRun] = useState<TestRunRecord | null>(null);
@@ -76,7 +92,8 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
 
   const loadRuns = async () => {
     try {
-      const repoParam = activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : "";
+      const targetRepo = urlRepo || (projectFilter !== "all" ? projectFilter : null);
+      const repoParam = targetRepo ? `?repo=${encodeURIComponent(targetRepo)}` : "";
       const res = await fetch(`/api/runs${repoParam}`);
       if (res.ok) {
         const data = await res.json();
@@ -102,6 +119,11 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
             ? new Date(r.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })
             : "Recent";
 
+          const runRepo =
+            r.repo ||
+            r.repo_full_name ||
+            (r.target_url ? new URL(r.target_url).hostname : targetRepo || activeRepo || projects[0]?.repo_full_name || "Workspace");
+
           return {
             id: r.id || r.run_id || `run-${Date.now()}`,
             commitMsg: r.commitMsg || r.message || result.summary || `Autonomous verification for ${r.branch || "main"}`,
@@ -125,6 +147,7 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
             consoleErrors: result.console_errors || r.additionalFindingsDetails || [],
             remediationPrompt: result.remediation_prompt || r.remediationPrompt,
             fixProposals: result.fix_proposals || r.fixProposals || [],
+            repo: runRepo,
           };
         });
         setRuns(mapped);
@@ -140,33 +163,39 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
     loadRuns();
     const interval = setInterval(loadRuns, 4000);
     return () => clearInterval(interval);
-  }, [activeRepo]);
+  }, [urlRepo, projectFilter, activeRepo]);
 
-  const handleTriggerRun = async () => {
-    setIsTriggering(true);
-    try {
-      await fetch("/api/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repo_full_name: activeRepo || "HarmanPreet-Singh-XYT/pingroute-web",
-          branch: "main",
-          scope: "changed",
-          test_type: "functional",
-        }),
-      });
-      await loadRuns();
-    } catch {}
-    finally {
-      setIsTriggering(false);
-    }
+  // Which repository a manual run should target, and how it should be run.
+  // The dialog owns the "what should it cover" choice, so this page no longer
+  // hardcodes scope=changed/functional.
+  const runTargetRepo =
+    projectFilter !== "all"
+      ? projectFilter
+      : activeRepo || projects[0]?.repo_full_name || "";
+  const runTargetProject = projects.find((p) => p.repo_full_name === runTargetRepo) || null;
+  const runTargetBranch = runTargetProject?.default_branch || "main";
+
+  const handleTriggerRun = () => setIsRunDialogOpen(true);
+
+  const handleRunDispatched = (_record: RunDispatchRecord) => {
+    setIsRunDialogOpen(false);
+    loadRuns();
   };
 
   const filteredRuns = runs.filter((r) => {
+    if (projectFilter !== "all" && r.repo) {
+      const cleanProjectFilter = projectFilter.toLowerCase();
+      const cleanRunRepo = r.repo.toLowerCase();
+      if (!cleanRunRepo.includes(cleanProjectFilter) && !cleanProjectFilter.includes(cleanRunRepo)) {
+        return false;
+      }
+    }
+
     const matchesQuery =
       r.commitMsg.toLowerCase().includes(searchQuery.toLowerCase()) ||
       r.branch.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.hash.toLowerCase().includes(searchQuery.toLowerCase());
+      r.hash.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.repo && r.repo.toLowerCase().includes(searchQuery.toLowerCase()));
 
     if (!matchesQuery) return false;
 
@@ -178,6 +207,13 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
     return true;
   });
 
+  const displayProjectName =
+    projectFilter !== "all"
+      ? projectFilter.split("/")[1] || projectFilter
+      : urlRepo
+      ? urlRepo.split("/")[1] || urlRepo
+      : activeRepo?.split("/")[1] || activeRepo;
+
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto w-full animate-in fade-in-50 duration-200">
       {/* Header & Action Toolbar */}
@@ -185,47 +221,86 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
         <div>
           <h1 className="text-xl font-bold tracking-tight text-slate-950 flex items-center gap-2.5">
             <Layers className="h-5 w-5 text-slate-900" />
-            <span>Test Runs &amp; Verifications</span>
+            <span>
+              {isOverviewMode && projectFilter === "all"
+                ? "All Test Runs & Activity"
+                : `Test Runs · ${displayProjectName}`}
+            </span>
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Historical audit log of all automated Playwright test runs, regression verifications, and AI patches for{" "}
-            <span className="font-mono font-semibold text-slate-700">{activeRepo || "active repository"}</span>.
+            {isOverviewMode && projectFilter === "all"
+              ? "Fleet-wide historical audit log of all automated Playwright test runs, regression verifications, and AI patches across all projects."
+              : `Historical audit log of all automated Playwright test runs, regression verifications, and AI patches for ${displayProjectName}.`}
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <Button
             onClick={handleTriggerRun}
-            disabled={isTriggering}
+            disabled={!runTargetRepo}
             className="bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold h-8 px-3 gap-1.5 shadow-2xs cursor-pointer disabled:opacity-50"
           >
-            {isTriggering ? (
-              <>
-                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                <span>Dispatching...</span>
-              </>
-            ) : (
-              <>
-                <Play className="h-3.5 w-3.5 fill-white" />
-                <span>Trigger Verification</span>
-              </>
-            )}
+            <Play className="h-3.5 w-3.5 fill-white" />
+            <span>Run Verification</span>
           </Button>
+        </div>
+      </div>
+
+      {/* Fleet Overview Metric Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-2xs">
+          <div className="text-[11px] text-slate-500 font-medium">Total Test Runs</div>
+          <div className="text-lg font-bold text-slate-950 mt-1 font-mono">{runs.length}</div>
+        </div>
+        <div className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-2xs">
+          <div className="text-[11px] text-slate-500 font-medium">Passed Verifications</div>
+          <div className="text-lg font-bold text-emerald-600 mt-1 font-mono">
+            {runs.filter((r) => r.status === "Passed").length}
+          </div>
+        </div>
+        <div className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-2xs">
+          <div className="text-[11px] text-slate-500 font-medium">Failed / Regressions</div>
+          <div className="text-lg font-bold text-rose-600 mt-1 font-mono">
+            {runs.filter((r) => r.status === "Failed").length}
+          </div>
+        </div>
+        <div className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-2xs">
+          <div className="text-[11px] text-slate-500 font-medium">Projects Monitored</div>
+          <div className="text-lg font-bold text-slate-900 mt-1 font-mono">
+            {projects.length || 1}
+          </div>
         </div>
       </div>
 
       {/* Filter Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        {/* Search Bar */}
-        <div className="relative flex-1 max-w-md">
-          <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Filter by commit message, branch, or SHA..."
-            className="w-full bg-white border border-slate-200 rounded-md pl-9 pr-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:border-slate-400 transition-colors shadow-2xs"
-          />
+        {/* Search Bar + Project Selector */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 max-w-xl">
+          <div className="relative flex-1">
+            <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Filter by commit, branch, project, or SHA..."
+              className="w-full bg-white border border-slate-200 rounded-md pl-9 pr-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:border-slate-400 transition-colors shadow-2xs"
+            />
+          </div>
+
+          <div className="relative shrink-0">
+            <select
+              value={projectFilter}
+              onChange={(e) => setProjectFilter(e.target.value)}
+              className="w-full sm:w-auto bg-white border border-slate-200 rounded-md px-3 py-1.5 text-xs text-slate-800 font-medium focus:outline-hidden focus:border-slate-400 shadow-2xs cursor-pointer"
+            >
+              <option value="all">All Projects ({projects.length})</option>
+              {projects.map((p) => (
+                <option key={p.repo_full_name} value={p.repo_full_name}>
+                  {p.name || p.repo_full_name.split("/")[1] || p.repo_full_name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Filter Pills */}
@@ -270,10 +345,10 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
             </p>
             <Button
               onClick={handleTriggerRun}
-              disabled={isTriggering}
-              className="bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold h-8 px-3 shadow-2xs"
+              disabled={!runTargetRepo}
+              className="bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold h-8 px-3 shadow-2xs cursor-pointer disabled:opacity-50"
             >
-              {isTriggering ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <Play className="h-3.5 w-3.5 fill-white mr-1" />}
+              <Play className="h-3.5 w-3.5 fill-white mr-1" />
               <span>Trigger First Verification Run</span>
             </Button>
           </div>
@@ -292,6 +367,14 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
                   {/* Run Information */}
                   <div className="space-y-1.5 min-w-0 flex-1">
                     <div className="flex items-center gap-2.5 flex-wrap">
+                      {/* Project Badge */}
+                      {run.repo && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-100 border border-slate-200 text-slate-800">
+                          <FolderGit2 className="h-2.5 w-2.5 text-slate-500" />
+                          <span>{run.repo.split("/")[1] || run.repo}</span>
+                        </span>
+                      )}
+
                       {/* Status Pill */}
                       <span
                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
@@ -330,7 +413,7 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
                       {/* Pull Request Badge */}
                       {run.prNumber && (
                         <a
-                          href={run.prUrl || `https://github.com/${activeRepo || "HarmanPreet-Singh-XYT/pingroute-web"}/pull/${run.prNumber}`}
+                          href={run.prUrl || (run.repo ? `https://github.com/${run.repo}/pull/${run.prNumber}` : `#`)}
                           target="_blank"
                           rel="noreferrer"
                           onClick={(e) => e.stopPropagation()}
@@ -514,6 +597,16 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
           </div>
         </div>
       )}
+
+      <RunConfigDialog
+        isOpen={isRunDialogOpen && Boolean(runTargetRepo)}
+        repo={runTargetRepo}
+        projectName={runTargetProject?.name}
+        defaultBranch={runTargetBranch}
+        defaultTestType={runTargetProject?.settings?.test_type}
+        onClose={() => setIsRunDialogOpen(false)}
+        onDispatched={handleRunDispatched}
+      />
     </div>
   );
 }

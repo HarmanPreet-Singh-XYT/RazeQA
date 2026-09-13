@@ -25,12 +25,53 @@ function getGitInfo(): { sha: string; branch: string } {
 }
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getSessionUser } from "@/lib/auth";
+import { canAccessRepo, resolveTenantScope, type TenantScope } from "@/lib/tenant";
 
 export async function GET(request: Request) {
   const git = getGitInfo();
   const { searchParams } = new URL(request.url);
   const repoParam = searchParams.get("repo");
   const branchParam = searchParams.get("branch");
+
+  // Resolve the caller's tenant scope before returning anything. The engine has
+  // no per-user scoping of its own, so this route is the only place that can
+  // stop one signed-in user from reading another tenant's runs.
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json(
+      { runs: [], engineConnected: false, git, error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
+  let admin: ReturnType<typeof createAdminClient>;
+  let scope: TenantScope;
+  try {
+    admin = createAdminClient();
+    scope = await resolveTenantScope(admin, user.id);
+  } catch (err: any) {
+    // Without elevated DB access we cannot determine what this user may see.
+    // Fail closed with a clear message rather than returning every run.
+    return NextResponse.json(
+      {
+        runs: [],
+        engineConnected: false,
+        git,
+        error: `Cannot resolve per-project access: ${err?.message ?? "unknown error"}`,
+      },
+      { status: 503 }
+    );
+  }
+
+  // Asking for a repository outside the caller's scope is answered with an
+  // empty list, never with a hint that the repo exists.
+  if (repoParam && !canAccessRepo(scope, repoParam)) {
+    return NextResponse.json(
+      { runs: [], engineConnected: true, git, warning: "No access to the requested repository." },
+      { status: 403 }
+    );
+  }
 
   if (!ENGINE_API_KEY) {
     return NextResponse.json(
@@ -49,8 +90,17 @@ export async function GET(request: Request) {
     });
 
     if (res.ok) {
-      const runs = await res.json();
-      return NextResponse.json({ runs, engineConnected: true, git });
+      const payload = await res.json();
+      const allRuns = Array.isArray(payload) ? payload : [];
+      const runs = allRuns.filter((r: any) => canAccessRepo(scope, r?.repo ?? r?.repo_full_name));
+      return NextResponse.json({
+        runs,
+        engineConnected: true,
+        git,
+        ...(scope.repoNames.length === 0 && !scope.includeUnowned
+          ? { warning: "No projects imported for this account; no runs to show." }
+          : {}),
+      });
     }
   } catch (err: any) {
     // Engine daemon offline - fall through to Supabase direct query
@@ -58,10 +108,21 @@ export async function GET(request: Request) {
 
   // Fallback: Direct Supabase query if engine is offline or returned error
   try {
-    const supabase = createAdminClient();
-    let query = supabase.from("runs").select("*").order("created_at", { ascending: false });
+    if (scope.projectIds.length === 0 && !scope.includeUnowned) {
+      return NextResponse.json({
+        runs: [],
+        engineConnected: false,
+        git,
+        warning: "No projects imported for this account; no runs to show.",
+      });
+    }
+
+    let query = admin.from("runs").select("*").order("created_at", { ascending: false });
     if (branchParam) {
       query = query.eq("branch", branchParam);
+    }
+    if (!scope.includeUnowned) {
+      query = query.in("project_id", scope.projectIds);
     }
     const { data: dbRuns, error: dbError } = await query;
     if (!dbError && dbRuns && dbRuns.length > 0) {

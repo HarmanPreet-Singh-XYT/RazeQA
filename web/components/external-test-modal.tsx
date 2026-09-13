@@ -187,7 +187,7 @@ export function ExternalTestModal({ isOpen, onClose, onSuccess }: ExternalTestMo
           <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-[11px] text-slate-600 flex items-start gap-2">
             <Shield className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
             <div>
-              <strong>Forensic artifacts generated:</strong> Real Chromium Playwright execution recording full screencast video (<code className="text-slate-800 font-mono">.webm</code>), CDP trace (<code className="text-slate-800 font-mono">.zip</code>), and DOM snapshots.
+              <strong>Forensic artifacts generated:</strong> Real Chromium Playwright execution recording full screencast video (<code className="text-slate-800 font-mono">.mp4</code>), CDP trace (<code className="text-slate-800 font-mono">.zip</code>), and DOM snapshots.
             </div>
           </div>
 

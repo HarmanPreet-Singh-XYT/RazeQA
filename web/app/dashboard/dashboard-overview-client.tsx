@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Search,
   Plus,
@@ -63,6 +63,7 @@ function SparklineWave({ className = "w-6 h-6", active = true }: { className?: s
 
 export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { projects, setActiveRepo, refreshProjects, isLoadingProjects, engineConnected } = useDashboard();
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -71,6 +72,18 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
   const [isAddNewOpen, setIsAddNewOpen] = useState(false);
   const [isExternalModalOpen, setIsExternalModalOpen] = useState(false);
   const [starredMap, setStarredMap] = useState<Record<string, boolean>>({});
+
+  // A project deleted from Project Settings redirects here, where the remaining
+  // projects (or the empty state) live. The confirmation travels in the query
+  // string so the message survives the navigation instead of being lost with
+  // the settings screen's component state.
+  const deletedRepo = searchParams ? searchParams.get("deleted") : null;
+  const deletedRuns = searchParams ? Number(searchParams.get("deleted_runs") || 0) : 0;
+  const [showDeletedBanner, setShowDeletedBanner] = useState(Boolean(deletedRepo));
+
+  useEffect(() => {
+    setShowDeletedBanner(Boolean(deletedRepo));
+  }, [deletedRepo]);
 
   // Real runs from backend
   const [runs, setRuns] = useState<any[]>([]);
@@ -191,6 +204,32 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1400px] mx-auto w-full space-y-6">
+      {/* Deletion confirmation carried over from Project Settings. */}
+      {showDeletedBanner && deletedRepo && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-xs text-slate-700 flex items-center justify-between gap-3 shadow-2xs animate-in fade-in-50">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+            <span className="truncate">
+              <span className="font-bold">Project deleted:</span>{" "}
+              <span className="font-mono">{deletedRepo}</span>
+              {deletedRuns > 0
+                ? ` and ${deletedRuns} stored run${deletedRuns === 1 ? "" : "s"} were removed.`
+                : " was removed from the database."}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setShowDeletedBanner(false);
+              router.replace("/dashboard");
+            }}
+            className="text-slate-500 hover:text-slate-900 font-semibold text-xs shrink-0 cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* =========================================================================
           TOP ACTION BAR: SEARCH, FILTER TABS, VIEW SWITCHER & ADD NEW
           ========================================================================= */}
@@ -409,7 +448,7 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                   const isExternal = r.scope === "external" || r.branch?.startsWith("http") || r.sha?.startsWith("http");
                   const repoSlug = isExternal
                     ? `external:${(r.sha || r.branch || "").replace(/^https?:\/\//, "").split("/")[0]}`
-                    : (r.repo || r.repo_full_name || projects[0]?.repo_full_name || "pingroute-web");
+                    : (r.repo || r.repo_full_name || projects[0]?.repo_full_name || "Workspace");
 
                   const sha = isExternal ? "external" : (r.sha ? r.sha.slice(0, 7) : "HEAD");
                   const title = r.result?.summary || r.commit_message || (isExternal ? `Verified ${r.branch}` : `Run on ${r.branch || "main"}`);
@@ -487,6 +526,15 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                   ? new Date(latestRun.created_at).toLocaleDateString()
                   : p.last_commit?.date || (p.updated_at ? new Date(p.updated_at).toLocaleDateString() : "Active");
                 const domain = p.domain || (p.type === "external" ? p.target_url : null);
+                const urlBadge = isExternal
+                  ? "external"
+                  : p.urlSource === "deployment"
+                  ? p.urlEnvironment
+                    ? `live · ${p.urlEnvironment}`
+                    : "live"
+                  : p.urlSource === "repository_homepage"
+                  ? "GitHub homepage"
+                  : null;
                 const isPassed = latestRun?.status === "passed" || latestRun?.result?.status === "success";
 
                 return (
@@ -528,21 +576,45 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                               )}
                             </div>
 
-                            {/* Production / Deployment Domain */}
-                            <div className="flex items-center gap-1 mt-0.5">
+                            {/* Live deployment URL (resolved from GitHub) */}
+                            <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
                               {domain ? (
-                                <a
-                                  href={domain.startsWith("http") ? domain : `https://${domain}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="text-xs font-mono text-slate-500 hover:text-slate-900 transition-colors truncate max-w-[200px] inline-flex items-center gap-1 group/domain"
-                                >
-                                  <span className="hover:underline">{domain}</span>
-                                  <ExternalLink className="h-3 w-3 opacity-50 group-hover/domain:opacity-100" />
-                                </a>
+                                <>
+                                  <a
+                                    href={domain.startsWith("http") ? domain : `https://${domain}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-xs font-mono text-slate-500 hover:text-slate-900 transition-colors truncate max-w-[200px] inline-flex items-center gap-1 group/domain"
+                                  >
+                                    <span className="hover:underline">{domain}</span>
+                                    <ExternalLink className="h-3 w-3 opacity-50 group-hover/domain:opacity-100 shrink-0" />
+                                  </a>
+                                  {urlBadge && (
+                                    <span
+                                      className={`text-[10px] font-mono px-1.5 py-0.2 rounded border shrink-0 ${
+                                        p.urlSource === "deployment" &&
+                                        !/production|live/i.test(p.urlEnvironment || "")
+                                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                                          : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                      }`}
+                                      title={
+                                        p.urlSource === "deployment"
+                                          ? `Resolved from a GitHub deployment (${p.urlEnvironment || "environment unknown"})`
+                                          : "Resolved from the repository's GitHub homepage field"
+                                      }
+                                    >
+                                      {urlBadge}
+                                    </span>
+                                  )}
+                                </>
                               ) : (
-                                <span className="text-[11px] text-slate-400 font-mono italic">No domain set</span>
+                                <span
+                                  className="text-[11px] text-slate-400 italic"
+                                  title="No deployed URL found on GitHub for this repository. Set the repository's homepage on GitHub, or configure a domain in project settings."
+                                >
+                                  {isExternal ? "No URL" : "Not published"}
+                                </span>
                               )}
                             </div>
                           </div>
@@ -620,7 +692,7 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                   <tr>
                     <th className="py-2.5 px-4">Project</th>
                     <th className="py-2.5 px-4">Type</th>
-                    <th className="py-2.5 px-4">Domain / Target</th>
+                    <th className="py-2.5 px-4">Live URL</th>
                     <th className="py-2.5 px-4">Status &amp; Verification</th>
                     <th className="py-2.5 px-4 text-right">Updated</th>
                   </tr>
@@ -683,7 +755,9 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                               {domain}
                             </a>
                           ) : (
-                            <span className="text-slate-400 italic">None</span>
+                            <span className="text-slate-400 italic">
+                              {isExternal ? "No URL" : "Not published"}
+                            </span>
                           )}
                         </td>
                         <td className="py-3 px-4 text-slate-700 truncate max-w-[200px]">

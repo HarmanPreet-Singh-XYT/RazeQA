@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { ToolShell } from "./tool-shell";
 import { getToolById } from "@/lib/tools/tool-registry";
+import { md5 } from "@/lib/md5";
 import {
   AlertTriangle,
   Check,
@@ -545,8 +546,8 @@ export function HashGenerator() {
   const [sha512, setSha512] = useState("");
   const [base64, setBase64] = useState("");
 
-  const [md5Sim, setMd5Sim] = useState("");
-  const [bcryptSim, setBcryptSim] = useState("");
+  const [md5Hex, setMd5Hex] = useState("");
+  const [sha1, setSha1] = useState("");
 
   useEffect(() => {
     async function computeHashes() {
@@ -556,26 +557,29 @@ export function HashGenerator() {
       // SHA-256
       const hash256Buf = await crypto.subtle.digest("SHA-256", data);
       const hash256Arr = Array.from(new Uint8Array(hash256Buf));
-      const hex256 = hash256Arr.map((b) => b.toString(16).padStart(2, "0")).join("");
-      setSha256(hex256);
+      setSha256(hash256Arr.map((b) => b.toString(16).padStart(2, "0")).join(""));
 
       // SHA-512
       const hash512Buf = await crypto.subtle.digest("SHA-512", data);
       const hash512Arr = Array.from(new Uint8Array(hash512Buf));
       setSha512(hash512Arr.map((b) => b.toString(16).padStart(2, "0")).join(""));
 
+      // SHA-1 (supported by SubtleCrypto despite being deprecated as a signature algorithm)
+      const hash1Buf = await crypto.subtle.digest("SHA-1", data);
+      const hash1Arr = Array.from(new Uint8Array(hash1Buf));
+      setSha1(hash1Arr.map((b) => b.toString(16).padStart(2, "0")).join(""));
+
       // Base64
       try {
-        setBase64(btoa(inputString));
+        setBase64(btoa(String.fromCharCode(...data)));
       } catch {
         setBase64("Encoding error");
       }
 
-      // MD5 (simulated digest from first 16 bytes of SHA-256 for browser performance)
-      setMd5Sim(hex256.slice(0, 32));
-
-      // Bcrypt hash formatted simulation
-      setBcryptSim(`$2a$12$e8Y4J2a.${hex256.slice(0, 22)}oK8.eZ${hex256.slice(22, 53)}`);
+      // Real MD5 (RFC 1321). Bcrypt is intentionally not offered: it cannot be
+      // computed correctly without a dedicated implementation, and a fabricated
+      // "$2a$..." string in a password field is worse than an absent row.
+      setMd5Hex(md5(inputString));
     }
     computeHashes();
   }, [inputString]);
@@ -583,7 +587,7 @@ export function HashGenerator() {
   return (
     <ToolShell
       tool={tool}
-      outputCode={`SHA-256: ${sha256}\nSHA-512: ${sha512}\nMD5: ${md5Sim}\nBcrypt: ${bcryptSim}\nBase64: ${base64}`}
+      outputCode={`SHA-256: ${sha256}\nSHA-512: ${sha512}\nSHA-1: ${sha1}\nMD5: ${md5Hex}\nBase64: ${base64}`}
       outputFilename="hashes.txt"
     >
       <div className="space-y-6">
@@ -603,9 +607,9 @@ export function HashGenerator() {
         <div className="space-y-3">
           {[
             { label: "SHA-256 (Hex)", val: sha256 },
-            { label: "Bcrypt ($2a$ Cost 12)", val: bcryptSim },
-            { label: "MD5 (Hex Checksum)", val: md5Sim },
             { label: "SHA-512 (Hex)", val: sha512 },
+            { label: "SHA-1 (Hex)", val: sha1 },
+            { label: "MD5 (Hex Checksum)", val: md5Hex },
             { label: "Base64 Representation", val: base64 },
           ].map((item) => (
             <div

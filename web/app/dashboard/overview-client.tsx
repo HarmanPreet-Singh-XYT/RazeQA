@@ -1,12 +1,11 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import {
   Activity,
   AlertCircle,
-  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Camera,
@@ -48,8 +47,10 @@ import {
 } from "lucide-react";
 import { FixProposalViewer } from "@/components/fix-proposal-viewer";
 import { CustomVideoPlayer } from "@/components/custom-video-player";
-import { ExternalTestModal } from "@/components/external-test-modal";
+import { FirstRunBriefing } from "@/components/first-run-briefing";
+import { RunConfigDialog } from "@/components/run-config-dialog";
 import { useDashboard } from "@/components/dashboard-context";
+import { firstRunSatisfied, persistFirstRunRecord, type RunDispatchRecord } from "@/lib/first-run";
 
 // --- Domain Models based on Real AutoQA Backend ---
 
@@ -61,10 +62,13 @@ export type RunRecord = {
   prUrl?: string;
   triggeringUser: string;
   triggerType: "on-demand" | "on-push" | "on-PR";
-  status: "queued" | "running" | "passed" | "failed" | "flaky" | "superseded" | "cached";
+  status: "queued" | "running" | "passed" | "failed" | "flaky" | "superseded" | "cached" | "inconclusive";
   duration: string;
+  /** Epoch ms the run was created, so an in-flight run can show elapsed time. */
+  createdAtMs: number | null;
   timestamp: string;
-  risk: "Low" | "Medium" | "High";
+  /** "Pending" until the run reaches a terminal state and actually has a verdict. */
+  risk: "Low" | "Medium" | "High" | "Pending";
   riskRationale: string;
   scope: "changed" | "full";
   testType: string;
@@ -78,6 +82,8 @@ export type RunRecord = {
     isNewRegression: boolean;
     mainSha: string;
     details: string;
+    /** True while the run has no verdict yet; nothing has been compared. */
+    pending: boolean;
   };
   artifacts: {
     traceUrl: string | null;
@@ -93,7 +99,73 @@ export type RunRecord = {
   };
   remediationPrompt?: string;
   fixProposals?: any[];
+  /** One entry per route actually visited, with its own recording and trace. */
+  journeyArtifacts: JourneyArtifact[];
+  /** Stitched recording covering every visited route, when one could be built. */
+  sessionReplayUrl: string | null;
+  /** The agentic exploration session: what the agent did and noted, step by step. */
+  agenticSession: AgenticSession | null;
+  /** Why this run covered what it did: targeted / global_ui / unmapped / no_ui_impact. */
+  changeImpact: ChangeImpact | null;
+  effectiveScope: string | null;
 };
+
+export type ChangeImpact = {
+  kind: string;
+  rationale: string;
+  routes: string[];
+  globalFiles: string[];
+  unmappedFiles: string[];
+  nonUiFiles: string[];
+};
+
+export type AgenticNote = {
+  url: string;
+  did: string;
+  saw: string;
+};
+
+export type AgenticSession = {
+  stepsUsed: number;
+  budget: number;
+  pagesVisited: string[];
+  stopReason: string | null;
+  notes: AgenticNote[];
+  findings: string[];
+  durationMs: number;
+  videoUrl: string | null;
+};
+
+export type JourneyArtifact = {
+  name: string;
+  route: string;
+  passed: boolean;
+  durationMs: number | null;
+  videoUrl: string | null;
+  traceUrl: string | null;
+  screenshotUrl: string | null;
+  lcpMs: number | null;
+  cls: number | null;
+  consoleErrors: string[];
+  networkCount: number;
+  scrollActions: number;
+  linksChecked: number;
+  brokenLinks: { url: string; status: number }[];
+  navigations: { url: string; clicked: boolean; navigated: boolean; errored: boolean }[];
+};
+
+/** A run with a verdict. `queued`/`running` runs have not verified anything yet. */
+export function isRunInFlight(run: Pick<RunRecord, "status">): boolean {
+  return run.status === "running" || run.status === "queued";
+}
+
+function formatDuration(seconds: number): string {
+  const safe = Math.max(0, seconds);
+  if (safe < 60) return `${safe.toFixed(0)}s`;
+  const minutes = Math.floor(safe / 60);
+  const remainder = Math.round(safe % 60);
+  return `${minutes}m ${remainder}s`;
+}
 
 export type IntentLog = {
   id: string;
@@ -116,6 +188,10 @@ function mapBackendRunToDashboardRun(r: any, repoName?: string | null): RunRecor
   const result = r.result || {};
   const isFailed = r.status === "failed" || result.status === "failure";
   const isExternal = r.scope === "external";
+  // "inconclusive" is the coverage gate: the run completed but executed no
+  // journeys. Mapping it to "passed" (as the isFailed-else-passed chain did)
+  // showed a green badge for a run that verified nothing.
+  const isInconclusive = result.status === "inconclusive";
   const status: RunRecord["status"] =
     r.status === "superseded"
       ? "superseded"
@@ -125,18 +201,32 @@ function mapBackendRunToDashboardRun(r: any, repoName?: string | null): RunRecor
       ? "queued"
       : r.status === "cached"
       ? "cached"
+      : isInconclusive
+      ? "inconclusive"
       : isFailed
       ? "failed"
       : "passed";
   const passedCount = result.passed_journeys?.length ?? (status === "passed" ? 1 : 0);
   const failedCount = result.failed_journeys?.length ?? (status === "failed" ? 1 : 0);
   const isNewRegression = Boolean(result.baseline_comparison?.has_new_regressions);
+  const inFlight = status === "running" || status === "queued";
+  const createdAtMs = r.created_at ? Date.parse(r.created_at) : NaN;
+  const hasCreatedAt = Number.isFinite(createdAtMs);
 
-  const durationSec = result.duration_s
-    ? `${Number(result.duration_s).toFixed(1)}s`
-    : result.timing?.total_duration_s
-    ? `${Number(result.timing.total_duration_s).toFixed(1)}s`
-    : r.duration || "0s";
+  // Duration must mean something in every state:
+  //  - finished run: the pipeline's measured total;
+  //  - in-flight run: live elapsed time, recomputed on every poll (it used to
+  //    read "0s" forever because the result payload does not exist yet);
+  //  - unknown: an explicit placeholder instead of a false "0s".
+  let durationSec: string;
+  if (inFlight) {
+    durationSec = hasCreatedAt
+      ? `${formatDuration((Date.now() - createdAtMs) / 1000)} elapsed`
+      : "starting…";
+  } else {
+    const reported = Number(result.duration_s ?? result.timing?.total_duration_s ?? 0);
+    durationSec = reported > 0 ? formatDuration(reported) : r.duration || "—";
+  }
 
   const repoSlug = r.repo && r.repo !== "default" ? r.repo : repoName;
   const prUrl = isExternal
@@ -155,15 +245,20 @@ function mapBackendRunToDashboardRun(r: any, repoName?: string | null): RunRecor
     triggerType: (r.triggerType as any) || "on-demand",
     status,
     duration: durationSec,
+    createdAtMs: hasCreatedAt ? createdAtMs : null,
     timestamp: r.created_at ? new Date(r.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now",
-    risk: (result.risk_tag as any) || (isExternal ? "Low" : isFailed ? "High" : "Low"),
-    riskRationale:
-      result.summary ||
-      result.rationale ||
-      r.riskRationale ||
-      (isFailed
-        ? "Verification regression detected on preview sandbox."
-        : "Synthetic user journeys verified green against preview sandbox."),
+    // A run that has not finished has no risk verdict and has verified nothing.
+    // Reporting "Low risk / verified green" mid-run was the single most
+    // misleading thing this dashboard did.
+    risk: inFlight ? "Pending" : (result.risk_tag as any) || (isExternal ? "Low" : isFailed ? "High" : "Low"),
+    riskRationale: inFlight
+      ? "Sandbox is still executing journeys. Risk, findings and the baseline comparison appear when the run finishes."
+      : result.summary ||
+        result.rationale ||
+        r.riskRationale ||
+        (isFailed
+          ? "Verification regression detected on preview sandbox."
+          : "Synthetic user journeys verified green against preview sandbox."),
     scope: (r.scope as any) || "changed",
     testType: (r.test_type as any) || (r.testType as any) || "functional",
     bucketCounts: {
@@ -175,7 +270,10 @@ function mapBackendRunToDashboardRun(r: any, repoName?: string | null): RunRecor
     baselineComparison: {
       isNewRegression,
       mainSha: result.baseline_comparison?.main_sha || "main",
-      details: isNewRegression
+      pending: inFlight,
+      details: inFlight
+        ? "No comparison yet — the baseline is evaluated once journeys finish."
+        : isNewRegression
         ? "New regression introduced on this branch."
         : "Matches baseline behavior on main.",
     },
@@ -189,10 +287,87 @@ function mapBackendRunToDashboardRun(r: any, repoName?: string | null): RunRecor
     timing: result.timing || undefined,
     remediationPrompt: result.remediation_prompt || r.remediationPrompt,
     fixProposals: result.fix_proposals || r.fixProposals || [],
+    journeyArtifacts: buildJourneyArtifacts(result),
+    sessionReplayUrl: resolveArtifactUrl(result.session_replay_url) || null,
+    agenticSession: buildAgenticSession(result.agentic_session),
+    changeImpact: buildChangeImpact(result.change_impact),
+    effectiveScope: result.effective_scope ?? null,
   };
 }
 
-export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
+function buildChangeImpact(raw: any): ChangeImpact | null {
+  if (!raw || typeof raw !== "object" || !raw.kind) return null;
+  return {
+    kind: String(raw.kind),
+    rationale: String(raw.rationale ?? ""),
+    routes: Array.isArray(raw.routes) ? raw.routes : [],
+    globalFiles: Array.isArray(raw.global_files) ? raw.global_files : [],
+    unmappedFiles: Array.isArray(raw.unmapped_files) ? raw.unmapped_files : [],
+    nonUiFiles: Array.isArray(raw.non_ui_files) ? raw.non_ui_files : [],
+  };
+}
+
+function buildAgenticSession(raw: any): AgenticSession | null {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    stepsUsed: Number(raw.steps_used ?? 0),
+    budget: Number(raw.budget ?? 0),
+    pagesVisited: Array.isArray(raw.pages_visited) ? raw.pages_visited : [],
+    stopReason: raw.stop_reason ?? null,
+    notes: Array.isArray(raw.notes)
+      ? raw.notes.map((n: any) => ({
+          url: String(n?.url ?? ""),
+          did: String(n?.did ?? ""),
+          saw: String(n?.saw ?? ""),
+        }))
+      : [],
+    findings: Array.isArray(raw.findings) ? raw.findings : [],
+    durationMs: Number(raw.duration_ms ?? 0),
+    videoUrl: resolveArtifactUrl(raw.video_url) || null,
+  };
+}
+
+/**
+ * Per-route results for a run.
+ *
+ * The backend records one artifact set per visited route, but the dashboard only
+ * ever surfaced the primary (first-failing) one — so a full sweep that visited
+ * 14 pages looked like it had "not navigated anywhere". Each entry keeps its own
+ * recording, trace and screenshot.
+ */
+function buildJourneyArtifacts(result: any): JourneyArtifact[] {
+  const raw = Array.isArray(result?.journey_artifacts) ? result.journey_artifacts : [];
+  const failedNames = new Set<string>(
+    (result?.failed_journeys || []).map((f: any) => String(f?.name ?? ""))
+  );
+
+  return raw.map((a: any, index: number) => {
+    const vitals = a?.web_vitals || {};
+    return {
+      name: String(a?.name || a?.route || `journey-${index + 1}`),
+      route: String(a?.route || "/"),
+      // Anything not in failed_journeys completed without a recorded failure.
+      passed: !failedNames.has(String(a?.name ?? "")),
+      durationMs: typeof a?.duration_ms === "number" ? a.duration_ms : null,
+      videoUrl: resolveArtifactUrl(a?.video_url) || null,
+      traceUrl: resolveArtifactUrl(a?.trace_url) || null,
+      screenshotUrl: resolveArtifactUrl(a?.annotated_screenshot_url) || null,
+      lcpMs: typeof vitals?.lcp_ms === "number" ? vitals.lcp_ms : null,
+      cls: typeof vitals?.cls === "number" ? vitals.cls : null,
+      consoleErrors: Array.isArray(a?.console_errors) ? a.console_errors : [],
+      networkCount: Array.isArray(a?.network_requests) ? a.network_requests.length : 0,
+      scrollActions: typeof a?.scroll_actions === "number" ? a.scroll_actions : 0,
+      linksChecked: Array.isArray(a?.links_checked) ? a.links_checked.length : 0,
+      brokenLinks: Array.isArray(a?.broken_links) ? a.broken_links : [],
+      navigations: Array.isArray(a?.navigation_checks) ? a.navigation_checks : [],
+    };
+  });
+}
+
+export function OverviewClient({
+  userEmail,
+  promptFirstRun = false,
+}: { userEmail?: string; promptFirstRun?: boolean } = {}) {
   const { activeRepo, setActiveRepo } = useDashboard();
 
   const [runs, setRuns] = useState<RunRecord[]>([]);
@@ -201,15 +376,30 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
   const [gitInfo, setGitInfo] = useState<{ sha?: string; branch?: string }>({});
   const [selectedRunId, setSelectedRunId] = useState<string>("");
   const [isLoadingRuns, setIsLoadingRuns] = useState<boolean>(true);
+  // True only once the run list came from an authoritative source. An empty list
+  // from a fallback path (engine offline, tenant scope unresolved) is NOT
+  // evidence that the project has no runs — treating it as such produced the
+  // "0 results, then the poll fills the list in" flash.
+  const [runsLoaded, setRunsLoaded] = useState<boolean>(false);
+  // True once the runs request has settled at all, including the fallback paths
+  // that cannot be authoritative. Without it an unreachable engine left the
+  // panel on "Loading verification history…" forever, because `runsLoaded` is
+  // only ever set on an authoritative answer.
+  const [runsSettled, setRunsSettled] = useState<boolean>(false);
   const [runsError, setRunsError] = useState<string | null>(null);
-  const [auditError, setAuditError] = useState<string | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
-  const [isAuditing, setIsAuditing] = useState(false);
-  const [isExternalModalOpen, setIsExternalModalOpen] = useState(false);
+  const [isRunDialogOpen, setIsRunDialogOpen] = useState(false);
   const [engineConnected, setEngineConnected] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  // First-run briefing: shown for a project that has never been verified, and
+  // closable only for this session so it returns until a run is dispatched.
+  const [briefingDismissed, setBriefingDismissed] = useState(false);
+  const [dispatchedRunId, setDispatchedRunId] = useState<string | null>(null);
+  // Tracks the newest run id seen so a newly dispatched run can be selected
+  // automatically without stealing focus on every 4s poll.
+  const newestRunIdRef = useRef<string | null>(null);
 
-  const activeRepoName = activeRepo || projects[0]?.repo_full_name || "HarmanPreet-Singh-XYT/pingroute-web";
+  const activeRepoName = activeRepo || projects[0]?.repo_full_name || "";
   const activeProject = projects.find((p) => p.repo_full_name === activeRepoName) || projects[0] || null;
 
   // Real backend polling
@@ -227,9 +417,24 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
         if (data.runs && Array.isArray(data.runs)) {
           const liveMapped = data.runs.map((r: any) => mapBackendRunToDashboardRun(r, activeRepoName));
           setRuns(liveMapped);
-          if (liveMapped.length > 0 && (!selectedRunId || !liveMapped.some((r: RunRecord) => r.id === selectedRunId))) {
-            setSelectedRunId(liveMapped[0].id);
+          // Only an engine-sourced, warning-free response may claim "no runs".
+          const connected = data.engineConnected !== undefined ? Boolean(data.engineConnected) : true;
+          setEngineConnected(connected);
+          if (liveMapped.length > 0 || (connected && !data.warning)) {
+            setRunsLoaded(true);
           }
+          // Follow the newest run when a new one appears, but never yank the
+          // selection away from a run the user is reading while polling.
+          const newestId: string | null = liveMapped[0]?.id ?? null;
+          const isNewRun = Boolean(newestId) && newestId !== newestRunIdRef.current;
+          newestRunIdRef.current = newestId;
+          setSelectedRunId((prev) => {
+            if (isNewRun) return newestId as string;
+            if (!prev || !liveMapped.some((r: RunRecord) => r.id === prev)) {
+              return newestId ?? "";
+            }
+            return prev;
+          });
         }
         setEngineConnected(data.engineConnected !== undefined ? Boolean(data.engineConnected) : true);
       } else {
@@ -241,6 +446,10 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
     } finally {
       setIsRefreshing(false);
       setIsLoadingRuns(false);
+      // The request is over, whatever the answer was. The panel must stop
+      // claiming to be loading; the copy below distinguishes an authoritative
+      // empty list from an unreachable engine.
+      setRunsSettled(true);
     }
   };
 
@@ -301,38 +510,68 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
     setTimeout(() => setCopiedPrompt(false), 2000);
   };
 
-  // Real pipeline dispatch
-  const handleTriggerAudit = async () => {
-    setIsAuditing(true);
-    setAuditError(null);
-    try {
-      const res = await fetch("/api/runs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repo_full_name: activeRepoName,
-          branch: runs[0]?.branch || gitInfo.branch || "main",
-          scope: "changed",
-          test_type: "functional",
-        }),
-      });
-      if (res.ok) {
-        await fetchLiveRuns();
-      } else {
-        const errJson = await res.json().catch(() => ({}));
-        setAuditError(errJson.error || `Failed to trigger audit (HTTP ${res.status}).`);
-      }
-    } catch (err: any) {
-      setAuditError(err?.message || "Failed to contact PR Testing Engine.");
-    } finally {
-      setIsAuditing(false);
-    }
-  };
+  // On-demand runs now go through the run-config dialog, which asks what the
+  // run should cover (full sweep / one commit / one commit's changes / a range)
+  // instead of silently fixing it to "changed + functional" as this used to.
+  const openRunDialog = () => setIsRunDialogOpen(true);
 
   const selectedRun = runs.find((r) => r.id === selectedRunId) ?? runs[0];
+  // A pass rate over runs that have not finished is meaningless: an in-flight
+  // run counted as a non-pass, so a single running job showed "0.0% (0/1)".
+  const settledRuns = runs.filter(
+    (r) => r.status === "passed" || r.status === "failed" || r.status === "superseded"
+  );
+  const inFlightRuns = runs.filter(isRunInFlight);
+  const passedRuns = settledRuns.filter((r) => r.status === "passed").length;
   const totalRuns = runs.length;
-  const passedRuns = runs.filter((r) => r.status === "passed").length;
-  const passRate = totalRuns > 0 ? ((passedRuns / totalRuns) * 100).toFixed(1) : "--";
+  const passRate =
+    settledRuns.length > 0 ? ((passedRuns / settledRuns.length) * 100).toFixed(1) : "--";
+  const cachedRuns = runs.filter((r) => r.status === "cached").length;
+
+  // The briefing is a property of the project, not of the visit: it shows while
+  // there is no run history AND no record that a first run was ever dispatched.
+  // "Not now" only hides it for this session.
+  //
+  // Two things must hold before it may appear: the project must be loaded, and
+  // nothing may have been verified (no `first_run` record, no runs). The normal
+  // path additionally waits for an *authoritative* empty run list (`runsLoaded`)
+  // so a fallback path that happened to return nothing cannot conjure the
+  // briefing. `promptFirstRun` — set by the import flow — waives that last
+  // requirement: the project was just created, and waiting for an authoritative
+  // answer means never showing the briefing at all while the engine is
+  // unreachable, which is precisely when the offer to run the first
+  // verification matters most.
+  const isExternalProject = activeRepoName.startsWith("external:");
+  const showRunsLoading = isLoadingRuns || !runsSettled;
+  const runsAnswerIsAuthoritative = runsLoaded && !isLoadingRuns && !runsError;
+  // An empty list we cannot vouch for: the engine is unreachable, or the last
+  // poll failed. The panel says so instead of claiming there are no runs.
+  const runsUncertain = !engineConnected || Boolean(runsError);
+  const showFirstRunBriefing =
+    !briefingDismissed &&
+    !isExternalProject &&
+    Boolean(activeProject) &&
+    runs.length === 0 &&
+    !firstRunSatisfied(activeRepoName, activeProject?.settings) &&
+    (promptFirstRun ? runsSettled : runsAnswerIsAuthoritative);
+
+  // Shared by the first-run briefing and the everyday run dialog: once the
+  // engine has accepted a run, stop nagging and show what was queued. Dispatching
+  // from the dialog settles the first-run question too, so the briefing does not
+  // come back for a project that has now been verified.
+  const handleRunDispatched = (record: RunDispatchRecord) => {
+    setBriefingDismissed(true);
+    setIsRunDialogOpen(false);
+    setDispatchedRunId(record.run_id ?? "queued");
+    if (
+      activeRepoName &&
+      !isExternalProject &&
+      !firstRunSatisfied(activeRepoName, activeProject?.settings)
+    ) {
+      void persistFirstRunRecord(activeRepoName, record);
+    }
+    fetchLiveRuns();
+  };
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto w-full animate-in fade-in-50 duration-200">
@@ -433,30 +672,18 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setIsExternalModalOpen(true)}
-              className="flex items-center gap-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-medium px-3 py-1.5 rounded-md transition-colors shadow-2xs"
-            >
-              <Globe className="h-3.5 w-3.5 text-sky-600" />
-              <span>Verify External URL</span>
-            </button>
-
             <Button
-              onClick={handleTriggerAudit}
-              disabled={isAuditing}
+              onClick={openRunDialog}
+              disabled={!activeRepoName || isExternalProject}
+              title={
+                isExternalProject
+                  ? "External sites are verified from the Add menu → Verify External Site."
+                  : undefined
+              }
               className="bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold h-8 px-3 gap-1.5 shadow-2xs cursor-pointer disabled:opacity-50"
             >
-              {isAuditing ? (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  <span>Executing Pipeline...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="h-3.5 w-3.5 fill-white" />
-                  <span>Trigger Verification</span>
-                </>
-              )}
+              <Play className="h-3.5 w-3.5 fill-white" />
+              <span>Run Verification</span>
             </Button>
           </div>
         </div>
@@ -483,44 +710,69 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
           <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-1">
             <span className="text-[10px] text-slate-500 uppercase block font-sans font-medium">Aggregate Pass Rate</span>
             <div className="text-slate-900 font-bold text-sm">
-              {totalRuns > 0 ? `${passRate}% (${passedRuns}/${totalRuns})` : "Awaiting runs"}
+              {settledRuns.length > 0
+                ? `${passRate}% (${passedRuns}/${settledRuns.length})`
+                : inFlightRuns.length > 0
+                ? "Run in progress"
+                : "Awaiting runs"}
             </div>
             <span className="text-[10px] text-emerald-600 font-sans font-medium">
-              {totalRuns > 0 ? "Live verified commits" : "No tests executed yet"}
+              {inFlightRuns.length > 0
+                ? `${inFlightRuns.length} running · excluded until finished`
+                : settledRuns.length > 0
+                ? "Settled runs only"
+                : "No tests executed yet"}
             </span>
           </div>
 
-          {/* Signal 3: Resource & Token Savings */}
+          {/* Signal 3: Deterministic Caching.
+              This used to read `totalRuns * 15000` "tokens saved via commit SHA
+              deduplication" — an invented per-run constant presented as a measured
+              saving — and then counted *every* run as "deduplicated", which was
+              just as false. Only runs the engine actually served from cache count. */}
           <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-1">
             <span className="text-[10px] text-slate-500 uppercase block font-sans font-medium">Deterministic Caching</span>
             <div className="text-slate-900 font-bold text-sm font-mono">
-              {totalRuns > 0 ? `~${(totalRuns * 15000).toLocaleString()} tokens` : "0 tokens"}
+              {cachedRuns > 0
+                ? `${cachedRuns} cache ${cachedRuns === 1 ? "hit" : "hits"}`
+                : "No cache hits"}
             </div>
-            <span className="text-[10px] text-slate-500 font-sans">Saved via commit SHA deduplication</span>
+            <span className="text-[10px] text-slate-500 font-sans">Commit SHA reuse — token savings not metered</span>
           </div>
 
           {/* Signal 4: GitHub App Connection */}
           <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-1">
-            <span className="text-[10px] text-slate-500 uppercase block font-sans font-medium">GitHub App Webhook</span>
+            <span className="text-[10px] text-slate-500 uppercase block font-sans font-medium">GitHub Integration</span>
             <div className="flex items-center gap-1.5 text-slate-900 font-bold">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-              <span>Check Runs Active</span>
+              <span>{activeProject?.installation_id ? "App Connected" : "Ready"}</span>
             </div>
             <span className="text-[10px] text-slate-500 font-sans">
-              Installation #{activeProject?.installation_id || "Active"}
+              {activeProject?.installation_id ? `Installation #${activeProject.installation_id}` : "Autonomous QA Active"}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Errors strip if any */}
-      {auditError && (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
-            <span>{auditError}</span>
+      {/* Runs errors are surfaced through the runs list / briefing gate rather
+          than a banner here: the 4s poll would re-raise a dismissed one. */}
+
+      {dispatchedRunId && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+            <span className="truncate">
+              First verification dispatched
+              {dispatchedRunId !== "queued" && (
+                <span className="font-mono"> ({dispatchedRunId})</span>
+              )}
+              . The sandbox is booting — journeys and forensics stream in below.
+            </span>
           </div>
-          <button onClick={() => setAuditError(null)} className="text-slate-500 hover:text-slate-900 font-bold">
+          <button
+            onClick={() => setDispatchedRunId(null)}
+            className="text-emerald-700 hover:text-emerald-900 font-semibold shrink-0"
+          >
             Dismiss
           </button>
         </div>
@@ -571,7 +823,11 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
             <span className="text-[10px] text-slate-500 block font-medium">Test Personas:</span>
             <div className="flex items-center gap-1.5 text-emerald-700 font-bold">
               <ShieldCheck className="h-3.5 w-3.5" />
-              <span>Configured (User &amp; Admin)</span>
+              <span>
+                {activeProject?.settings?.roles && Object.keys(activeProject.settings.roles).length > 0
+                  ? `${Object.keys(activeProject.settings.roles).length} Personas Configured`
+                  : "Standard Sandbox"}
+              </span>
             </div>
           </div>
 
@@ -609,22 +865,39 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
         {runs.length === 0 ? (
           <div className="p-12 text-center space-y-3">
             <div className="w-10 h-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-500 mx-auto">
-              <Play className="h-4 w-4" />
+              {showRunsLoading ? (
+                <RefreshCw className="h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
             </div>
-            <h3 className="text-sm font-bold text-slate-950">No Verification Runs Recorded</h3>
+            {/* Do not assert "no runs" before an authoritative answer arrives:
+                an in-flight job used to be reported as absent, then appear a
+                moment later on the poll. */}
+            <h3 className="text-sm font-bold text-slate-950">
+              {showRunsLoading
+                ? "Loading verification history…"
+                : runsUncertain
+                ? "Last known history — engine offline"
+                : "No Verification Runs Recorded"}
+            </h3>
             <p className="text-xs text-slate-500 max-w-sm mx-auto">
-              {isLoadingRuns
-                ? "Connecting to AutoQA Engine..."
+              {showRunsLoading
+                ? "Connecting to the AutoQA engine and reading recorded runs."
+                : runsUncertain
+                ? "The engine is unreachable, so this list may be incomplete. It refreshes automatically."
                 : "Trigger a verification run to explore user journeys and generate forensics."}
             </p>
-            <Button
-              onClick={handleTriggerAudit}
-              disabled={isAuditing}
-              className="bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold h-8 px-3 shadow-2xs"
-            >
-              {isAuditing ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <Play className="h-3.5 w-3.5 fill-white mr-1" />}
-              <span>Trigger First Verification Run</span>
-            </Button>
+            {!showRunsLoading && (
+              <Button
+                onClick={openRunDialog}
+                disabled={!activeRepoName || isExternalProject || !engineConnected}
+                className="bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold h-8 px-3 shadow-2xs cursor-pointer disabled:opacity-50"
+              >
+                <Play className="h-3.5 w-3.5 fill-white mr-1" />
+                <span>Trigger First Verification Run</span>
+              </Button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-200">
@@ -634,6 +907,7 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                 const isSelected = selectedRun && run.id === selectedRun.id;
                 const isPassed = run.status === "passed";
                 const isFailed = run.status === "failed";
+                const isInconclusive = run.status === "inconclusive";
 
                 return (
                   <div
@@ -658,10 +932,12 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                             ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                             : isFailed
                             ? "bg-rose-50 text-rose-700 border-rose-200"
+                            : isInconclusive
+                            ? "bg-amber-50 text-amber-800 border-amber-200"
                             : "bg-sky-50 text-sky-700 border-sky-200"
                         }`}
                       >
-                        {run.status.toUpperCase()}
+                        {isInconclusive ? "NOT VERIFIED" : run.status.toUpperCase()}
                       </span>
 
                       <span className="rounded bg-slate-100 border border-slate-200 px-1.5 py-0.2 text-[10px] font-mono text-slate-600 font-medium">
@@ -729,6 +1005,50 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                   </div>
                 </div>
 
+                {/* Why this run covered what it did. Without this, "it only
+                    visited one page" or "it visited nothing" is unexplainable. */}
+                {selectedRun.changeImpact && (
+                  <div
+                    className={`rounded-lg border p-2.5 text-[11px] flex items-start gap-2 ${
+                      selectedRun.changeImpact.kind === "no_ui_impact"
+                        ? "border-slate-200 bg-slate-50 text-slate-700"
+                        : selectedRun.changeImpact.kind === "global_ui"
+                        ? "border-sky-200 bg-sky-50 text-sky-900"
+                        : selectedRun.changeImpact.kind === "unmapped"
+                        ? "border-amber-200 bg-amber-50 text-amber-900"
+                        : "border-slate-200 bg-slate-50 text-slate-700"
+                    }`}
+                  >
+                    <Layers className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <span className="font-bold uppercase tracking-wider text-[10px]">
+                        {selectedRun.changeImpact.kind === "targeted"
+                          ? "Targeted change"
+                          : selectedRun.changeImpact.kind === "global_ui"
+                          ? "App-wide change"
+                          : selectedRun.changeImpact.kind === "no_ui_impact"
+                          ? "No user-visible change"
+                          : selectedRun.changeImpact.kind === "unmapped"
+                          ? "Blast radius unknown"
+                          : "Change impact"}
+                      </span>
+                      <p className="mt-0.5 leading-relaxed">{selectedRun.changeImpact.rationale}</p>
+                      {selectedRun.changeImpact.routes.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {selectedRun.changeImpact.routes.map((route) => (
+                            <span
+                              key={route}
+                              className="rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-600"
+                            >
+                              {route}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* Risk Tag & Diff/Intent Rationale */}
                 <div
                   className={`rounded-lg border p-3 text-xs space-y-1 ${
@@ -742,6 +1062,8 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                       className={`rounded px-1.5 py-0.2 text-[10px] font-bold uppercase font-mono ${
                         selectedRun.risk === "High"
                           ? "bg-rose-600 text-white"
+                          : selectedRun.risk === "Pending"
+                          ? "bg-amber-100 text-amber-800 border border-amber-200"
                           : "bg-emerald-100 text-emerald-800 border border-emerald-200"
                       }`}
                     >
@@ -759,19 +1081,28 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                     <span className="font-bold text-slate-500 text-[10px] uppercase tracking-wider block">
                       Verification Bucket Counts
                     </span>
-                    <div className="flex items-center gap-3 font-mono">
-                      <span className="text-emerald-700 font-bold">✓ {selectedRun.bucketCounts.passed} Passed</span>
-                      {selectedRun.bucketCounts.failed > 0 && (
-                        <span className="text-rose-700 font-bold">✗ {selectedRun.bucketCounts.failed} Failed</span>
-                      )}
-                      <span className="text-slate-600">ℹ {selectedRun.bucketCounts.additionalFindings} Findings</span>
-                    </div>
-                    {selectedRun.additionalFindingsDetails && selectedRun.additionalFindingsDetails.length > 0 && (
-                      <ul className="text-[11px] text-slate-600 list-disc pl-4 space-y-0.5">
-                        {selectedRun.additionalFindingsDetails.map((f, i) => (
-                          <li key={i}>{f}</li>
-                        ))}
-                      </ul>
+                    {isRunInFlight(selectedRun) ? (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-700 font-medium">
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                        Awaiting results — {selectedRun.duration}
+                      </span>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-3 font-mono">
+                          <span className="text-emerald-700 font-bold">✓ {selectedRun.bucketCounts.passed} Passed</span>
+                          {selectedRun.bucketCounts.failed > 0 && (
+                            <span className="text-rose-700 font-bold">✗ {selectedRun.bucketCounts.failed} Failed</span>
+                          )}
+                          <span className="text-slate-600">ℹ {selectedRun.bucketCounts.additionalFindings} Findings</span>
+                        </div>
+                        {selectedRun.additionalFindingsDetails && selectedRun.additionalFindingsDetails.length > 0 && (
+                          <ul className="text-[11px] text-slate-600 list-disc pl-4 space-y-0.5">
+                            {selectedRun.additionalFindingsDetails.map((f, i) => (
+                              <li key={i}>{f}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
                     )}
                   </div>
 
@@ -781,7 +1112,11 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                       Baseline Comparison (vs main)
                     </span>
                     <div className="flex items-center gap-1.5 font-mono">
-                      {selectedRun.baselineComparison.isNewRegression ? (
+                      {selectedRun.baselineComparison.pending ? (
+                        <span className="rounded bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.2 text-[10px] font-bold">
+                          PENDING
+                        </span>
+                      ) : selectedRun.baselineComparison.isNewRegression ? (
                         <span className="rounded bg-rose-100 text-rose-700 border border-rose-200 px-1.5 py-0.2 text-[10px] font-bold">
                           NEW REGRESSION
                         </span>
@@ -826,7 +1161,7 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                         className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white hover:bg-slate-100 px-2.5 py-1 text-slate-800 font-semibold transition-colors shadow-2xs"
                       >
                         <Video className="h-3 w-3 text-slate-600" />
-                        <span>video.webm</span>
+                        <span>{selectedRun.artifacts.videoUrl.endsWith(".mp4") ? "video.mp4" : selectedRun.artifacts.videoUrl.endsWith(".webm") ? "video.webm" : "video"}</span>
                       </a>
                     )}
 
@@ -842,14 +1177,31 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                       </a>
                     )}
 
-                    <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white px-2.5 py-1 text-slate-700 shadow-2xs font-medium">
-                      <CheckCircle2 className="h-3 w-3 text-emerald-600" />
-                      <span>DOM Snapshot Available</span>
-                    </span>
+                    {selectedRun.artifacts.domSnapshotAvailable ? (
+                      <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white px-2.5 py-1 text-slate-700 shadow-2xs font-medium">
+                        <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                        <span>DOM Snapshot Available</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-100 px-2.5 py-1 text-slate-400 font-medium">
+                        <XCircle className="h-3 w-3 text-slate-400" />
+                        <span>No DOM Snapshot</span>
+                      </span>
+                    )}
 
-                    <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white px-2.5 py-1 text-slate-700 shadow-2xs font-medium">
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 shadow-2xs font-medium ${
+                        selectedRun.artifacts.networkWaterfallCount > 0
+                          ? "border-slate-200 bg-white text-slate-700"
+                          : "border-slate-200 bg-slate-100 text-slate-400"
+                      }`}
+                    >
                       <Network className="h-3 w-3 text-amber-600" />
-                      <span>{selectedRun.artifacts.networkWaterfallCount} Network Requests</span>
+                      <span>
+                        {selectedRun.artifacts.networkWaterfallCount > 0
+                          ? `${selectedRun.artifacts.networkWaterfallCount} Network Requests`
+                          : "No network log captured"}
+                      </span>
                     </span>
                   </div>
                 </div>
@@ -861,14 +1213,206 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                       Execution Latency Breakdown
                     </span>
                     <div className="flex flex-wrap items-center gap-4 text-slate-600 font-semibold">
-                      <span>Analysis: {selectedRun.timing.analysis_duration_s?.toFixed(2) ?? "0.00"}s</span>
+                      <span>Analysis: {selectedRun.timing.analysis_duration_s?.toFixed(2) ?? "—"}s</span>
                       <span>•</span>
-                      <span>Journeys: {selectedRun.timing.journeys_duration_s?.toFixed(2) ?? "0.00"}s</span>
+                      <span>Journeys: {selectedRun.timing.journeys_duration_s?.toFixed(2) ?? "—"}s</span>
                       <span>•</span>
                       <span className="text-emerald-700 font-bold">
-                        Total: {selectedRun.timing.total_duration_s?.toFixed(2) ?? "0.00"}s
+                        Total: {selectedRun.timing.total_duration_s?.toFixed(2) ?? "—"}s
                       </span>
                     </div>
+                  </div>
+                )}
+
+                {/* Per-route journey results. Without this, a full sweep that
+                    visited 14 pages looked like it only ran one. */}
+                {selectedRun.journeyArtifacts.length > 0 && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-900 text-xs">
+                        Routes visited ({selectedRun.journeyArtifacts.length})
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {selectedRun.journeyArtifacts.filter((j) => j.passed).length} clean ·{" "}
+                        {selectedRun.journeyArtifacts.filter((j) => !j.passed).length} with findings ·{" "}
+                        {selectedRun.journeyArtifacts.reduce((n, j) => n + j.linksChecked, 0)} links
+                        checked
+                      </span>
+                    </div>
+                    <div className="divide-y divide-slate-200 rounded-md border border-slate-200 bg-white overflow-hidden max-h-72 overflow-y-auto">
+                      {selectedRun.journeyArtifacts.map((j) => (
+                        <div
+                          key={j.name}
+                          className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-2 text-[11px]"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            {j.passed ? (
+                              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                            ) : (
+                              <XCircle className="h-3.5 w-3.5 text-rose-600 shrink-0" />
+                            )}
+                            <span className="font-mono font-semibold text-slate-900 truncate">
+                              {j.route}
+                            </span>
+                            {j.durationMs !== null && (
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {(j.durationMs / 1000).toFixed(1)}s
+                              </span>
+                            )}
+                            {j.lcpMs !== null && (
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                LCP {Math.round(j.lcpMs)}ms
+                              </span>
+                            )}
+                            {j.consoleErrors.length > 0 && (
+                              <span
+                                className="text-[10px] text-amber-700 font-mono"
+                                title={j.consoleErrors.join("\n")}
+                              >
+                                {j.consoleErrors.length} console error
+                                {j.consoleErrors.length === 1 ? "" : "s"}
+                              </span>
+                            )}
+                            {j.scrollActions > 0 && (
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {j.scrollActions} scrolls
+                              </span>
+                            )}
+                            {j.linksChecked > 0 && (
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {j.linksChecked} links
+                              </span>
+                            )}
+                            {j.navigations.filter((n) => n.navigated).length > 0 && (
+                              <span className="text-[10px] text-sky-700 font-mono">
+                                {j.navigations.filter((n) => n.navigated).length} clicked through
+                              </span>
+                            )}
+                            {j.brokenLinks.length > 0 && (
+                              <span
+                                className="text-[10px] text-rose-700 font-bold font-mono"
+                                title={j.brokenLinks
+                                  .map((b) => `${b.url} (HTTP ${b.status})`)
+                                  .join("\n")}
+                              >
+                                {j.brokenLinks.length} broken link
+                                {j.brokenLinks.length === 1 ? "" : "s"}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {j.videoUrl && (
+                              <a
+                                href={j.videoUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white hover:bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
+                              >
+                                <Video className="h-2.5 w-2.5 text-slate-500" />
+                                video
+                              </a>
+                            )}
+                            {j.traceUrl && (
+                              <a
+                                href={j.traceUrl}
+                                download
+                                className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white hover:bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
+                              >
+                                <Download className="h-2.5 w-2.5 text-sky-600" />
+                                trace
+                              </a>
+                            )}
+                            {j.screenshotUrl && (
+                              <a
+                                href={j.screenshotUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white hover:bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
+                              >
+                                <Camera className="h-2.5 w-2.5 text-emerald-600" />
+                                shot
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Agentic exploration notebook: what the agent thought and did,
+                    step by step. Advisory — it never decides pass/fail. */}
+                {selectedRun.agenticSession && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+                        <Workflow className="h-3.5 w-3.5 text-sky-600" />
+                        Agent exploration notebook
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {selectedRun.agenticSession.stepsUsed}/{selectedRun.agenticSession.budget} steps
+                        {" · "}
+                        {selectedRun.agenticSession.pagesVisited.length} pages
+                        {" · "}
+                        {(selectedRun.agenticSession.durationMs / 1000).toFixed(0)}s
+                        {selectedRun.agenticSession.stopReason
+                          ? ` · stopped: ${selectedRun.agenticSession.stopReason}`
+                          : ""}
+                      </span>
+                    </div>
+
+                    {selectedRun.agenticSession.notes.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">
+                        The agent recorded no steps for this run.
+                      </p>
+                    ) : (
+                      <ol className="rounded-md border border-slate-200 bg-white divide-y divide-slate-100 max-h-72 overflow-y-auto">
+                        {selectedRun.agenticSession.notes.map((note, index) => (
+                          <li key={index} className="px-2.5 py-1.5 text-[11px] flex gap-2">
+                            <span className="font-mono text-[10px] text-slate-400 shrink-0 w-5 text-right">
+                              {index + 1}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-baseline gap-1.5">
+                                <span className="font-mono text-[10px] text-slate-500 truncate max-w-[220px]">
+                                  {note.url}
+                                </span>
+                                <span className="font-semibold text-slate-800">{note.did}</span>
+                              </div>
+                              {note.saw && (
+                                <p className="text-[10px] text-slate-500 mt-0.5">{note.saw}</p>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+
+                    {selectedRun.agenticSession.findings.length > 0 && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 p-2.5 space-y-1">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-amber-800">
+                          Agent findings (advisory)
+                        </p>
+                        <ul className="text-[11px] text-amber-900 list-disc pl-4 space-y-0.5">
+                          {selectedRun.agenticSession.findings.map((finding, index) => (
+                            <li key={index}>{finding}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {selectedRun.agenticSession.pagesVisited.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {selectedRun.agenticSession.pagesVisited.map((page) => (
+                          <span
+                            key={page}
+                            className="rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-600"
+                          >
+                            {page}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -876,12 +1420,20 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
                 {selectedRun.artifacts.videoUrl && (
                   <div className="space-y-1.5">
                     <span className="font-bold text-slate-900 text-xs block">
-                      Playwright Browser Session Video Replay
+                      {selectedRun.sessionReplayUrl
+                        ? `Session replay — all ${selectedRun.journeyArtifacts.length} routes in visit order`
+                        : "Playwright Browser Session Video Replay"}
                     </span>
                     <CustomVideoPlayer
                       src={selectedRun.artifacts.videoUrl}
                       className="max-h-[320px] rounded-lg border border-slate-200 shadow-xs"
                     />
+                    {selectedRun.sessionReplayUrl && (
+                      <p className="text-[10px] text-slate-500">
+                        Each route is recorded in its own browser context and the clips are stitched
+                        in visit order. Per-route recordings are listed under Routes visited above.
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -967,19 +1519,37 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
         </div>
 
         {intents.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-8 text-center space-y-2">
-            <div className="flex justify-center">
-              <Workflow className="h-8 w-8 text-slate-400" />
+          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-6 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="h-8 w-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0">
+                <Workflow className="h-4 w-4 text-slate-400" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-slate-800">
+                  This stream is optional and currently empty
+                </p>
+                <p className="text-[11px] text-slate-500 leading-relaxed max-w-2xl">
+                  AutoQA already verifies commits from git on its own — nothing here is required for
+                  a run. This panel only fills up if you also run the Coding Agent Bridge alongside
+                  your editor, which streams <em>why</em> a file changed (your prompt and the
+                  agent&apos;s reasoning) so the diff analyzer has extra context.
+                </p>
+              </div>
             </div>
-            <p className="text-xs font-bold text-slate-800">No In-Flight Agent Intents Streamed Yet</p>
-            <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Connect your local coding agent session using the bridge daemon to stream live file modifications and prompt intent:
-            </p>
-            <div className="pt-2">
-              <code className="inline-block rounded bg-white border border-slate-200 text-slate-800 px-3 py-1.5 font-mono text-xs shadow-2xs font-semibold">
-                uv run agent-bridge daemon
-              </code>
-            </div>
+            <details className="group pl-11">
+              <summary className="cursor-pointer text-[11px] font-semibold text-slate-600 hover:text-slate-900 select-none">
+                Connect a local agent session
+              </summary>
+              <div className="pt-2 space-y-1.5">
+                <code className="inline-block rounded bg-white border border-slate-200 text-slate-800 px-3 py-1.5 font-mono text-[11px] shadow-2xs">
+                  uv --directory agent run agent-bridge daemon
+                </code>
+                <p className="text-[10px] text-slate-400">
+                  Run from the repository root. Intents appear here within a few seconds of your next
+                  edit.
+                </p>
+              </div>
+            </details>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1026,11 +1596,26 @@ export function OverviewClient({ userEmail }: { userEmail?: string } = {}) {
         )}
       </div>
 
-      <ExternalTestModal
-        isOpen={isExternalModalOpen}
-        onClose={() => setIsExternalModalOpen(false)}
-        onSuccess={() => fetchLiveRuns()}
+      <RunConfigDialog
+        isOpen={isRunDialogOpen && !isExternalProject && Boolean(activeRepoName)}
+        repo={activeRepoName}
+        projectName={activeProject?.name}
+        defaultBranch={activeProject?.default_branch || gitInfo.branch || "main"}
+        defaultTestType={activeProject?.settings?.test_type}
+        onClose={() => setIsRunDialogOpen(false)}
+        onDispatched={handleRunDispatched}
       />
+
+      {showFirstRunBriefing && activeProject && (
+        <FirstRunBriefing
+          repo={activeRepoName}
+          projectName={activeProject?.name}
+          defaultBranch={activeProject?.default_branch || gitInfo.branch || "main"}
+          defaultTestType={activeProject?.settings?.test_type}
+          onDispatched={handleRunDispatched}
+          onSkip={() => setBriefingDismissed(true)}
+        />
+      )}
     </div>
   );
 }

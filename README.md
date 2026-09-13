@@ -53,6 +53,10 @@ Every AI agent in the platform is powered through the **AWS Strands Agents SDK**
 │   ├── src/agent/
 │   │   ├── analyzer/         # Claude Sonnet 4.6 Diff + Intent Analyzer
 │   │   ├── api/              # FastAPI endpoints (runs, dashboard, webhooks, bridge)
+│   │   ├── sandbox/          # Zero-host-disk container sandbox: boots first, then
+│   │   │                     # clones the PR in-container via docker exec. Source
+│   │   │                     # never touches host disk; the --rm container is the
+│   │   │                     # only copy and is destroyed when the run ends.
 │   │   ├── bridge/           # Coding Agent Bridge CLI & local daemon
 │   │   ├── credentials/      # AES-256 encrypted test account store & redaction
 │   │   ├── db/               # Supabase PostgreSQL client with local fallback
@@ -60,7 +64,7 @@ Every AI agent in the platform is powered through the **AWS Strands Agents SDK**
 │   │   ├── models/           # Strands SDK multi-model factory & role routing
 │   │   ├── remediation/      # Structured markdown fix prompt generator
 │   │   └── runner/           # Baseline comparator (new regression vs pre-existing bug) & pipeline
-│   └── tests/                # 25 automated unit & integration tests
+│   └── tests/                # 180+ unit, integration & real-Docker tests
 │
 ├── web/                      # Next.js 16 Preview Application & Telemetry Dashboard
 │   ├── app/
@@ -71,7 +75,8 @@ Every AI agent in the platform is powered through the **AWS Strands Agents SDK**
 │   └── .claude/              # Claude Code hooks for real-time intent capture
 │
 ├── supabase/
-│   └── schema.sql            # PostgreSQL schema for intent_logs, runs, and credentials
+│   ├── schema.sql            # PostgreSQL schema for intent_logs, runs, and credentials
+│   └── migrations/           # Incremental, idempotent SQL (project import RLS, columns)
 │
 ├── idea.md                   # Complete architectural specification & 5-day build plan
 ├── .gitignore                # Root gitignore covering Python, Node.js, and artifacts
@@ -146,7 +151,7 @@ uv run python scripts/full_loop_smoke.py
 
 ## 🧪 Running Automated Tests
 
-Run the full pytest suite (25 tests covering multi-model Strands routing, browser agents, element-targeted scroll, baseline comparator, session persistence, credential redaction, and freshness dedup):
+Run the full pytest suite covering multi-model Strands routing, browser agents, element-targeted scroll, baseline comparator, session persistence, credential redaction, freshness dedup, in-container cloning (real Docker), and measured-vs-fabricated metric handling:
 
 ```bash
 cd agent
@@ -160,7 +165,8 @@ uv run pytest -v
 ### Start the Python Engine API & Dashboard (Port 8000)
 ```bash
 cd agent
-uv run uvicorn agent.main:app --port 8000 --reload
+uv run uvicorn agent.main:app --port 8000 --reload --reload-dir src
+
 ```
 - **Control Center UI**: `http://localhost:8000/dashboard`
 - **Health check**: `http://localhost:8000/health`

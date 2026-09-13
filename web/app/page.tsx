@@ -24,7 +24,7 @@ import {
   Video,
   XCircle,
 } from "lucide-react";
-import { CustomVideoPlayer } from "@/components/custom-video-player";
+
 
 function GithubIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -113,7 +113,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               Control Center
             </Link>
             <Link
-              href="/login"
+              href="/api/github/install"
               className="inline-flex items-center gap-1.5 rounded-lg bg-slate-950 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-slate-800 active:scale-95 transition-all"
             >
               <GithubIcon className="h-3.5 w-3.5" />
@@ -129,7 +129,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
           {/* Status Badge */}
           <div className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3.5 py-1 text-xs font-medium text-slate-800 shadow-sm mb-7">
             <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
-            <span>Autonomous QA for Claude Code & Cursor</span>
+            <span>Autonomous QA for Claude Code</span>
             <ChevronRight className="h-3 w-3 text-slate-400" />
           </div>
 
@@ -144,13 +144,13 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
 
           {/* Subtitle */}
           <p className="mx-auto max-w-2xl text-base sm:text-lg text-slate-600 leading-relaxed mb-9 font-normal">
-            A background bridge that watches you code, captures the <em>intent</em> behind your prompt, runs headless browser journeys in real time, and produces video proof + <strong>one-click fixes</strong> before you merge.
+            A background bridge that captures the <em>intent</em> behind your prompt, runs headless browser journeys on every change, and produces video proof + a <strong>ready-to-paste fix</strong> before you merge.
           </p>
 
           {/* Action Buttons */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-12">
             <Link
-              href="/login"
+              href="/api/github/install"
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-slate-950 px-6 py-3 text-xs font-bold text-white shadow-sm hover:bg-slate-800 active:scale-95 transition-all"
             >
               Install GitHub App
@@ -197,7 +197,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               </div>
               <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-mono font-semibold text-slate-700">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                Bridge Connected (WebSocket)
+                Bridge Connected (daemon → platform)
               </span>
             </div>
 
@@ -232,7 +232,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                   </div>
                   <div className="text-slate-600">
                     <span className="text-slate-400 font-mono">$ agent-bridge check</span><br />
-                    <span className="text-slate-900 font-medium">✓ Check Run enqueued. Booting headless Playwright sandbox...</span>
+                    <span className="text-slate-900 font-medium">✓ Verification enqueued. Booting sandbox + headless browser...</span>
                   </div>
                 </div>
               </div>
@@ -276,7 +276,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                   <div className="flex items-center gap-3 pt-2 text-[11px] text-slate-500">
                     <span className="inline-flex items-center gap-1 font-mono">
                       <Video className="h-3 w-3 text-rose-600" />
-                      video.webm (CDP recording)
+                      video.webm (session recording)
                     </span>
                     <span className="inline-flex items-center gap-1 font-mono">
                       <Layers className="h-3 w-3 text-slate-600" />
@@ -366,7 +366,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               </div>
               <h3 className="font-bold text-slate-900 text-sm mb-1.5">Code naturally</h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Use Claude Code, Cursor, or Copilot as you always do. No extra workflow steps.
+                Use Claude Code as you always do. The bridge hook captures each edit — no extra workflow steps.
               </p>
             </div>
 
@@ -376,7 +376,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               </div>
               <h3 className="font-bold text-slate-900 text-sm mb-1.5">Intent Capture</h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                The local bridge daemon streams files touched, prompt summaries, and reasoning over WebSocket.
+                The local bridge daemon captures files touched, prompt summaries, and agent reasoning, and streams them to the platform.
               </p>
             </div>
 
@@ -414,7 +414,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               Forensic proof for every run
             </h2>
             <p className="text-sm text-slate-600">
-              Synchronized recordings and traces so nobody has to reproduce failures by hand.
+              Recordings and traces captured together for every run, so nobody has to reproduce failures by hand.
             </p>
           </div>
 
@@ -442,7 +442,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                 }`}
               >
                 <Video className="h-3.5 w-3.5" />
-                Session Video (CDP)
+                Session Video
               </button>
 
               <button
@@ -491,10 +491,28 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               )}
 
               {activeTab === "video" && (
-                <div className="py-1">
-                  <CustomVideoPlayer
-                    src="/artifacts/runs/feat-quick-checkout_f1e2d3c4/video.webm"
-                  />
+                /*
+                  This panel used to embed
+                  "/artifacts/runs/feat-quick-checkout_f1e2d3c4/video.webm". No such
+                  file exists, this app has no /artifacts route (real artifacts are
+                  served from /api/artifacts/runs/...), and next.config defines no
+                  rewrite — so the player always 404'd and reported "Unsupported
+                  video format" to every visitor. Rather than point at another
+                  invented path, the panel states what appears here on a real run.
+                */
+                <div className="text-center py-8">
+                  <div className="mx-auto w-12 h-12 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 mb-3">
+                    <Video className="h-6 w-6" />
+                  </div>
+                  <h4 className="font-bold text-slate-900 text-sm mb-1">Journey Video</h4>
+                  <p className="text-xs text-slate-600 max-w-sm mx-auto">
+                    Every journey records an H.264 video alongside the trace, DOM snapshot, and
+                    network waterfall. Open a run in the dashboard to watch the real recording for
+                    your own application — no sample is embedded here.
+                  </p>
+                  <code className="mt-3 inline-block text-xs font-mono bg-slate-100 border border-slate-200 text-slate-800 px-2.5 py-1 rounded">
+                    /api/artifacts/runs/&lt;run&gt;/video/&lt;route&gt;.mp4
+                  </code>
                 </div>
               )}
 
@@ -573,7 +591,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                 <tr>
                   <td className="py-3 px-5 font-semibold text-slate-900">Forensic Proof</td>
                   <td className="py-3 px-5 text-slate-500">Plain text terminal logs</td>
-                  <td className="py-3 px-5 text-slate-900 font-semibold">CDP session video + Playwright trace</td>
+                  <td className="py-3 px-5 text-slate-900 font-semibold">Session video + Playwright trace</td>
                 </tr>
                 <tr>
                   <td className="py-3 px-5 font-semibold text-slate-900">Remediation</td>
@@ -583,7 +601,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                 <tr>
                   <td className="py-3 px-5 font-semibold text-slate-900">Freshness Caching</td>
                   <td className="py-3 px-5 text-slate-500">Re-runs identical tests on push</td>
-                  <td className="py-3 px-5 text-slate-900 font-semibold">SHA dedup returns cached run instantly</td>
+                  <td className="py-3 px-5 text-slate-900 font-semibold">SHA dedup returns the cached run on re-check</td>
                 </tr>
               </tbody>
             </table>
@@ -599,10 +617,10 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               System Architecture
             </span>
             <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight mb-3">
-              Zero-leakage architecture with ephemeral sandboxes
+              Isolated sandboxes with a clear data-retention story
             </h2>
             <p className="text-sm text-slate-600">
-              Designed specifically for engineering teams with strict compliance and zero tolerance for code leakage.
+              Built for teams that need per-run isolation, auditable artifacts, and a retention window they control.
             </p>
           </div>
 
@@ -616,7 +634,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                 </span>
               </div>
               <span className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-mono text-slate-600">
-                End-to-End Latency: &lt;1.8s
+                Disposable container per run
               </span>
             </div>
 
@@ -629,7 +647,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                 </div>
                 <h4 className="font-bold text-slate-900 text-xs mb-1">Local Bridge Daemon</h4>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Hooks into Claude Code or Cursor process. Streams intent, prompts, and modified AST diffs over local socket.
+                  Hooks into the Claude Code tool loop. Streams captured intent, prompt summaries, and the files touched to the platform.
                 </p>
               </div>
 
@@ -649,9 +667,9 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                   <span>STAGE 03</span>
                   <Cpu className="h-3.5 w-3.5 text-slate-700" />
                 </div>
-                <h4 className="font-bold text-slate-900 text-xs mb-1">Ephemeral MicroVM</h4>
+                <h4 className="font-bold text-slate-900 text-xs mb-1">Ephemeral Sandbox</h4>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Boots isolated Playwright runner. Injects encrypted test credentials and records raw CDP video session.
+                  Boots a disposable container for the app under test, injects test credentials, and drives it with a headless browser that records video and trace.
                 </p>
               </div>
 
@@ -674,9 +692,9 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-800 mb-3">
                 <ShieldCheck className="h-5 w-5" />
               </div>
-              <h3 className="font-bold text-slate-900 text-sm mb-1.5">Zero Code Retention</h3>
+              <h3 className="font-bold text-slate-900 text-sm mb-1.5">Disposable Runtime</h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Your source code never lives on our servers. The bridge processes diffs and intent trees in memory, ensuring proprietary logic never persists outside your perimeter.
+                The pull request is cloned inside a &quot;--rm&quot; container and provisioned there; the container is destroyed when the run ends. Forensic artifacts (video, trace, screenshots, redacted DOM) are stored in a private bucket behind short-lived signed URLs and removed on a configurable retention window.
               </p>
             </div>
 
@@ -684,9 +702,9 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-800 mb-3">
                 <Lock className="h-5 w-5" />
               </div>
-              <h3 className="font-bold text-slate-900 text-sm mb-1.5">AES-256 Vault Encryption</h3>
+              <h3 className="font-bold text-slate-900 text-sm mb-1.5">AES-256-GCM Credential Vault</h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                All test user credentials (like seeded QA logins) are encrypted with hardware-backed AES-256-GCM. Injected strictly at container initialization via ephemeral runtime pipes.
+                Test-user credentials are encrypted at rest with AES-256-GCM. The key is supplied out-of-band via <code className="font-mono">CREDENTIAL_STORE_KEY</code>; credentials are injected into the sandbox as environment variables at boot and are never written to the repo, the intent log, or an LLM prompt.
               </p>
             </div>
 
@@ -694,9 +712,9 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               <div className="h-9 w-9 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-800 mb-3">
                 <Layers className="h-5 w-5" />
               </div>
-              <h3 className="font-bold text-slate-900 text-sm mb-1.5">Hermetic Sandboxes</h3>
+              <h3 className="font-bold text-slate-900 text-sm mb-1.5">Resource-Limited Sandboxes</h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Every test journey executes inside an ephemeral container wiped immediately upon run completion. No shared storage, zero cross-test flakiness, and deterministic replay.
+                Each run gets a container capped on memory, CPU and PIDs, with dropped capabilities and no privilege escalation. The headless browser runs from the engine against that container, and session state is reused across journeys within a single run for deterministic replay.
               </p>
             </div>
           </div>
@@ -714,7 +732,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
             <Link
-              href="/login"
+              href="/api/github/install"
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-slate-950 px-6 py-3 text-xs font-bold text-white shadow-sm hover:bg-slate-800 active:scale-95 transition-all"
             >
               Get Started with GitHub App

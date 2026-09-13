@@ -9,7 +9,6 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUpRight,
-  BarChart3,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -89,7 +88,14 @@ export default function JobAnalyticsClient({
       if (res.ok) {
         const json = await res.json();
         setData(json);
-        setFetchError(null);
+        // The API returns an explicit `analytics_unavailable` signal (with a
+        // human-readable reason) rather than synthesizing a report. Surface that
+        // specific explanation instead of silently showing an empty shell.
+        setFetchError(
+          json.analytics_unavailable
+            ? [json.detail, json.reason ? `(${json.reason})` : null].filter(Boolean).join(" ")
+            : null
+        );
         const paths = Object.keys(json.quality_report?.per_path_analysis || {});
         if (paths.length > 0) {
           setSelectedPath(paths[0]);
@@ -165,10 +171,16 @@ export default function JobAnalyticsClient({
   const trajectory = report.trajectory_analytics || {};
   const costMetrics = report.cost_metrics || {};
   const webVitals = report.web_vitals || {};
+  // Measured values are nullable: the engine reports `null` for metrics it could
+  // not observe (e.g. INP when no interaction occurred) rather than inventing a
+  // number. Render that honestly instead of printing "undefinedms".
+  const fmtVital = (v: unknown, unit = "ms") =>
+    typeof v === "number" ? `${v}${unit}` : "—";
+  const vitalStatus = (s: unknown) => (typeof s === "string" ? s : "not measured");
   const flakiness = report.flakiness_score || {};
   const intentVsOutcome = report.intent_vs_outcome || [];
   const selfHealingLocators = report.self_healing_locators || [];
-  const replaySteps = report.synchronized_replay_steps || [];
+  const replaySteps = report.session_timeline || [];
   const silentErrors = report.silent_errors || [];
   const apiTelemetry = report.api_telemetry || [];
   const fuzzingRobustness = report.fuzzing_robustness || [];
@@ -372,52 +384,52 @@ export default function JobAnalyticsClient({
                 </p>
               </div>
               <div className="flex items-center gap-2 font-mono text-[11px] text-slate-500">
-                <span>Model: {costMetrics.model_name || "Claude Haiku"}</span>
+                <span>Model: {costMetrics.model_name || "not reported"}</span>
                 <span>•</span>
-                <span>Action Latency: {costMetrics.avg_action_latency_ms}ms</span>
+                <span>Action Latency: {fmtVital(costMetrics.avg_action_latency_ms)}</span>
               </div>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-1">
                 <div className="text-[11px] font-semibold text-slate-500">LCP (Largest Paint)</div>
-                <div className="text-xl font-black text-slate-900 font-mono">{webVitals.lcp_ms}ms</div>
+                <div className="text-xl font-black text-slate-900 font-mono">{fmtVital(webVitals.lcp_ms)}</div>
                 <span className="inline-block text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  {webVitals.lcp_status || "Optimal"}
+                  {vitalStatus(webVitals.lcp_status)}
                 </span>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-1">
                 <div className="text-[11px] font-semibold text-slate-500">CLS (Layout Shift)</div>
-                <div className="text-xl font-black text-slate-900 font-mono">{webVitals.cls}</div>
+                <div className="text-xl font-black text-slate-900 font-mono">{fmtVital(webVitals.cls, "")}</div>
                 <span className="inline-block text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  {webVitals.cls_status || "Optimal"}
+                  {vitalStatus(webVitals.cls_status)}
                 </span>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-1">
                 <div className="text-[11px] font-semibold text-slate-500">INP (Next Paint)</div>
-                <div className="text-xl font-black text-slate-900 font-mono">{webVitals.inp_ms}ms</div>
+                <div className="text-xl font-black text-slate-900 font-mono">{fmtVital(webVitals.inp_ms)}</div>
                 <span className="inline-block text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  {webVitals.inp_status || "Optimal"}
+                  {vitalStatus(webVitals.inp_status)}
                 </span>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-1">
                 <div className="text-[11px] font-semibold text-slate-500">FCP (First Content)</div>
-                <div className="text-xl font-black text-slate-900 font-mono">{webVitals.fcp_ms}ms</div>
+                <div className="text-xl font-black text-slate-900 font-mono">{fmtVital(webVitals.fcp_ms)}</div>
                 <span className="text-[10px] text-slate-500 font-mono block">Sub-1s Target</span>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-1">
                 <div className="text-[11px] font-semibold text-slate-500">TTFB (First Byte)</div>
-                <div className="text-xl font-black text-slate-900 font-mono">{webVitals.ttfb_ms}ms</div>
+                <div className="text-xl font-black text-slate-900 font-mono">{fmtVital(webVitals.ttfb_ms)}</div>
                 <span className="text-[10px] text-slate-500 font-mono block">Edge response</span>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-1">
                 <div className="text-[11px] font-semibold text-slate-500">TTI (Interactive)</div>
-                <div className="text-xl font-black text-slate-900 font-mono">{webVitals.tti_ms}ms</div>
+                <div className="text-xl font-black text-slate-900 font-mono">{fmtVital(webVitals.tti_ms)}</div>
                 <span className="text-[10px] text-slate-500 font-mono block">DOM Ready</span>
               </div>
             </div>
@@ -762,9 +774,13 @@ export default function JobAnalyticsClient({
 
             {selfHealingLocators.length === 0 ? (
               <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500 bg-slate-50/50">
-                <CheckCircle2 className="h-5 w-5 text-emerald-600 mx-auto mb-1.5" />
-                <div className="font-semibold text-slate-800">100% Deterministic Locator Stability</div>
-                <div>All selectors resolved directly without locator drift or element ambiguity.</div>
+                <Info className="h-5 w-5 text-slate-400 mx-auto mb-1.5" />
+                <div className="font-semibold text-slate-800">No locator drift recorded</div>
+                <div>
+                  No healing event was needed or observed during this run. This is not a
+                  stability measurement — absence of recorded drift is not evidence of
+                  locator robustness.
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -844,10 +860,11 @@ export default function JobAnalyticsClient({
               <div>
                 <h3 className="text-sm font-bold text-slate-950 flex items-center gap-2">
                   <Video className="h-4 w-4 text-indigo-600" />
-                  <span>Synchronized Step-by-Step Session Replay</span>
+                  <span>Per-Journey Session Timeline</span>
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Step-by-step playback synchronized with DOM snapshots, console logs, and network waterfall telemetry.
+                  Each route journey is recorded as its own clip and trace, so there is no shared
+                  timeline to synchronize. This lists the measured facts captured per journey.
                 </p>
               </div>
 
@@ -877,7 +894,11 @@ export default function JobAnalyticsClient({
                     <span className="font-bold text-slate-900">
                       Step {activeReplay.step_index}: <code className="text-indigo-600 font-mono">{activeReplay.route}</code>
                     </span>
-                    <span className="font-mono text-slate-500">+{activeReplay.timestamp_offset_ms}ms</span>
+                    <span className="font-mono text-slate-500">
+                      {typeof activeReplay.duration_ms === "number"
+                        ? `${activeReplay.duration_ms}ms journey`
+                        : "duration not measured"}
+                    </span>
                   </div>
 
                   {activeReplay.video_url ? (
@@ -898,9 +919,20 @@ export default function JobAnalyticsClient({
                     </div>
                   )}
 
-                  <pre className="rounded-lg bg-slate-950 p-3 text-[11px] font-mono text-slate-200 overflow-x-auto whitespace-pre">
-                    {activeReplay.dom_snapshot_preview}
-                  </pre>
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-[11px] font-mono text-slate-700 space-y-1">
+                    <div>
+                      DOM nodes rendered:{" "}
+                      {typeof activeReplay.dom_node_count === "number" ? activeReplay.dom_node_count : "not measured"}
+                    </div>
+                    <div>Console errors: {activeReplay.console_errors?.length ?? 0}</div>
+                    <div>Failed requests: {activeReplay.failed_requests?.length ?? 0}</div>
+                    <div>
+                      Transfer size:{" "}
+                      {typeof activeReplay.transfer_size_kb === "number"
+                        ? `${activeReplay.transfer_size_kb} KB`
+                        : "not measured"}
+                    </div>
+                  </div>
                 </div>
 
                 {/* Right: Synced Console & Network Waterfall */}
@@ -909,12 +941,12 @@ export default function JobAnalyticsClient({
                   <div className="rounded-xl border border-slate-200 p-4 bg-slate-50 space-y-2">
                     <span className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
                       <Terminal className="h-3.5 w-3.5 text-slate-700" />
-                      Synchronized Console Log &amp; Silent Errors
+                      Console Errors Captured on This Route
                     </span>
 
-                    {activeReplay.console_logs && activeReplay.console_logs.length > 0 ? (
+                    {activeReplay.console_errors && activeReplay.console_errors.length > 0 ? (
                       <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg font-mono text-[11px] text-rose-800 space-y-1">
-                        {activeReplay.console_logs.map((err: string, i: number) => (
+                        {activeReplay.console_errors.map((err: string, i: number) => (
                           <div key={i} className="flex items-start gap-1.5">
                             <span className="text-rose-500">✕</span>
                             <span>{err}</span>
@@ -928,36 +960,35 @@ export default function JobAnalyticsClient({
                     )}
                   </div>
 
-                  {/* Network Waterfall */}
+                  {/* Failed requests actually observed on this route */}
                   <div className="rounded-xl border border-slate-200 p-4 bg-slate-50 space-y-2">
                     <span className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
                       <Network className="h-3.5 w-3.5 text-slate-700" />
-                      Step Network Waterfall Telemetry
+                      Failed Requests on This Route
                     </span>
 
                     <div className="space-y-1.5 font-mono text-[11px]">
-                      {activeReplay.network_waterfall?.map((req: any, i: number) => (
-                        <div
-                          key={i}
-                          className="flex items-center justify-between p-2 bg-white rounded border border-slate-200"
-                        >
-                          <span className="text-slate-800 truncate max-w-[200px]">{req.url}</span>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded font-bold border border-emerald-200">
-                              {req.status}
-                            </span>
-                            <span className="text-slate-500">{req.duration_ms}ms</span>
-                            <span className="text-slate-400">{req.size_kb}KB</span>
+                      {activeReplay.failed_requests && activeReplay.failed_requests.length > 0 ? (
+                        activeReplay.failed_requests.map((req: string, i: number) => (
+                          <div
+                            key={i}
+                            className="flex items-center justify-between p-2 bg-white rounded border border-slate-200"
+                          >
+                            <span className="text-slate-800 truncate max-w-[280px]">{req}</span>
                           </div>
+                        ))
+                      ) : (
+                        <div className="text-xs text-slate-500 italic p-2 bg-white rounded border border-slate-200">
+                          No failed requests were recorded for this route.
                         </div>
-                      ))}
+                      )}
                     </div>
                   </div>
                 </div>
               </div>
             ) : (
               <div className="text-xs text-slate-500 text-center py-6">
-                Select a step above to view synchronized replay telemetry.
+                Select a step above to view the measured session telemetry.
               </div>
             )}
           </div>
@@ -1112,17 +1143,32 @@ export default function JobAnalyticsClient({
               <span>Network Throttling &amp; Offline Impact</span>
             </h3>
             <p className="text-xs text-slate-500">
-              Navigation and state recovery evaluated under emulated Broadband, Fast 3G, Slow 3G, and Offline modes.
+              Projected load time derived from the measured LCP plus the measured transfer
+              size at each bandwidth. Recovery and offline behaviour are not exercised by
+              this pipeline, so they are reported as untested rather than assumed.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-mono">
               {throttlingImpact.map((net: any, idx: number) => (
                 <div key={idx} className="rounded-xl border border-slate-200 p-3.5 bg-slate-50 space-y-1">
                   <div className="font-bold text-slate-900 font-sans">{net.profile}</div>
-                  <div className="text-slate-600">Load Time: {net.load_time_ms}ms</div>
-                  <div className="text-[10px] text-emerald-700">
-                    {net.graceful_recovery ? "✓ Graceful Recovery" : "✕ Timeout"}
+                  <div className="text-slate-600">
+                    Load Time: {typeof net.load_time_ms === "number" ? `${net.load_time_ms}ms` : "not measured"}
                   </div>
+                  {net.graceful_recovery === true && (
+                    <div className="text-[10px] text-emerald-700">✓ Graceful Recovery</div>
+                  )}
+                  {net.graceful_recovery === false && (
+                    <div className="text-[10px] text-rose-700">✕ Timeout</div>
+                  )}
+                  {net.graceful_recovery == null && (
+                    <div className="text-[10px] text-slate-500">Recovery not tested</div>
+                  )}
+                  {typeof net.has_service_worker === "boolean" && (
+                    <div className="text-[10px] text-slate-500">
+                      Service worker: {net.has_service_worker ? "present" : "absent"}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1238,35 +1284,17 @@ export default function JobAnalyticsClient({
             </div>
           </div>
 
-          {/* Platform ROI & Maintenance Savings */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
-            <h3 className="text-sm font-bold text-slate-950 flex items-center gap-2">
-              <BarChart3 className="h-4 w-4 text-emerald-600" />
-              <span>Platform Operations &amp; Test Suite ROI</span>
-            </h3>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-1">
-                <span className="text-slate-500 font-medium">Test Maintenance Reduction</span>
-                <div className="text-2xl font-black text-slate-900 font-mono">
-                  {report.test_maintenance_reduction_pct || 76.5}%
-                </div>
-                <p className="text-[11px] text-slate-500">
-                  Manual test updates avoided through the agent&apos;s autonomous locator and visual adaptation.
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-1">
-                <span className="text-slate-500 font-medium">Regression Mean-Time-to-Detect (MTTD)</span>
-                <div className="text-2xl font-black text-slate-900 font-mono">
-                  {report.regression_mttd_seconds || 14.8}s
-                </div>
-                <p className="text-[11px] text-slate-500">
-                  Average time elapsed between a PR commit and flagging a broken interaction node.
-                </p>
-              </div>
-            </div>
-          </div>
+          {/*
+            "Platform Operations & Test Suite ROI" used to live here, showing
+            "Test Maintenance Reduction: 78.4%" and "Regression MTTD: 14.2s".
+            Both were hardcoded constants from the engine, and the UI additionally
+            defaulted them to 76.5 / 14.8 whenever the engine omitted them — so the
+            panel displayed invented numbers unconditionally. Neither metric is
+            derivable from anything this pipeline observes (maintenance reduction
+            needs a longitudinal baseline against manual QA; MTTD needs
+            commit-to-detection timestamps that are not recorded), so the section
+            is removed rather than shown with made-up precision.
+          */}
         </div>
       )}
     </main>

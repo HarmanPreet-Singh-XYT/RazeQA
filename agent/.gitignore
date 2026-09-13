@@ -16,3 +16,7 @@ wheels/
 
 # runtime artifacts (traces, videos, encrypted credential store)
 /artifacts/
+
+# local development credential key (production must supply CREDENTIAL_STORE_KEY)
+/.credential_key
+.credential_key

@@ -18,6 +18,11 @@ from typing import Any
 from agent.analyzer.quality_dimensions import default_quality_evaluator
 from agent.db.supabase import default_run_store
 from agent.journeys.browser_agent import run_route_journey
+from agent.models.usage import (
+    UsageAccumulator,
+    clear_usage_accumulator,
+    install_usage_accumulator,
+)
 from agent.runner.pipeline import ARTIFACTS_BASE, _artifact_url_for_file
 
 logger = logging.getLogger("agent.runner.external")
@@ -121,6 +126,10 @@ async def _run_external_pipeline_inner(
 
     logger.info("Starting external site testing on %s (routes: %s, test_type: %s)", url, test_routes, test_type)
 
+    # Meter real Strands LLM usage for the navigator/visual agents this run creates.
+    usage_accumulator = UsageAccumulator()
+    install_usage_accumulator(usage_accumulator)
+
     # 3. Execute journeys across routes
     for r in test_routes:
         if r.startswith(("http://", "https://")):
@@ -177,6 +186,10 @@ async def _run_external_pipeline_inner(
                 "network_requests": exp_res.get("network_requests", []),
                 "console_errors": exp_res.get("console_errors", []),
                 "response_headers": exp_res.get("response_headers", {}),
+                "duration_ms": exp_res.get("duration_ms"),
+                # Real browser measurements threaded to the evaluator.
+                "web_vitals": exp_res.get("web_vitals"),
+                "action_timings_ms": exp_res.get("action_timings_ms", []),
             })
 
             if passed:
@@ -205,10 +218,13 @@ async def _run_external_pipeline_inner(
     )
 
     # Calculate real quality dimensions & per-path analysis for external site
+    llm_usage = usage_accumulator.snapshot().to_dict()
+    clear_usage_accumulator()
     quality_report_obj = default_quality_evaluator.evaluate_run(
         run_record=record,
         journeys=journey_artifacts,
         repo_dir=None,
+        llm_usage=llm_usage,
     )
     quality_report = quality_report_obj.to_dict()
 

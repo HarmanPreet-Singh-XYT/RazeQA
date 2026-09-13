@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same ref instead of queueing them.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agent:
+    name: Agent (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: agent
+    env:
+      # The suite asserts hermetic behaviour. Pin these here so an ambient
+      # value in the runner can never change what is actually verified.
+      SANDBOX_MODE: disabled
+      AGENT_API_KEY: test-agent-api-key
+      GITHUB_WEBHOOK_SECRET: test-webhook-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: agent/uv.lock
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Install Playwright Chromium
+        run: uv run playwright install --with-deps chromium
+
+      - name: Run test suite
+        # Tests that need a real Docker daemon skip themselves automatically
+        # (see tests/test_zero_host_disk_sandbox.py).
+        run: uv run pytest -q
+
+  web:
+    name: Web (typecheck + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        # The build is configured to succeed without Supabase/engine secrets
+        # (verified locally with all NEXT_PUBLIC_* / AGENT_API_KEY vars empty).
+        run: npm run build

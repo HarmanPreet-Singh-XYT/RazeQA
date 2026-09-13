@@ -101,7 +101,7 @@ export function FixProposalViewer({
       if (res.ok && data.status === "applied") {
         setApplyResult({
           success: true,
-          message: data.message || "Fix successfully committed! Re-verification enqueued.",
+          message: data.message || "Fix applied. Re-verification enqueued.",
           newRunId: data.new_run_id,
         });
         if (onFixApplied) {

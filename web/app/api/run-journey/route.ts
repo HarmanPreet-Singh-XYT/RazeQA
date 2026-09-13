@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { getTestUser } from "@/lib/auth";
 
 export async function POST(request: Request) {
@@ -63,18 +64,25 @@ export async function POST(request: Request) {
       details: `HTTP ${loginRes.status} OK (form ready)`,
     });
 
-    // Step 4: Seeded credential authentication
+    // Step 4: Seeded credential authentication, actually attempted.
+    //
+    // This step previously pushed a hardcoded `status: "passed"` without
+    // authenticating anything. It now performs a real Supabase password grant
+    // and reports the result, or an explicit "not executed" reason.
     const t3 = Date.now();
     const testUser = getTestUser();
-    const password = simulateFailure ? "wrong-password" : testUser.password;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey =
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
     if (simulateFailure) {
       steps.push({
         name: "Seeded User Authentication",
-        target: `POST /login (${testUser.email})`,
+        target: "POST /auth/v1/token?grant_type=password",
         status: "failed",
         durationMs: Date.now() - t3,
-        details: "HTTP 401 Unauthorized: Invalid credentials supplied to auth gate",
+        details: "Simulated failure requested by the caller.",
       });
       return NextResponse.json({
         success: false,
@@ -82,22 +90,58 @@ export async function POST(request: Request) {
         totalDurationMs: Date.now() - startTime,
         steps,
         failureReason: "Seeded test account authentication failed.",
-        remediationPrompt: `## 🚨 Autonomous Verification Failed: Auth Gate
-> Route: /login
-> Error: Invalid credentials supplied for seeded account '${testUser.email}'
-
-### 📋 Fix Prompt:
-Fix authentication logic: Verify that process.env.TEST_USER_PASSWORD matches the sandbox test secret in web/lib/auth.ts.`,
       });
     }
 
-    steps.push({
-      name: "Seeded User Authentication",
-      target: `POST /login (${testUser.email})`,
-      status: "passed",
-      durationMs: Date.now() - t3,
-      details: "HTTP 200 / Session cookie issued",
-    });
+    if (!testUser) {
+      steps.push({
+        name: "Seeded User Authentication",
+        target: "POST /auth/v1/token?grant_type=password",
+        status: "failed",
+        durationMs: Date.now() - t3,
+        details:
+          "Not executed: TEST_USER_EMAIL / TEST_USER_PASSWORD are not configured for this deployment.",
+      });
+    } else if (!supabaseUrl || !supabaseKey) {
+      steps.push({
+        name: "Seeded User Authentication",
+        target: `POST /auth/v1/token (${testUser.email})`,
+        status: "failed",
+        durationMs: Date.now() - t3,
+        details:
+          "Not executed: Supabase auth is not configured (NEXT_PUBLIC_SUPABASE_URL / key).",
+      });
+    } else {
+      // Throwaway client with persistence disabled: this endpoint verifies that
+      // the seeded account can authenticate and must not mint a session cookie
+      // for the caller.
+      const throwaway = createSupabaseClient(supabaseUrl, supabaseKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { data, error } = await throwaway.auth.signInWithPassword({
+        email: testUser.email,
+        password: testUser.password,
+      });
+      const authPassed = !error && Boolean(data?.user);
+      steps.push({
+        name: "Seeded User Authentication",
+        target: `POST /auth/v1/token (${testUser.email})`,
+        status: authPassed ? "passed" : "failed",
+        durationMs: Date.now() - t3,
+        details: authPassed
+          ? "HTTP 200 / session issued for the seeded account"
+          : `Authentication failed: ${error?.message ?? "no user returned"}`,
+      });
+      if (!authPassed) {
+        return NextResponse.json({
+          success: false,
+          status: "failed",
+          totalDurationMs: Date.now() - startTime,
+          steps,
+          failureReason: "Seeded test account authentication failed.",
+        });
+      }
+    }
 
     return NextResponse.json({
       success: true,
