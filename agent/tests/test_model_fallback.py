@@ -246,6 +246,7 @@ def test_agentcore_endpoints():
     """Verify Amazon Bedrock AgentCore container contract endpoints (/ping and /invocations)."""
     from starlette.testclient import TestClient
     from agent.main import app
+    from conftest import AUTH_HEADERS
 
     client = TestClient(app)
 
@@ -254,8 +255,14 @@ def test_agentcore_endpoints():
     assert ping_resp.status_code == 200
     assert ping_resp.json()["status"].lower() == "healthy"
 
-    # 2. /invocations handles incoming agent task payloads
-    inv_resp = client.post("/invocations", json={"action": "status"})
+    # 2. /invocations runs real analysis, so it is NOT exempt from auth. Without
+    #    a token it must be refused; the previous exemption made it an open
+    #    compute endpoint.
+    unauth_resp = client.post("/invocations", json={"action": "status"})
+    assert unauth_resp.status_code in (401, 503)
+
+    # 3. With the bearer token it handles the AgentCore payload normally.
+    inv_resp = client.post("/invocations", json={"action": "status"}, headers=AUTH_HEADERS)
     assert inv_resp.status_code == 200
     assert inv_resp.json()["status"] == "ok"
 

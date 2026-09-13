@@ -168,3 +168,52 @@ def test_lightweight_navigator_planning():
         assert actions[0]["type"] == "click"
         assert actions[0]["selector"] == "button#quick-checkout"
         assert mock_create.call_args.kwargs["role"] == ModelRole.BROWSER_NAVIGATION
+
+
+# ---------------------------------------------------------------------------
+# Deprecated model ids are upgraded on read
+# ---------------------------------------------------------------------------
+
+def test_normalize_model_id_upgrades_deprecated_claude_35():
+    from agent.models.factory import normalize_model_id
+
+    # Bedrock form (provider prefix preserved, inference-profile prefix added).
+    assert (
+        normalize_model_id("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0")
+        == "bedrock/us.anthropic.claude-sonnet-4-6"
+    )
+    # Bare Bedrock id.
+    assert (
+        normalize_model_id("anthropic.claude-3-5-sonnet-20241022-v2:0")
+        == "us.anthropic.claude-sonnet-4-6"
+    )
+    # Direct Anthropic form.
+    assert normalize_model_id("anthropic/claude-3-5-sonnet-20241022") == "anthropic/claude-sonnet-4.6"
+    assert normalize_model_id("claude-3-5-sonnet-latest") == "claude-sonnet-4.6"
+    # Retired 3.x Haiku/Opus also move forward.
+    assert normalize_model_id("claude-3-5-haiku-20241022") == "claude-haiku-4.5"
+
+
+def test_normalize_model_id_leaves_current_ids_untouched():
+    from agent.models.factory import normalize_model_id
+
+    for current in (
+        "anthropic/claude-sonnet-4.6",
+        "bedrock/us.anthropic.claude-sonnet-4-6",
+        "gemini/gemini-3.8-flash",
+        "claude-haiku-4.5",
+        None,
+        "",
+    ):
+        assert normalize_model_id(current) == current
+
+
+def test_resolve_model_name_upgrades_deprecated_env(monkeypatch):
+    """A deprecated BEDROCK_CODE_MODEL must not be used as-is."""
+    from agent.remediation.agentic_repair import resolve_model_name
+    from agent.models import factory
+
+    monkeypatch.setattr(factory, "is_bedrock_enabled", lambda: True)
+    monkeypatch.setattr(factory, "has_bedrock_credentials", lambda: True)
+    monkeypatch.setenv("BEDROCK_CODE_MODEL", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+    assert resolve_model_name() == "bedrock/us.anthropic.claude-sonnet-4-6"

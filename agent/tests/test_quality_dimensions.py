@@ -273,9 +273,10 @@ def test_full_30_quality_dimensions_and_observability_suite():
     assert "network_waterfall" not in step1
 
     # 7. Edge Cases & Fuzzing Signals
-    assert len(data["fuzzing_robustness"]) >= 3
-    assert any(f["payload_type"] == "sqli_injection" for f in data["fuzzing_robustness"])
-    assert any(f["payload_type"] == "unicode_emojis" for f in data["fuzzing_robustness"])
+    # No payload is ever injected, so there are no fuzzing results to report.
+    # The old shape fabricated an `injected_sample` and `safe: True` for inputs
+    # that were never touched; empty is the honest answer.
+    assert data["fuzzing_robustness"] == []
 
     # 8. Flakiness: one execution of a path cannot establish jitter or rerun
     #    consistency, so it is honestly reported as unmeasured (never invented).

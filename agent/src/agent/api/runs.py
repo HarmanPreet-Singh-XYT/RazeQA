@@ -389,6 +389,31 @@ async def trigger_external_run(
     payload: ExternalRunRequest, background_tasks: BackgroundTasks
 ) -> dict[str, Any]:
     """Trigger an autonomous test run against an external, staging, or non-GitHub website."""
+    # The engine host can reach things the caller cannot (cloud instance
+    # metadata, internal admin surfaces). Refuse those before a browser is
+    # pointed at them.
+    from agent.security.url_safety import UnsafeTargetError, validate_external_url
+
+    try:
+        payload.url = await validate_external_url(payload.url)
+    except UnsafeTargetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Each external run starts a browser session. Cap how often one target can
+    # trigger that, so a loop cannot saturate the worker pool.
+    from agent.api.rate_limit import external_run_limiter
+
+    retry_after = external_run_limiter.check(payload.name or payload.url)
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Rate limit exceeded: at most 6 external runs per minute per target. "
+                f"Retry in {int(retry_after) + 1}s."
+            ),
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
+
     store = _active_store()
     record = store.create(
         branch=payload.name,

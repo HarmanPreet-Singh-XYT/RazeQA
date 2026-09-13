@@ -57,14 +57,24 @@ export function CommandPalette({
     desc: "Connected GitHub Repository",
   }));
 
+  // Commands should land in the project the user is already working in, not on
+  // the fleet-wide view — the sidebar does the same. The overview page keeps
+  // meaning "all projects"; every project-level page carries the scope.
+  const scopeQuery = activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : "";
+
   const navigationItems = [
-    { label: "Overview", icon: LayoutDashboard, href: "/dashboard", desc: "Project deployment showcase & active branches" },
-    { label: "Test Runs", icon: Layers, href: "/dashboard/runs", desc: "Verification runs, test steps & proofs" },
-    { label: "Execution Logs", icon: Terminal, href: "/dashboard/logs", desc: "Real-time streaming console & request logs" },
-    { label: "User Journeys", icon: Globe, href: "/dashboard/tools", desc: "Interactive synthetic test flows" },
-    { label: "Quality Analytics", icon: BarChart3, href: "/dashboard/analytics", desc: "Fleet test pass rates & flakiness" },
+    {
+      label: "Overview",
+      icon: LayoutDashboard,
+      href: activeRepo ? `/dashboard/project${scopeQuery}` : "/dashboard",
+      desc: "Project deployment showcase & active branches",
+    },
+    { label: "Test Runs", icon: Layers, href: `/dashboard/runs${scopeQuery}`, desc: "Verification runs, test steps & proofs" },
+    { label: "Execution Logs", icon: Terminal, href: `/dashboard/logs${scopeQuery}`, desc: "Real-time streaming console & request logs" },
+    { label: "User Journeys", icon: Globe, href: `/dashboard/tools${scopeQuery}`, desc: "Interactive synthetic test flows" },
+    { label: "Quality Analytics", icon: BarChart3, href: `/dashboard/analytics${scopeQuery}`, desc: "Fleet test pass rates & flakiness" },
     { label: "Import Repository", icon: Plus, href: "/dashboard/new", desc: "Import repository & configure deployment" },
-    { label: "Project Settings", icon: Settings, href: "/dashboard/projects", desc: "Fleet overview of all repositories" },
+    { label: "Project Settings", icon: Settings, href: `/dashboard/projects${scopeQuery}`, desc: "Fleet overview of all repositories" },
   ];
 
   const filteredNav = navigationItems.filter((item) =>

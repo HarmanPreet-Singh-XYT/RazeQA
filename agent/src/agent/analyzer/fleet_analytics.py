@@ -51,13 +51,16 @@ def extract_component_name(branch: str, scope: str = "changed") -> str:
 @dataclass
 class FleetOverviewMetrics:
     total_runs: int
-    pass_rate: float
-    flakiness_index: float
-    mttd_seconds: float
-    p50_latency_ms: float
-    p95_latency_ms: float
-    p99_latency_ms: float
-    composite_fleet_health: int
+    # Every measure below is ``None`` when there was not enough data to compute
+    # it. A fleet with no runs has no pass rate and no health score — reporting
+    # 100% and 94/100 for zero runs was a fabricated all-clear.
+    pass_rate: float | None
+    flakiness_index: float | None
+    mttd_seconds: float | None
+    p50_latency_ms: float | None
+    p95_latency_ms: float | None
+    p99_latency_ms: float | None
+    composite_fleet_health: int | None
 
     # Aggregate 8 dimensions
     dimensions: dict[str, int] = field(default_factory=dict)
@@ -72,15 +75,19 @@ class FleetOverviewMetrics:
     pr_runs_count: int = 0
     external_runs_count: int = 0
 
+    @staticmethod
+    def _round(value: float | None, digits: int) -> float | None:
+        return round(value, digits) if value is not None else None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "total_runs": self.total_runs,
-            "pass_rate": round(self.pass_rate, 1),
-            "flakiness_index": round(self.flakiness_index, 1),
-            "mttd_seconds": round(self.mttd_seconds, 2),
-            "p50_latency_ms": round(self.p50_latency_ms, 1),
-            "p95_latency_ms": round(self.p95_latency_ms, 1),
-            "p99_latency_ms": round(self.p99_latency_ms, 1),
+            "pass_rate": self._round(self.pass_rate, 1),
+            "flakiness_index": self._round(self.flakiness_index, 1),
+            "mttd_seconds": self._round(self.mttd_seconds, 2),
+            "p50_latency_ms": self._round(self.p50_latency_ms, 1),
+            "p95_latency_ms": self._round(self.p95_latency_ms, 1),
+            "p99_latency_ms": self._round(self.p99_latency_ms, 1),
             "composite_fleet_health": self.composite_fleet_health,
             "dimensions": self.dimensions,
             "velocity_trend": self.velocity_trend,
@@ -95,26 +102,19 @@ class FleetAnalyticsAggregator:
 
     def aggregate_runs(self, runs: list[Any]) -> FleetOverviewMetrics:
         if not runs:
-            # Return healthy baseline if no runs recorded yet
+            # Nothing has run, so nothing is known. Every measure stays None and
+            # no dimension is scored; the dashboard renders "no data" instead of
+            # a fabricated all-green fleet.
             return FleetOverviewMetrics(
                 total_runs=0,
-                pass_rate=100.0,
-                flakiness_index=0.0,
-                mttd_seconds=1.2,
-                p50_latency_ms=1150.0,
-                p95_latency_ms=2100.0,
-                p99_latency_ms=3200.0,
-                composite_fleet_health=94,
-                dimensions={
-                    "performance": 92,
-                    "usability": 95,
-                    "i18n": 88,
-                    "security": 96,
-                    "reliability": 94,
-                    "seo": 90,
-                    "maintainability": 91,
-                    "observability": 95,
-                },
+                pass_rate=None,
+                flakiness_index=None,
+                mttd_seconds=None,
+                p50_latency_ms=None,
+                p95_latency_ms=None,
+                p99_latency_ms=None,
+                composite_fleet_health=None,
+                dimensions={},
                 velocity_trend=[],
                 component_risk_heatmap=[],
                 pr_runs_count=0,
@@ -291,7 +291,10 @@ class FleetAnalyticsAggregator:
             total_runs=total_runs,
             pass_rate=pass_rate,
             flakiness_index=flakiness_index,
-            mttd_seconds=1.42,
+            # Mean time to detect is not derivable from run records alone (it
+            # needs the moment a defect was introduced, which this engine does
+            # not observe). It used to be the constant 1.42s.
+            mttd_seconds=None,
             p50_latency_ms=p50,
             p95_latency_ms=p95,
             p99_latency_ms=p99,

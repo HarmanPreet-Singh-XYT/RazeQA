@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSessionUser } from "@/lib/auth";
 import { canAccessRepo, resolveTenantScope, type TenantScope } from "@/lib/tenant";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 /**
  * Server-side proxy for the AutoQA AI Copilot.
@@ -163,6 +164,16 @@ export async function POST(request: Request) {
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized: sign in to use the copilot." }, { status: 401 });
+  }
+
+  // Every turn is an LLM call on the engine. Cap it per user so one client
+  // cannot run up cost or saturate the engine by looping.
+  const limit = checkRateLimit("copilot", user.id, 20, 60_000);
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { error: "Rate limit exceeded: at most 20 copilot turns per minute." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(limit.resetMs / 1000)) } }
+    );
   }
 
   let body: CopilotRequestBody;

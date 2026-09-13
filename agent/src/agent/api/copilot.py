@@ -335,6 +335,22 @@ async def copilot_chat(request: CopilotChatRequest) -> CopilotChatResponse:
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
+    # Each turn is an LLM call (and may dispatch a run), so cap the rate per
+    # conversation/project to bound a runaway loop.
+    from agent.api.rate_limit import copilot_chat_limiter
+
+    limiter_key = (request.project.repo_full_name if request.project else None) or request.branch or "global"
+    retry_after = copilot_chat_limiter.check(limiter_key)
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Rate limit exceeded: at most 20 copilot turns per minute. "
+                f"Retry in {int(retry_after) + 1}s."
+            ),
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
+
     if not has_api_key_for_role(ModelRole.CODE_REASONING):
         raise HTTPException(
             status_code=503,

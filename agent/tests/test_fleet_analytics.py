@@ -9,8 +9,12 @@ def test_fleet_aggregation_empty():
     aggregator = FleetAnalyticsAggregator()
     metrics = aggregator.aggregate_runs([])
     assert metrics.total_runs == 0
-    assert metrics.composite_fleet_health > 0
-    assert "performance" in metrics.dimensions
+    # An empty fleet has no measured health. Reporting 94/100 and a full set of
+    # dimension scores for zero runs was a fabricated all-clear.
+    assert metrics.composite_fleet_health is None
+    assert metrics.pass_rate is None
+    assert metrics.mttd_seconds is None
+    assert metrics.dimensions == {}
 
 
 def test_fleet_aggregation_with_runs():

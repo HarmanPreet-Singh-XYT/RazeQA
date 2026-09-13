@@ -293,9 +293,16 @@ class PathQualityMetrics:
     web_vitals: CoreWebVitals = field(default_factory=CoreWebVitals)
     cost: CostMetrics = field(default_factory=CostMetrics)
     flakiness: FlakinessDiagnostic = field(default_factory=FlakinessDiagnostic)
-    keyboard_trap_detected: bool = False
-    tab_order_valid: bool = True
-    text_overflow_detected: bool = False
+    # Keyboard/tab/overflow checks are NOT implemented: no key event is
+    # dispatched, no tab order is walked, and no text is measured against its
+    # container. These were previously reported as `False`/`True` constants,
+    # which read as "we tested this and it was fine". `None` means unmeasured.
+    keyboard_trap_detected: bool | None = None
+    tab_order_valid: bool | None = None
+    text_overflow_detected: bool | None = None
+    # Payload fuzzing is not implemented, so this list stays empty. It used to be
+    # filled from DOM regex with a hardcoded `injected_sample` and `safe: True` —
+    # security results for payloads that were never sent.
     fuzzing_signals: list[dict[str, Any]] = field(default_factory=list)
     friction_points: list[dict[str, Any]] = field(default_factory=list)
     dead_elements: list[dict[str, Any]] = field(default_factory=list)
@@ -757,43 +764,13 @@ class QualityDimensionsEvaluator:
         #    runs are aggregated in evaluate_run(); here it stays unmeasured.
         path_flakiness = FlakinessDiagnostic()
 
-        # 10. Form boundary & mutation robustness signals from actual DOM inputs
-        fuzzing_signals = []
-        real_inputs = re.findall(r"<(?:input|textarea|select)[^>]*>", dom_snapshot, re.IGNORECASE)
-        for inp in real_inputs[:4]:
-            id_m = re.search(r'id=["\']([^"\']+)["\']', inp)
-            name_m = re.search(r'name=["\']([^"\']+)["\']', inp)
-            type_m = re.search(r'type=["\']([^"\']+)["\']', inp)
-            i_type = (type_m.group(1).lower() if type_m else "text")
-            if i_type in ("hidden", "submit", "button", "image"):
-                continue
-            i_target = f"{path}#{id_m.group(1)}" if id_m else (f"{path}[name='{name_m.group(1)}']" if name_m else f"{path} input")
-            fuzzing_signals.append({
-                "input_target": i_target,
-                "payload_type": "unicode_emojis",
-                "injected_sample": "🔥🚀 Valid UTF-8 Multi-byte",
-                "client_response": "clean_inline_validation",
-                "status_code": 200,
-                "safe": True,
-            })
-            fuzzing_signals.append({
-                "input_target": i_target,
-                "payload_type": "massive_boundary_string",
-                "injected_sample": "A" * 120 + "...[10,000 chars]",
-                "client_response": "clean_inline_validation",
-                "status_code": 400 if is_external else 200,
-                "safe": True,
-            })
-            if i_type in ("text", "search"):
-                fuzzing_signals.append({
-                    "input_target": i_target,
-                    "payload_type": "sqli_injection",
-                    "injected_sample": "' OR '1'='1' --",
-                    "client_response": "clean_inline_validation",
-                    "status_code": 200,
-                    "safe": True,
-                })
-
+        # 10. Form-boundary / injection robustness is NOT measured. This block
+        #     used to emit fuzzing results (emoji, 10k-char boundary, SQLi) with
+        #     a hardcoded `injected_sample`, `status_code` and `safe: True` for
+        #     inputs it never touched. Reporting "safe" for an untested input is
+        #     worse than reporting nothing, so the signal is empty and the API
+        #     documents it as unmeasured.
+        fuzzing_signals: list[dict[str, Any]] = []
 
         # 11. Friction points & dead element tracking
         friction_points = []
@@ -928,20 +905,11 @@ class QualityDimensionsEvaluator:
 
         target_base_url = getattr(run_record, "sha", "") if is_external else None
 
-        # If no explicit journeys were passed, seed default evaluated routes from run record
-        if not journeys:
-            default_paths = ["/checkout", "/login"] if not is_external else [getattr(run_record, "sha", "/")]
-            for p in default_paths:
-                m = self.evaluate_path(
-                    path=p,
-                    dom_snapshot=f"<html lang='en'><head><title>{p} - AutoQA</title><meta name='description' content='Automated test page'></head><body><h1>{p}</h1><button id='action'>Submit</button></body></html>",
-                    duration_ms=1320.0,
-                    is_external=is_external,
-                    base_url=target_base_url,
-                )
-                path_metrics_list.append(m)
-                per_path_analysis[p] = m.to_dict()
-        else:
+        # No journeys means no paths were measured. This used to fabricate a
+        # synthetic DOM for `/checkout` and `/login` (with an invented 1320 ms
+        # duration) and score it, so a run that visited nothing produced a
+        # full-looking quality report. An empty report is the honest answer.
+        if journeys:
             for j in journeys:
                 route_path = j.get("route") or j.get("name") or "/"
                 dom = j.get("dom_snapshot") or j.get("html") or ""
@@ -1077,13 +1045,37 @@ class QualityDimensionsEvaluator:
                 "latency_ms": m.latency_ms,
                 "dom_elements_count": m.dom_node_count,
             })
-            if idx > 0:
+
+        # Edges come from real navigation evidence only. This used to chain
+        # node-0 -> node-1 -> ... unconditionally, drawing a traversal between
+        # routes that was never observed.
+        navigated_targets: dict[str, set[str]] = {}
+        for j in journeys:
+            src = j.get("route") or j.get("name") or "/"
+            targets = {
+                (nav.get("url") or "").split("?")[0].split("#")[0]
+                for nav in (j.get("navigation_checks") or [])
+                if isinstance(nav, dict) and nav.get("navigated") and nav.get("url")
+            }
+            targets = {t for t in targets if t}
+            if targets:
+                navigated_targets.setdefault(src, set()).update(targets)
+
+        index_by_path = {m.path: idx for idx, m in enumerate(path_metrics_list)}
+        for src, targets in navigated_targets.items():
+            src_idx = index_by_path.get(src)
+            if src_idx is None:
+                continue
+            for target in sorted(targets):
+                dst_idx = index_by_path.get(target)
+                if dst_idx is None or dst_idx == src_idx:
+                    continue
                 edges.append({
-                    "from_node": f"node-{idx - 1}",
-                    "to_node": node_id,
-                    "trigger_action": "navigate_or_submit",
-                    "selector": f"a[href='{m.path}']",
-                    "status": "broken" if is_dead else "active",
+                    "from_node": f"node-{src_idx}",
+                    "to_node": f"node-{dst_idx}",
+                    "trigger_action": "clicked_link",
+                    "selector": f"a[href='{target}']",
+                    "status": "active",
                 })
 
         # Discovered unexplored paths from actual DOM hyperlinks or repository structure

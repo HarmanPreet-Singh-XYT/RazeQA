@@ -26,7 +26,10 @@ class AIInsightCard:
     impact: str
     remediation: str
     affected_surfaces: list[str] = field(default_factory=list)
-    confidence: float = 0.92
+    # These cards are produced by deterministic rules, not a calibrated model, so
+    # there is no honest confidence to report. The field stays None rather than a
+    # constant 0.92 that implied statistical backing.
+    confidence: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,7 +41,7 @@ class AIInsightCard:
             "impact": self.impact,
             "remediation": self.remediation,
             "affected_surfaces": self.affected_surfaces,
-            "confidence": round(self.confidence, 2),
+            "confidence": round(self.confidence, 2) if self.confidence is not None else None,
         }
 
 
@@ -93,7 +96,7 @@ class AIInsightsEngine:
                     impact=f"Potential defect risk on '{comp_name}' flows before deployment to production.",
                     remediation=f"Inspect failing journey traces and require green verification on '{comp_name}' branch before merge.",
                     affected_surfaces=affected[:4],
-                    confidence=0.88,
+                    confidence=None,
                 )
             )
 
@@ -126,18 +129,20 @@ class AIInsightsEngine:
                     impact="Permits unencrypted protocol downgrades and increases exposure to injection vectors.",
                     remediation=f"Configure edge proxy or application middleware to return {headers_list}.",
                     affected_surfaces=["/*"],
-                    confidence=0.92,
+                    confidence=None,
                 )
             )
 
-        # 3. Flakiness Anomaly derived from real runs
-        flakiness = getattr(fleet_metrics, "flakiness_index", 0.0)
+        # 3. Flakiness Anomaly derived from real runs. A fleet with no repeated
+        #    executions has no flakiness index, so the threshold test only runs
+        #    when the value was actually measured.
+        flakiness = getattr(fleet_metrics, "flakiness_index", None)
         flaky_runs = [
             r
             for r in recent_runs
             if (getattr(r, "result", {}) or {}).get("is_flaky") or getattr(r, "retries", 0) > 0
         ]
-        if flakiness > 2.0 or flaky_runs:
+        if (flakiness is not None and flakiness > 2.0) or flaky_runs:
             run_ids = [getattr(r, "run_id", "unknown") for r in flaky_runs[:3]]
             insights.append(
                 AIInsightCard(
@@ -152,7 +157,7 @@ class AIInsightsEngine:
                     impact="Reduces CI signal confidence and extends automated testing cycle time.",
                     remediation="Add explicit web-first Playwright assertions ('wait_for') instead of arbitrary timeouts.",
                     affected_surfaces=[getattr(r, "branch", "/") for r in flaky_runs[:2]] or ["/"],
-                    confidence=0.85,
+                    confidence=None,
                 )
             )
 
@@ -181,13 +186,15 @@ class AIInsightsEngine:
                     impact="Layout distortion or text truncation when viewed in Right-to-Left languages (Arabic, Hebrew).",
                     remediation="Apply logical margin/padding CSS properties (e.g. margin-inline-start) and ensure dir='rtl' wrapper.",
                     affected_surfaces=surfaces[:3],
-                    confidence=0.89,
+                    confidence=None,
                 )
             )
 
-        # 5. Latency & Performance derived from real p95 latency
-        p95_lat = getattr(fleet_metrics, "p95_latency_ms", 1200.0)
-        if p95_lat > 2000.0:
+        # 5. Latency & Performance derived from real p95 latency. Unmeasured
+        #    latency (no runs) must not trip a threshold, and must not fall back
+        #    to an invented 1200ms default.
+        p95_lat = getattr(fleet_metrics, "p95_latency_ms", None)
+        if p95_lat is not None and p95_lat > 2000.0:
             insights.append(
                 AIInsightCard(
                     id="insight_perf_latency",
@@ -201,7 +208,7 @@ class AIInsightsEngine:
                     impact="Slower page render times and degraded end-user experience.",
                     remediation="Optimize asset transfer sizes, enable edge caching, and defer non-critical scripts.",
                     affected_surfaces=["/"],
-                    confidence=0.91,
+                    confidence=None,
                 )
             )
 
@@ -247,7 +254,7 @@ class AIInsightsEngine:
                         f"• **Run Reference:** `{run_id}`.\n\n"
                         f"• **Actionable Advice:** Check Playwright trace artifacts for `{run_id}` and ensure target interactive elements are fully hydrated before user interaction."
                     ),
-                    "confidence": 0.91,
+                    "confidence": None,
                     "relevant_runs": [run_id],
                     "suggested_actions": [
                         f"Inspect run traces for {run_id}",
@@ -264,7 +271,7 @@ class AIInsightsEngine:
                     "• **Summary:** All evaluated checkout journeys have passed functional verification criteria.\n"
                     "• **Guidance:** To verify checkout resilience against new changes, trigger a targeted verification run."
                 ),
-                "confidence": 0.88,
+                "confidence": None,
                 "relevant_runs": [],
                 "suggested_actions": [
                     "Run on-demand verification on checkout route",
@@ -283,7 +290,7 @@ class AIInsightsEngine:
                     f"• **Privacy Enforcement:** Sensitive authorization headers, cookies, passwords, and tokens are automatically redacted via credentials sanitizer.\n"
                     f"• **Guidance:** Ensure edge response headers include Strict-Transport-Security, Content-Security-Policy, and X-Content-Type-Options."
                 ),
-                "confidence": 0.93,
+                "confidence": None,
                 "relevant_runs": [],
                 "suggested_actions": [
                     "Inspect Next.js security headers configuration",
@@ -302,7 +309,7 @@ class AIInsightsEngine:
                     f"• **RTL Readiness:** Dynamic dir='rtl' switching is supported. Ensure layout elements use CSS logical properties (e.g. margin-inline-start/end) to avoid horizontal clipping.\n"
                     f"• **Localization Guidance:** Use translation dictionaries rather than hardcoded raw text strings in template components."
                 ),
-                "confidence": 0.90,
+                "confidence": None,
                 "relevant_runs": [],
                 "suggested_actions": [
                     "Audit templates for hardcoded text nodes",
@@ -310,24 +317,41 @@ class AIInsightsEngine:
                 ],
             }
 
-        # Default fleet summary response
+        # Default fleet summary response. Every number here is either measured or
+        # explicitly reported as unmeasured; no fallback constants.
         total_runs = getattr(fleet_metrics, "total_runs", len(recent_runs))
-        pass_rate = getattr(fleet_metrics, "pass_rate", 100.0)
-        composite = getattr(fleet_metrics, "composite_fleet_health", 94)
-        dims = getattr(fleet_metrics, "dimensions", {})
+        pass_rate = getattr(fleet_metrics, "pass_rate", None)
+        composite = getattr(fleet_metrics, "composite_fleet_health", None)
+        p50 = getattr(fleet_metrics, "p50_latency_ms", None)
+        dims = getattr(fleet_metrics, "dimensions", None) or {}
+
+        if not total_runs:
+            answer = (
+                "**Fleet Intelligence Report:**\n\n"
+                "No verification runs have been recorded yet, so there is nothing to summarise. "
+                "Fleet health, pass rate and quality dimensions are reported once real runs exist."
+            )
+        else:
+            health = f"{composite}/100" if composite is not None else "not measurable yet"
+            rate = f"{pass_rate}%" if pass_rate is not None else "not measurable yet"
+            latency = f"{p50:.0f}ms" if isinstance(p50, (int, float)) else "not measured"
+            breakdown = (
+                " | ".join(f"{name}: {score}" for name, score in sorted(dims.items()))
+                if dims
+                else "no dimensions measured"
+            )
+            answer = (
+                f"**Fleet Intelligence Report:**\n\n"
+                f"• **Fleet Health:** Composite Quality Index is **{health}** across {total_runs} tracked verification jobs.\n"
+                f"• **Pass Rate:** **{rate}** with an average latency of **{latency}**.\n"
+                f"• **Quality Breakdown:** {breakdown}\n\n"
+                "You can query about specific components, security compliance, test flakiness, or localization readiness."
+            )
 
         return {
             "query": query,
-            "answer": (
-                f"**AutoQA Fleet Intelligence Report:**\n\n"
-                f"• **Fleet Health:** Composite Quality Index is **{composite}/100** across {total_runs} tracked verification jobs.\n"
-                f"• **Pass Rate:** **{pass_rate}%** with an average latency of **{getattr(fleet_metrics, 'p50_latency_ms', 1150):.0f}ms**.\n"
-                f"• **Quality Breakdown:** Performance: {dims.get('performance', 90)} | Usability: {dims.get('usability', 90)} | "
-                f"i18n: {dims.get('i18n', 85)} | Security: {dims.get('security', 95)} | Reliability: {dims.get('reliability', 90)} | "
-                f"SEO: {dims.get('seo', 90)}.\n\n"
-                "You can query about specific components, security compliance, test flakiness, or localization readiness."
-            ),
-            "confidence": 0.89,
+            "answer": answer,
+            "confidence": None,
             "relevant_runs": [],
             "suggested_actions": [
                 "Inspect high-risk runs in PR Forensics",

@@ -22,6 +22,7 @@ from agent.db.supabase import default_run_store
 from agent.github.app import GitHubAppClient, GitHubNotConfiguredError
 from agent.journeys.login import run_login_journey
 from agent.journeys.scope_planner import PlannedRoute, ScopePlanner, TestingConfig
+from agent.models.factory import normalize_model_id
 from agent.models.usage import (
     UsageAccumulator,
     clear_usage_accumulator,
@@ -937,6 +938,8 @@ async def run_pipeline(
     test_type: str = "functional",
     diff_base: str | None = None,
     update_baseline: bool = True,
+    forced_routes: list[str] | None = None,
+    post_comments: bool = True,
 ) -> dict[str, Any]:
     """Execute complete end-to-end verification pipeline, with a timeout and
     catch-all failure handling so a run can never get stuck at "running"
@@ -946,6 +949,11 @@ async def run_pipeline(
     run briefing's "only this commit" / "this commit range" modes). It never
     changes which commit is built and tested (``sha``) or what the baseline is
     compared against (``base_branch``).
+
+    ``forced_routes`` pins the run to specific routes (an on-demand
+    "inspect /checkout" request). It bypasses the diff-derived route selection,
+    but never the discovered-route allowlist: a route that does not exist in the
+    app is still dropped rather than invented.
     """
     try:
         return await asyncio.wait_for(
@@ -966,6 +974,8 @@ async def run_pipeline(
                 test_type=test_type,
                 diff_base=diff_base,
                 update_baseline=update_baseline,
+                forced_routes=forced_routes,
+                post_comments=post_comments,
             ),
             timeout=PIPELINE_TIMEOUT_S,
         )
@@ -1003,6 +1013,161 @@ def _mark_run_failed_by_lookup(
         logger.exception("Failed to mark run as failed after pipeline error")
 
 
+async def _report_boot_failure(
+    *,
+    step: str,
+    safe_error: str,
+    run_id: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    sha: str,
+    base_branch: str,
+    pr_number: int | None,
+    check_run_id: int | None,
+    installation_id: int | None,
+    github_client: GitHubAppClient,
+    post_comments: bool,
+    secrets: list[str] | None = None,
+) -> None:
+    """Record a build/boot failure as a real, reported PR result.
+
+    Without this, a build failure marked the run failed in the dashboard but the
+    GitHub Check Run stayed ``in_progress`` forever and no comment explained why:
+    the code that completes the check and posts the summary sat *after* the
+    ``raise`` for this path. A change that does not build is a critical result,
+    not a silent one.
+    """
+    from agent.db.pr_insights import default_pr_insight_store
+    from agent.runner.test_cases import fingerprint
+
+    redacted_output = redact_data(safe_error, secrets or [])
+    label = {
+        "clone": "Repository checkout",
+        "dependency_install": "Dependency install",
+        "build": "Build",
+        "app_start": "Application start",
+        "provision": "Environment provisioning",
+    }.get(step, "Build")
+
+    test_case = {
+        "name": f"{label} failed",
+        "route": None,
+        "status": "failed",
+        "category": "build",
+        "severity": "critical",
+        "impact": (
+            "The application could not be built, so no user flow could be verified. "
+            "Nothing downstream of the build was tested."
+        ),
+        "failure_reason": redacted_output[-2000:],
+        "reproduction_steps": [
+            "Check out the tested commit.",
+            "Run the project's install and build commands as configured.",
+            "The failure reproduces in the build output below.",
+        ],
+        "code_analysis": [],
+        "mock_context": [],
+        "evidence": {"build_output": redacted_output[-8000:]},
+        "origin": "new",
+        "verified_this_commit": True,
+        "pr_number": pr_number,
+    }
+    severity_summary = {
+        "counts": {"critical": 1, "high": 0, "medium": 0, "low": 0},
+        "highest": "critical",
+        "total_cases": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "carried_forward": 0,
+        "carried_forward_failing": 0,
+        "additional_findings": 0,
+        "all_passed": False,
+    }
+    failure_findings = [
+        {
+            "fingerprint": fingerprint(None, "build", redacted_output),
+            "severity": "critical",
+            "category": "build",
+            "title": f"{label} failed",
+            "detail": redacted_output[-2000:],
+            "route": None,
+        }
+    ]
+
+    default_run_store.update(
+        run_id=run_id,
+        status="failed",
+        result={
+            "status": "error",
+            "error": f"{label} failure: {redacted_output}",
+            "failure_kind": step,
+            "test_cases": [test_case],
+            "severity_summary": severity_summary,
+            "coverage_gate": "no_journeys",
+            "journeys_executed": 0,
+            "owner": owner,
+            "repo": repo,
+            "branch": branch,
+            "installation_id": installation_id,
+        },
+        completed=True,
+    )
+
+    repo_full_name = f"{owner}/{repo}" if owner and repo else repo
+    try:
+        default_pr_insight_store.record_run_result(
+            repo_full_name=repo_full_name,
+            run_id=run_id,
+            pr_number=pr_number,
+            test_cases=[test_case],
+            findings=failure_findings,
+            head_sha=sha,
+            base_branch=base_branch,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not persist build-failure result for %s: %s", run_id, exc)
+
+    if check_run_id:
+        try:
+            await github_client.update_check_run(
+                owner=owner,
+                repo=repo,
+                check_run_id=check_run_id,
+                conclusion="failure",
+                title=f"Autonomous Verification: {label} failed",
+                summary=(
+                    f"Autonomous PR verification FAILED at the {label.lower()} step.\n"
+                    "No user journeys were run because the application could not be built.\n"
+                    f"Commit: {sha[:8]}"
+                ),
+                text=f"```\n{redacted_output[-6000:]}\n```",
+                installation_id=installation_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not complete Check Run %s after boot failure: %s", check_run_id, exc)
+
+    if pr_number and post_comments:
+        comment = (
+            f"### ❌ Verification failed — {label.lower()}\n\n"
+            f"The application could not be built from `{sha[:8]}`, so no user journeys were run. "
+            "This is reported as a critical failure rather than a clean run.\n\n"
+            "<details><summary>Build output (tail)</summary>\n\n"
+            f"```\n{redacted_output[-6000:]}\n```\n\n</details>"
+        )
+        try:
+            await github_client.post_pr_comment(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                body=comment,
+                installation_id=installation_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not post build-failure comment on #%s: %s", pr_number, exc)
+
+
 async def _run_pipeline_inner(
     owner: str,
     repo: str,
@@ -1020,6 +1185,8 @@ async def _run_pipeline_inner(
     test_type: str = "functional",
     diff_base: str | None = None,
     update_baseline: bool = True,
+    forced_routes: list[str] | None = None,
+    post_comments: bool = True,
 ) -> dict[str, Any]:
     """Execute complete end-to-end verification pipeline."""
     intents = intents or []
@@ -1098,6 +1265,11 @@ async def _run_pipeline_inner(
         "TEST_USER_EMAIL": test_user_email,
         "TEST_USER_PASSWORD": test_user_password,
     }
+    # Values loaded from the repository's Context & Secrets. Secrets are added
+    # here so they can be injected into the sandbox, and are also merged into the
+    # redaction list once it is built, so they cannot reach an artifact or a
+    # prompt.
+    context_secret_values: list[str] = []
 
     t_analysis = time.monotonic()
     # Reassigned once the analysis phase really ends (just before journeys run).
@@ -1128,21 +1300,67 @@ async def _run_pipeline_inner(
             cost_limit_usd=float(auto_repair_raw.get("cost_limit_usd", 1.0)),
             wall_time_limit_seconds=int(auto_repair_raw.get("wall_time_limit_seconds", 180)),
             custom_instructions=auto_repair_raw.get("custom_instructions", ""),
-            model_name=auto_repair_raw.get("model_name"),
+            # Upgrade a retired model id saved in project settings.
+            model_name=normalize_model_id(auto_repair_raw.get("model_name")),
             env_vars=auto_repair_raw.get("env_vars", {}),
         )
 
         testing_raw = project_settings.get("testing", {})
+        # Per-repository Context & Secrets. Variables and seed data are surfaced
+        # to the planning agent as plain-English context; secret values are
+        # never included here — they are decrypted only for environment
+        # injection and redaction.
+        from agent.projects.context import load_project_context
+
+        project_context = load_project_context(f"{owner}/{repo}")
+
+        # Inject the repository's variables and secrets into the test container
+        # as environment variables. Secrets are decrypted only here and only for
+        # this purpose. Names are validated so a malformed key cannot corrupt the
+        # container environment.
+        for _ctx_name, _ctx_value in {**project_context.variables, **project_context.secrets}.items():
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", _ctx_name or ""):
+                sandbox_env[_ctx_name] = _ctx_value
+        context_secret_values.extend(project_context.secrets.values())
+
+        _base_instructions = testing_raw.get(
+            "testing_instructions",
+            project_settings.get("testing_instructions", ""),
+        )
+        _context_lines = project_context.prompt_lines()
+        if _context_lines:
+            _base_instructions = (
+                (_base_instructions + "\n\n" if _base_instructions else "")
+                + "Repository context provided by the team:\n"
+                + "\n".join(_context_lines)
+            )
+
+        # Saved tests are the repository's opt-in regression suite. They are
+        # injected as required coverage so a flow someone chose to protect keeps
+        # being exercised on every run, not just the run that discovered it.
+        from agent.projects.saved_tests import as_instruction_lines, load_saved_tests
+
+        _saved_tests = load_saved_tests(f"{owner}/{repo}")
+        _saved_lines = as_instruction_lines(_saved_tests)
+        if _saved_lines:
+            _base_instructions = (
+                (_base_instructions + "\n\n" if _base_instructions else "")
+                + "It is a requirement that these saved regression tests are exercised:\n"
+                + "\n".join(_saved_lines)
+            )
+            logger.info("Injecting %d saved regression test(s) into the plan", len(_saved_lines))
+
+        # The planner field is bounded; a long suite must not raise a validation
+        # error at run time.
+        _base_instructions = _base_instructions[:4000]
+
         testing_config = TestingConfig(
-            testing_instructions=testing_raw.get(
-                "testing_instructions",
-                project_settings.get("testing_instructions", ""),
-            ),
+            testing_instructions=_base_instructions,
             enable_login_flow=bool(
                 testing_raw.get("enable_login_flow", project_settings.get("enable_login_flow", True))
             ),
             max_routes=int(testing_raw.get("max_routes", 15)),
-            model_name=testing_raw.get("model_name"),
+            model_name=normalize_model_id(testing_raw.get("model_name")),
             agentic_exploration=bool(
                 testing_raw.get("agentic_exploration", project_settings.get("agentic_exploration", True))
             ),
@@ -1205,6 +1423,20 @@ async def _run_pipeline_inner(
                     discovered_routes,
                     scope,
                 )
+                if forced_routes:
+                    # An explicit "inspect these routes" request wins over the
+                    # diff-derived selection. The discovered-route allowlist is
+                    # still enforced downstream, so a route that does not exist
+                    # in the app is dropped rather than invented.
+                    change_impact.kind = "targeted"
+                    change_impact.rationale = (
+                        "On-demand inspection requested for "
+                        + ", ".join(forced_routes)
+                    )
+                    change_impact.routes = list(forced_routes)
+                    change_impact.force_routes = list(forced_routes)
+                    change_impact.force_full_sweep = False
+                    change_impact.skip_journeys = False
                 effective_scope = "full" if change_impact.force_full_sweep else scope
                 logger.info(
                     "Change impact: kind=%s scope=%s->%s routes=%s",
@@ -1267,13 +1499,24 @@ async def _run_pipeline_inner(
         # boot, so scrub it from any error text before that text is persisted to
         # the run store or surfaced to the dashboard.
         safe_error = _scrub_token(str(exc), github_token)
-        logger.error("Pipeline aborted for run %s: sandbox failure: %s", record.run_id, safe_error)
+        step = getattr(exc, "step", None) or ("clone" if isinstance(exc, CloneError) else "build")
+        logger.error("Pipeline aborted for run %s at %s: %s", record.run_id, step, safe_error)
         clear_usage_accumulator()
-        default_run_store.update(
+        await _report_boot_failure(
+            step=step,
+            safe_error=safe_error,
             run_id=record.run_id,
-            status="failed",
-            result={"status": "error", "error": f"Sandbox failure: {safe_error}"},
-            completed=True,
+            owner=owner,
+            repo=repo,
+            branch=branch,
+            sha=sha,
+            base_branch=base_branch,
+            pr_number=pr_number,
+            check_run_id=check_run_id,
+            installation_id=installation_id,
+            github_client=github_client,
+            post_comments=post_comments,
+            secrets=context_secret_values,
         )
         raise
 
@@ -1445,8 +1688,11 @@ async def _run_pipeline_inner(
     )
 
     # Known real secret values for this run, used to redact persisted artifacts
-    # (the same list the remediation formatter redacts with).
+    # (the same list the remediation formatter redacts with). Repository secrets
+    # from Context & Secrets are included so a value injected into the sandbox
+    # cannot survive in a DOM snapshot, log or prompt.
     custom_secrets = [s for s in (test_user_email, test_user_password) if s]
+    custom_secrets.extend(v for v in context_secret_values if v)
 
     journey_artifacts = []
     if login_result:
@@ -1581,8 +1827,50 @@ async def _run_pipeline_inner(
     )
     quality_report = quality_report_obj.to_dict()
 
+    # Structured, user-facing result model: one test case per executed journey
+    # plus a dismissible finding per failure. Built from the evidence collected
+    # above, so the API, the dashboard and the PR comment cannot disagree.
+    from agent.runner.test_cases import build_test_cases
+
+    # Previous run's structured cases for this branch, so the report is
+    # incremental: regression / fixed / carried-forward are decided against what
+    # actually happened last time, not guessed from the diff. Best-effort — a
+    # lookup failure just means every case is reported as new.
+    previous_cases: list[dict[str, Any]] = []
+    try:
+        from agent.db.pr_insights import default_pr_insight_store
+
+        previous_cases = default_pr_insight_store.previous_test_cases(
+            repo_full_name=f"{owner}/{repo}" if owner and repo else repo,
+            branch=branch,
+            exclude_run_id=record.run_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not load previous test cases: %s", exc)
+
+    test_cases, case_findings, severity_summary = build_test_cases(
+        journey_artifacts=journey_artifacts,
+        passed_journeys=passed_journeys,
+        failed_journeys=failed_journeys,
+        additional_findings=additional_findings,
+        analysis=analysis,
+        baseline_comparison=baseline_comparison,
+        change_impact=change_impact,
+        seeded_account=test_user_email,
+        login_enabled=bool(test_user_email),
+        pr_number=pr_number,
+        previous_cases=previous_cases,
+    )
+
     run_result = {
         "status": overall_status,
+        "test_cases": test_cases,
+        "severity_summary": severity_summary,
+        # What repository context the run was given, by name only. Secret values
+        # are never echoed back into a stored result.
+        "environment_context": (
+            project_context.to_summary() if "project_context" in locals() else {}
+        ),
         # Repository identity is persisted so POST /runs/{id}/apply can target
         # the right repo. Without these, the apply endpoint fell back to
         # owner="local"/repo="web" and the GitHub Contents-API path was
@@ -1652,6 +1940,25 @@ async def _run_pipeline_inner(
         video_url=primary_video_url,
         trace_url=primary_trace_url,
     )
+
+    # Materialize the PR-centric projection: the PR row, one row per test case,
+    # and one dismissible finding per failure. Best-effort by design — a database
+    # write failure must never change the outcome of a verification run.
+    try:
+        from agent.db.pr_insights import default_pr_insight_store
+
+        _pr_repo_full = f"{owner}/{repo}" if owner and repo else repo
+        default_pr_insight_store.record_run_result(
+            repo_full_name=_pr_repo_full,
+            run_id=record.run_id,
+            pr_number=pr_number,
+            test_cases=test_cases,
+            findings=case_findings,
+            head_sha=sha,
+            base_branch=base_branch,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not persist PR insights for run %s: %s", record.run_id, exc)
 
     # 7. Notify GitHub Check Run
     if check_run_id:
@@ -1740,8 +2047,10 @@ async def _run_pipeline_inner(
             except Exception as auto_commit_exc:
                 logger.warning("Automatic commit on green build could not complete: %s", auto_commit_exc)
 
-    # 9. Post PR Comment if PR number provided
-    if pr_number:
+    # 9. Post PR Comment if PR number provided and the repository's automation
+    #    policy allows posting back to GitHub (mode=silent keeps results in the
+    #    dashboard only).
+    if pr_number and post_comments:
         comment_body = generate_pr_summary_comment(
             status=overall_status,
             passed_journeys=passed_journeys,

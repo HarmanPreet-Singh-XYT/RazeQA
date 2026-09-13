@@ -208,13 +208,16 @@ async def github_webhook(
             await github_client.post_pr_comment(owner, repo_name, pr_number, help_text, installation_id)
             return {"status": "executed", "command": "help"}
 
-        # Check rate limiting early for @pr-agent test / check
+        # Early rate-limit check for @pr-agent test / check, so an expensive PR
+        # lookup is not performed for a request that will be rejected. This only
+        # READS the cooldown; the dispatch branch below is what records it. The
+        # previous version recorded it here too, then tripped over its own entry
+        # and the command could never run.
         if "@pr-agent test" in comment_body or "@pr-agent check" in comment_body:
             cooldown_key = f"{full_name}#{pr_number}:test"
-            now = time.time()
             last_run = _comment_command_cooldowns.get(cooldown_key, 0.0)
-            if now - last_run < COOLDOWN_WINDOW_SECONDS:
-                remaining = int(COOLDOWN_WINDOW_SECONDS - (now - last_run))
+            if time.time() - last_run < COOLDOWN_WINDOW_SECONDS:
+                remaining = int(COOLDOWN_WINDOW_SECONDS - (time.time() - last_run))
                 logger.warning(
                     "Rate limited @pr-agent test on %s #%s (wait %ds)",
                     full_name,
@@ -229,9 +232,8 @@ async def github_webhook(
                     "status": "rate_limited",
                     "reason": f"Please wait {remaining}s before dispatching another test run on this PR.",
                 }
-            _comment_command_cooldowns[cooldown_key] = now
 
-        # Acknowledge with reaction
+        # Acknowledge with reaction.
         try:
             await github_client.create_reaction(owner, repo_name, comment_id, "rocket", installation_id)
         except Exception:
@@ -297,8 +299,23 @@ async def github_webhook(
                         installation_id=installation_id,
                     )
 
-                    # Apply surgical replacement
-                    updated_text = apply_patch_to_text(current_text, patch)
+                    # Apply surgical replacement. `apply_patch_to_text` returns
+                    # `(text, applied)`; the tuple was being passed straight to
+                    # the Contents API, so every `@pr-agent apply` committed a
+                    # corrupted body and failed.
+                    updated_text, applied = apply_patch_to_text(current_text, patch)
+                    if not applied:
+                        logger.warning("Patch for %s did not match current content", patch.file_path)
+                        await github_client.post_pr_comment(
+                            owner,
+                            repo_name,
+                            pr_number,
+                            f"⚠️ The synthesized patch for `{patch.file_path}` no longer matches the "
+                            "current file (the file changed since the run). Re-run `@pr-agent test` to "
+                            "regenerate the fix.",
+                            installation_id,
+                        )
+                        return {"status": "patch_no_match", "file": patch.file_path}
 
                     # Commit change directly to the PR branch
                     commit_msg = f"fix(pr-agent): {patch.explanation} [skip-pr-agent]"
@@ -423,6 +440,70 @@ async def github_webhook(
                 trigger_type="bot_command",
             )
             return {"status": "test_queued", "job_id": job.id, "scope": scope, "sha": head_sha}
+
+        # Command: @pr-agent inspect <route>
+        # Advertised in the help text since the command table was written, but it
+        # had no handler at all. It now queues a run pinned to the requested
+        # route; the discovered-route allowlist still applies downstream.
+        inspect_match = re.search(r"@pr-agent\s+inspect\s+(\S+)", comment_body)
+        if inspect_match:
+            route = inspect_match.group(1).strip()
+            if not route.startswith("/"):
+                route = f"/{route}"
+
+            cooldown_key = f"{full_name}#{pr_number}:inspect"
+            now = time.time()
+            last_run = _comment_command_cooldowns.get(cooldown_key, 0.0)
+            if now - last_run < COOLDOWN_WINDOW_SECONDS:
+                remaining = int(COOLDOWN_WINDOW_SECONDS - (now - last_run))
+                return {
+                    "status": "rate_limited",
+                    "reason": f"Please wait {remaining}s before inspecting another route on this PR.",
+                }
+            _comment_command_cooldowns[cooldown_key] = now
+
+            check_run_id = await github_client.create_check_run(
+                owner=owner,
+                repo=repo_name,
+                head_sha=head_sha,
+                installation_id=installation_id,
+            )
+
+            async def _inspect_coro(job: Any) -> dict[str, Any]:
+                return await run_pipeline(
+                    owner=owner,
+                    repo=repo_name,
+                    branch=branch,
+                    base_branch=base_branch,
+                    sha=head_sha,
+                    pr_number=pr_number,
+                    check_run_id=check_run_id,
+                    installation_id=installation_id,
+                    intents=default_intent_store.get(branch, repo=full_name),
+                    scope="changed",
+                    test_type="functional",
+                    forced_routes=[route],
+                    run_id=job.id,
+                )
+
+            job = await default_job_queue.submit_job(
+                repo=full_name,
+                branch=branch,
+                sha=head_sha,
+                pipeline_coro_fn=_inspect_coro,
+                scope="changed",
+                test_type="functional",
+                trigger_type="bot_command",
+            )
+            await github_client.post_pr_comment(
+                owner,
+                repo_name,
+                pr_number,
+                f"🔎 On-demand inspection of `{route}` queued. It will be exercised in a real browser "
+                "and the result posted back here.",
+                installation_id,
+            )
+            return {"status": "inspect_queued", "route": route, "job_id": job.id, "sha": head_sha}
 
         return {"status": "unrecognized_command"}
 
@@ -550,6 +631,54 @@ async def github_webhook(
     # Debounce rapid pushes on the same branch via JobQueue
     default_job_queue.cancel_branch_jobs(full_name, branch, reason="New PR commit received")
 
+    # Per-repository automation policy: pause / silent / draft / bot controls.
+    # Record the PR row first so the dashboard can show a skipped PR and why,
+    # rather than silently omitting it.
+    from agent.projects.automation import load_automation, should_review
+
+    policy = load_automation(full_name)
+    author_login = pr.get("user", {}).get("login", "")
+    author_type = pr.get("user", {}).get("type", "user")
+    is_draft = bool(pr.get("draft"))
+
+    try:
+        from agent.db.pr_insights import default_pr_insight_store
+
+        default_pr_insight_store.upsert_pull_request(
+            repo_full_name=full_name,
+            pr_number=pr_number,
+            title=pr.get("title"),
+            author_login=author_login,
+            author_type="bot" if (author_type or "").lower() == "bot" else "user",
+            state="open",
+            is_draft=is_draft,
+            head_branch=branch,
+            base_branch=base_branch,
+            head_sha=head_sha,
+            html_url=pr.get("html_url"),
+            added_lines=pr.get("additions"),
+            removed_lines=pr.get("deletions"),
+            changed_files=pr.get("changed_files"),
+            opened_at=pr.get("created_at"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not record pull request row: %s", exc)
+
+    review, skip_reason = should_review(
+        policy,
+        is_draft=is_draft,
+        author_type=author_type,
+        author_login=author_login,
+    )
+    if not review:
+        logger.info("Skipping review of %s#%s: %s", full_name, pr_number, skip_reason)
+        return {
+            "status": "ignored",
+            "reason": skip_reason,
+            "repo": full_name,
+            "pr_number": pr_number,
+        }
+
     # Fetch captured intent events for this branch
     intents = default_intent_store.get(branch, repo=full_name)
     logger.info("Found %s captured intent events for branch '%s'", len(intents), branch)
@@ -579,6 +708,7 @@ async def github_webhook(
             installation_id=installation_id,
             intents=intents,
             run_id=job.id,
+            post_comments=policy.posts_to_github,
         )
 
     job = await default_job_queue.submit_job(

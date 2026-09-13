@@ -164,7 +164,7 @@ export function ExternalTestModal({ isOpen, onClose, onSuccess }: ExternalTestMo
                   <span>Functional + Vision</span>
                 </div>
                 <span className="text-[11px] text-slate-500">
-                  Includes multimodal visual defect detection via Gemini 3.5.
+                  Includes multimodal visual defect detection via Gemini 3.8 Flash.
                 </span>
               </button>
             </div>

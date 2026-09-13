@@ -36,7 +36,7 @@ Every AI agent in the platform is powered through the **AWS Strands Agents SDK**
 | Task Domain | Configured Model | Strands Provider | Why Selected |
 | :--- | :--- | :--- | :--- |
 | **Code Reasoning & Architecture** | **Claude Sonnet 4.6** (`claude-sonnet-4.6`) | `strands.models.anthropic.AnthropicModel` | Deep semantic code intelligence, understanding git diffs, downstream blast radius mapping, and synthesizing actionable remediation prompts. |
-| **Screenshot & Visual Inspection** | **Gemini 3.5 Flash-Lite** (`gemini-3.5-flash-lite`) | `strands.models.gemini.GeminiModel` | Multimodal visual leader for pixel-level visual regression detection, layout-shift spotting, and UI defect inspection from raw screenshot bytes. |
+| **Screenshot & Visual Inspection** | **Gemini 3.8 Flash** (`gemini-3.8-flash`) | `strands.models.gemini.GeminiModel` | Multimodal visual leader for pixel-level visual regression detection, layout-shift spotting, and UI defect inspection from raw screenshot bytes. |
 | **Browser Navigation & Exploration** | **Claude 4.5 Haiku** (`claude-haiku-4.5`) | `strands.models.anthropic.AnthropicModel` | Fast, low-latency, and cost-effective for DOM traversal, clicking, typing, and element-targeted scrolling without heavy reasoning overhead. |
 
 ---
@@ -82,6 +82,124 @@ Every AI agent in the platform is powered through the **AWS Strands Agents SDK**
 ├── .gitignore                # Root gitignore covering Python, Node.js, and artifacts
 └── README.md                 # System overview and quickstart guide
 ```
+
+---
+
+## 🧭 PR-Centric Verification Model
+
+The engine reports per **pull request**, not just per run, and every result is a
+structured, severity-ranked test case rather than a flat list of journey names.
+
+### Severity taxonomy
+
+Four actionable levels, defined once in `agent/src/agent/analyzer/severity.py`
+and used by the engine, the API and the dashboard:
+
+| Level | Meaning |
+| :--- | :--- |
+| `critical` | Blocks a core flow or risks data integrity — fix before merge |
+| `high` | Breaks an important feature or badly degrades the experience |
+| `medium` | Noticeable, but the user can still accomplish the goal |
+| `low` | Cosmetic, or an edge case with limited impact |
+
+A number is only ever reported when it was measured. An untested fleet has **no**
+bug-detection rate, an unreachable engine reports "not measured", and checks that
+are not implemented (payload fuzzing, keyboard traps, tab order, text overflow)
+report `null`/empty instead of a reassuring default.
+
+### Test cases and findings
+
+`agent/src/agent/runner/test_cases.py` derives, from the evidence the pipeline
+already collected:
+
+* one **test case** per executed journey — status, category (`happy_path`,
+  `logic`, `edge`, `adversarial`, `accessibility`, `mobile`, `visual`,
+  `navigation`), severity, impact, reproduction steps built from real
+  navigation events, code pointers, the seeded accounts and mocks that were
+  active, and its evidence (video, trace, screenshot, vitals, console errors);
+* one **finding** per failure, fingerprinted so the same issue keeps one
+  identity across runs and commits;
+* an **origin** for every case (`new`, `regression`, `still_broken_verified`,
+  `still_broken_inherited`, `carried_forward`, `fixed`) so a pre-existing bug is
+  never counted as a regression introduced by the change.
+
+Findings can be **dismissed** from the dashboard. The engine preserves the
+dismissal when it re-observes the issue, so a judged finding stops being
+reported.
+
+### Incremental reporting
+
+Each run is compared against the previous run for the same branch
+(`PRInsightStore.previous_test_cases`). That is what decides origin precisely:
+a case that passed last time and fails now is a **regression**, one that failed
+and now passes is **fixed**, and a case the diff did not touch is **carried
+forward** — listed, marked `verified_this_commit = false`, and never counted as
+a verified result for the current commit. A carried-forward failure does not
+raise a new finding (the existing one stays open from the run that verified it)
+and cannot turn the run red on its own.
+
+### Running on selected pull requests
+
+`/dashboard/pull-requests` → **Run on pull requests** lists the open PRs the
+GitHub App can see for an imported repository (`GET /api/github/pull-requests`,
+proxied to the engine's `GitHubAppClient.list_pull_requests`). Select up to ten
+and dispatch verification for each against its current head commit
+(`POST /api/pull-requests/run`). The selection is recorded in `pull_requests`
+first, so the PR appears in the dashboard even if the engine cannot be reached,
+and each run is queued by the engine rather than fired in parallel.
+
+### Saved tests (reusable suite)
+
+A run's test cases are a record of that run; saving one makes it part of the
+repository's regression suite. On a pull request's test cases, **Save as test**
+writes to `saved_tests` (`/api/tests`, managed at `/dashboard/tests`). Every
+enabled saved test is injected into each later run's plan as required coverage
+(`agent/src/agent/projects/saved_tests.py`), so a flow someone chose to protect
+keeps being exercised instead of only appearing in the run that discovered it.
+
+Saving is deliberately opt-in: a suite that grows automatically from every run
+becomes noise and stops being a signal.
+
+### Hardening
+
+* External runs (`POST /runs/external`) reject targets that resolve to a
+  private, loopback, link-local or cloud-metadata address. A self-hosted
+  deployment that genuinely verifies an app on its own network can set
+  `ALLOW_PRIVATE_EXTERNAL_TARGETS=true` (knowingly re-enabling SSRF).
+* The AgentCore `/invocations` shim requires the bearer token. Set
+  `AGENTCORE_TRUST_GATEWAY=true` only when a SigV4-authenticating gateway sits
+  in front of the engine.
+* Expensive endpoints are rate-limited: forced runs (10/min/repo), external runs
+  (6/min/target), copilot turns (20/min), plus per-user limits on the web
+  copilot, journey runner and checkout routes.
+
+### Per-repository automation
+
+`agent/src/agent/projects/automation.py` reads `projects.settings.automation`:
+
+* **mode** — `active` (review and post), `silent` (review, dashboard only),
+  `paused` (no automatic reviews);
+* **draft PRs**, **bot PRs**, and **comments** toggles;
+* `@pr-agent test|check`, `@pr-agent inspect <route>` and `@pr-agent apply`
+  comment commands for on-demand work.
+
+### Context & Secrets
+
+Per repository, `project_context` stores **variables**, **secrets** and **seed
+data**. Secrets are encrypted with AES-256-GCM (the same `v2:` format the engine
+and dashboard share) and are write-only: the API never returns the value.
+Variables and secrets are injected into the test container as environment
+variables; secret values are added to the run's redaction list so they cannot
+survive in an artifact, log or stored result. Seed data and variable names are
+passed to the planning agent; secret values are never placed in a prompt.
+
+### Data model
+
+Apply `supabase/migrations/20260913000000_pr_centric_model.sql` (or re-run
+`supabase/schema.sql`) to create `pull_requests`, `test_cases`, `findings`,
+`saved_tests`, `project_context`, `team_members` and `usage_events`. Until it is
+applied the new dashboard pages explain the missing-migration state instead of
+erroring.
 
 ---
 

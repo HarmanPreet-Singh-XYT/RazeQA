@@ -180,16 +180,18 @@ def resolve_model_name() -> str:
         DEFAULT_BEDROCK_CODE_MODEL,
         has_bedrock_credentials,
         is_bedrock_enabled,
+        normalize_model_id,
     )
 
     if is_bedrock_enabled() and has_bedrock_credentials():
         bedrock_id = os.environ.get("BEDROCK_CODE_MODEL") or DEFAULT_BEDROCK_CODE_MODEL
-        # Bedrock models in litellm use bedrock/<model_id>
-        return f"bedrock/{bedrock_id}"
+        # Bedrock models in litellm use bedrock/<model_id>. A deprecated id in
+        # the environment is upgraded rather than used as-is.
+        return normalize_model_id(f"bedrock/{bedrock_id}") or f"bedrock/{bedrock_id}"
 
     if os.environ.get("ANTHROPIC_API_KEY"):
         code_model = os.environ.get("CODE_MODEL_ID", "claude-sonnet-4.6")
-        return f"anthropic/{code_model}"
+        return normalize_model_id(f"anthropic/{code_model}") or f"anthropic/{code_model}"
 
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         gemini_model = os.environ.get("GEMINI_CODE_MODEL", "gemini-3.8-flash")
@@ -408,7 +410,13 @@ Important rules:
 
         instance_template = "{{task}}\n\nWorking Directory: {{cwd}}"
 
-        model_name = self.config.model_name or resolve_model_name()
+        # A model saved in project settings may name a model that has since been
+        # retired (e.g. Claude 3.5 Sonnet). Upgrade it on read so an existing
+        # project cannot keep calling a deprecated model.
+        from agent.models.factory import normalize_model_id
+
+        configured = normalize_model_id(self.config.model_name)
+        model_name = configured or resolve_model_name()
         logger.info("Instantiating AgenticRepairEngine with model: %s", model_name)
 
         try:

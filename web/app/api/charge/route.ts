@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
+import { checkRateLimit, getClientIdentifier } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +52,16 @@ export function validatePromoCode(code?: string, subtotal: number = 0) {
 }
 
 export async function POST(request: Request) {
+  // Public route: cap submissions so the demo checkout cannot be used to
+  // exhaust the server or upstream payment gateway quota.
+  const limit = checkRateLimit("charge", getClientIdentifier(request), 20, 60_000);
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { error: "RateLimitExceeded", message: "Too many checkout attempts. Please wait a moment." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(limit.resetMs / 1000)) } }
+    );
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const {

@@ -113,7 +113,9 @@ type ProjectItem = {
 };
 
 type RunHistoryItem = {
-  run_id: string;
+  /** Engine rows serialise the primary key as `id`; the DB fallback uses `run_id`. */
+  run_id?: string;
+  id?: string;
   repo: string;
   branch: string;
   sha: string;
@@ -125,6 +127,20 @@ type RunHistoryItem = {
   tokens_saved_estimate?: number;
   cost_saved_usd_estimate?: number;
 };
+
+//: Retired model ids that may still be stored in a project's settings. Shown as
+//: their current replacement so the selector never renders an unknown value.
+const DEPRECATED_MODEL_SELECTIONS: Record<string, string> = {
+  "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0": "bedrock/us.anthropic.claude-sonnet-4-6",
+  "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0": "bedrock/us.anthropic.claude-sonnet-4-6",
+  "anthropic/claude-3-5-sonnet-20241022": "anthropic/claude-sonnet-4.6",
+  "anthropic/claude-3-5-sonnet-latest": "anthropic/claude-sonnet-4.6",
+};
+
+function normalizeModelSelection(value: string | undefined | null): string {
+  if (!value) return "anthropic/claude-sonnet-4.6";
+  return DEPRECATED_MODEL_SELECTIONS[value] ?? value;
+}
 
 const SAFE_BUILD_BINARIES = [
   "npm",
@@ -1369,8 +1385,15 @@ export default function ProjectsClient() {
                     <tbody className="divide-y divide-slate-100">
                       {runHistory.map((run) => {
                         const shortSha = run.sha?.length > 7 ? run.sha.slice(0, 7) : (run.sha || "HEAD");
+                        const runKey = run.run_id || run.id;
+                        // Forensics belongs to this run, not to the fleet-wide
+                        // list; fall back to this project's runs when the row
+                        // carries no id to deep-link with.
+                        const forensicsHref = runKey
+                          ? `/dashboard/runs/${encodeURIComponent(runKey)}/analytics`
+                          : `/dashboard/runs?repo=${encodeURIComponent(selectedRepo)}`;
                         return (
-                          <tr key={run.run_id || run.sha} className="hover:bg-slate-50/80 transition-colors">
+                          <tr key={runKey || run.sha} className="hover:bg-slate-50/80 transition-colors">
                             <td className="py-2.5 font-mono text-slate-800 font-bold flex items-center gap-1.5">
                               <span>{shortSha}</span>
                               <button
@@ -1427,7 +1450,7 @@ export default function ProjectsClient() {
                             </td>
                             <td className="py-2.5 text-right">
                               <Link
-                                href={`/dashboard/runs`}
+                                href={forensicsHref}
                                 className="font-semibold text-emerald-700 hover:text-emerald-900 inline-flex items-center gap-1"
                               >
                                 <span>Forensics</span>
@@ -1576,7 +1599,7 @@ export default function ProjectsClient() {
                   <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-4 space-y-2">
                     <label className="text-xs font-bold text-slate-900 block">Preferred AI Repair Model</label>
                     <select
-                      value={settings.auto_repair?.model_name || "anthropic/claude-sonnet-4.6"}
+                      value={normalizeModelSelection(settings.auto_repair?.model_name)}
                       onChange={(e) =>
                         setSettings({
                           ...settings,
@@ -1590,7 +1613,7 @@ export default function ProjectsClient() {
                     >
                       <option value="anthropic/claude-sonnet-4.6">Claude Sonnet 4.6 (Recommended — Best Code Reasoning)</option>
                       <option value="gemini/gemini-3.8-flash">Google Gemini 3.8 Flash (High Speed, Cost Efficient)</option>
-                      <option value="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0">AWS Bedrock: Claude 3.5 Sonnet v2</option>
+                      <option value="bedrock/us.anthropic.claude-sonnet-4-6">AWS Bedrock: Claude Sonnet 4.6</option>
                     </select>
                     <p className="text-[10px] text-slate-500">
                       Used by mini-swe-agent to formulate bash operations, code edits, and compiler error resolution.
@@ -2295,7 +2318,11 @@ export default function ProjectsClient() {
                     {runDispatchResult.status === "cached" ? "Cache Hit! (Zero Token Burn)" : "Verification Dispatched"}
                   </span>
                   <Link
-                    href={`/dashboard/runs`}
+                    href={
+                      runDispatchResult.run_id
+                        ? `/dashboard/runs/${encodeURIComponent(runDispatchResult.run_id)}/analytics`
+                        : `/dashboard/runs?repo=${encodeURIComponent(selectedRepo)}`
+                    }
                     className="underline text-[11px] font-medium"
                   >
                     View Forensics &rarr;

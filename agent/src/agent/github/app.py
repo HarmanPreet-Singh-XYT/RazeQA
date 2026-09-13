@@ -219,6 +219,61 @@ class GitHubAppClient:
             res.raise_for_status()
             return res.json()
 
+    async def list_pull_requests(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        per_page: int = 50,
+        installation_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """List pull requests for a repository, most recently updated first.
+
+        Read-only discovery for the manual "pick PRs and run" flow. The payload
+        is normalized so the caller does not depend on GitHub's nesting.
+        """
+        if not self.token and not (self.app_id and self.private_key):
+            raise GitHubNotConfiguredError("GitHub credentials are required to list pull requests.")
+
+        headers = await self._get_auth_header(installation_id)
+        params = {
+            "state": state,
+            "per_page": max(1, min(per_page, 100)),
+            "sort": "updated",
+            "direction": "desc",
+        }
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(url, headers=headers, params=params)
+            res.raise_for_status()
+            payload = res.json()
+
+        pulls: list[dict[str, Any]] = []
+        for pr in payload if isinstance(payload, list) else []:
+            user = pr.get("user") or {}
+            head = pr.get("head") or {}
+            base = pr.get("base") or {}
+            pulls.append(
+                {
+                    "pr_number": pr.get("number"),
+                    "title": pr.get("title"),
+                    "author_login": user.get("login"),
+                    "author_type": user.get("type", "User"),
+                    "state": pr.get("state"),
+                    "is_draft": bool(pr.get("draft")),
+                    "head_branch": head.get("ref"),
+                    "head_sha": head.get("sha"),
+                    "base_branch": base.get("ref"),
+                    "html_url": pr.get("html_url"),
+                    "created_at": pr.get("created_at"),
+                    "updated_at": pr.get("updated_at"),
+                    "changed_files": pr.get("changed_files"),
+                    "additions": pr.get("additions"),
+                    "deletions": pr.get("deletions"),
+                }
+            )
+        return pulls
+
     async def get_file_content(
         self,
         owner: str,

@@ -124,14 +124,50 @@ export async function GET(request: Request) {
     if (!scope.includeUnowned) {
       query = query.in("project_id", scope.projectIds);
     }
+    // The engine honours `?repo=`; this fallback must too. Without it a
+    // project-scoped page showed every run in the tenant (each one stamped
+    // with the requested repo, so the client-side filter could not tell).
+    if (repoParam) {
+      const { data: repoProjects } = await admin
+        .from("projects")
+        .select("id")
+        .eq("repo_full_name", repoParam);
+      const repoProjectIds = (repoProjects || [])
+        .map((p: { id?: string }) => p.id)
+        .filter((id): id is string => Boolean(id));
+      if (repoProjectIds.length === 0) {
+        return NextResponse.json({
+          runs: [],
+          engineConnected: false,
+          git,
+          warning: "No stored runs for the requested repository.",
+        });
+      }
+      query = query.in("project_id", repoProjectIds);
+    }
     const { data: dbRuns, error: dbError } = await query;
     if (!dbError && dbRuns && dbRuns.length > 0) {
+      // Runs only store `project_id`; resolve the repo so the client can label
+      // and filter each run by its real project instead of a placeholder.
+      const runProjectIds = Array.from(
+        new Set(dbRuns.map((r: any) => r.project_id).filter(Boolean))
+      );
+      const repoByProjectId: Record<string, string> = {};
+      if (runProjectIds.length > 0) {
+        const { data: runProjects } = await admin
+          .from("projects")
+          .select("id, repo_full_name")
+          .in("id", runProjectIds);
+        for (const p of runProjects || []) {
+          if (p?.id) repoByProjectId[p.id] = p.repo_full_name;
+        }
+      }
       const mapped = dbRuns.map((r: any) => ({
         id: r.id,
         run_id: r.id,
         branch: r.branch,
         sha: r.sha,
-        repo: repoParam || "default",
+        repo: repoByProjectId[r.project_id] || repoParam || "default",
         scope: r.scope || "changed",
         test_type: r.test_type || "functional",
         status: r.status || "queued",

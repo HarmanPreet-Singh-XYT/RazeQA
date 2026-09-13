@@ -80,11 +80,12 @@ def test_resolve_model_name_bedrock():
         "AWS_REGION_NAME": "us-east-1",
         "AWS_ACCESS_KEY_ID": "AKIA123",
         "AWS_SECRET_ACCESS_KEY": "SECRET123",
-        "BEDROCK_CODE_MODEL": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "BEDROCK_CODE_MODEL": "us.anthropic.claude-sonnet-4-6",
     }):
         model = resolve_model_name()
-        assert model.startswith("bedrock/")
-        assert "claude" in model
+        # Bedrock models are addressed as bedrock/<model_id>. Assert the exact
+        # id: this used to be a deprecated Claude 3.5 Sonnet.
+        assert model == "bedrock/us.anthropic.claude-sonnet-4-6"
 
 
 def test_resolve_model_name_anthropic():

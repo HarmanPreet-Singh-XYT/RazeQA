@@ -40,6 +40,9 @@ import {
   HelpCircle,
   ArrowLeft,
   FolderGit2,
+  GitPullRequest,
+  KeyRound,
+  ListChecks,
 } from "lucide-react";
 import { logout } from "@/app/login/actions";
 import { useDashboard } from "./dashboard-context";
@@ -52,6 +55,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentTab = searchParams ? searchParams.get("tab") : null;
+  const urlRepoParam = searchParams ? searchParams.get("repo") : null;
   const {
     userEmail,
     activeRepo,
@@ -89,11 +93,18 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const projectName = activeRepo
-    ? activeRepo.split("/")[1] || activeRepo
-    : (projects[0]?.name || projects[0]?.repo_full_name?.split("/")[1] || "Workspace");
+  // The `repo` query param is authoritative for the page being viewed. The
+  // context value can lag a render behind when /dashboard/project?repo=… is
+  // opened directly (refresh, import redirect) or before the project list
+  // resolves. Reading only `activeRepo` there made "Test Runs" fall back to the
+  // fleet-wide list instead of the project the user was looking at.
+  const scopeRepo = urlRepoParam || activeRepo || projects[0]?.repo_full_name || "";
 
-  const activeProjectSlug = activeRepo || projects[0]?.repo_full_name || "";
+  const projectName = scopeRepo
+    ? scopeRepo.split("/")[1] || scopeRepo
+    : (projects[0]?.name || "Workspace");
+
+  const activeProjectSlug = scopeRepo;
 
   // External projects live in browser storage; the copilot needs their target
   // URL to be able to dispatch an audit for them.
@@ -118,7 +129,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
     return "Dashboard";
   };
 
-  const isExternalActive = Boolean(activeRepo?.startsWith("external:"));
+  const isExternalActive = Boolean(scopeRepo.startsWith("external:"));
 
   const isNavActive = (href: string) => {
     const [itemBase] = href.split("?");
@@ -140,34 +151,48 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
     return currentTab === targetTab;
   };
 
+  // Every project-level destination keeps the active project in view; only the
+  // overview pages (rendered below) are intentionally fleet-wide.
+  const scopeQuery = scopeRepo ? `?repo=${encodeURIComponent(scopeRepo)}` : "";
+
   const navPrimary = [
     {
-      href: `/dashboard/project${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      href: `/dashboard/pull-requests${scopeQuery}`,
+      label: "Pull Requests",
+      icon: GitPullRequest,
+    },
+    {
+      href: `/dashboard/tests${scopeQuery}`,
+      label: "Tests",
+      icon: ListChecks,
+    },
+    {
+      href: `/dashboard/project${scopeQuery}`,
       label: "Overview",
       icon: Home,
     },
     {
-      href: `/dashboard/runs${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      href: `/dashboard/runs${scopeQuery}`,
       label: "Test Runs",
       icon: Layers,
     },
     {
-      href: `/dashboard/tools${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      href: `/dashboard/tools${scopeQuery}`,
       label: "User Journeys",
       icon: Compass,
     },
     {
-      href: `/dashboard/logs${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      href: `/dashboard/logs${scopeQuery}`,
       label: "Execution Logs",
       icon: Terminal,
     },
     {
-      href: `/dashboard/analytics${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      href: `/dashboard/analytics${scopeQuery}`,
       label: "Quality Analytics",
       icon: BarChart3,
     },
     {
-      href: `/dashboard/projects${activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : ""}`,
+      href: `/dashboard/projects${scopeQuery}`,
       label: "Settings",
       icon: Settings,
     },
@@ -179,14 +204,15 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
           { href: "/dashboard/projects?tab=roles", label: "Test Personas", icon: Shield },
           { href: "/dashboard/projects?tab=auto-repair", label: "AI Auto-Repair", icon: Sparkles },
           { href: "/dashboard/projects?tab=env-vars", label: "Sandbox Secrets", icon: Sliders },
+          { href: "/dashboard/context", label: "Context & Secrets", icon: KeyRound },
+          { href: "/dashboard/automation", label: "Automation", icon: Workflow },
         ]
       : []),
     { href: "#agent", label: "Autonomous Agent", icon: Cpu, isAgentTrigger: true },
   ];
 
-  const repoQuery = searchParams ? searchParams.get("repo") : null;
   const isOverviewPage =
-    !repoQuery &&
+    !urlRepoParam &&
     (pathname === "/dashboard" ||
       pathname === "/dashboard/runs" ||
       pathname === "/dashboard/tools" ||
@@ -396,7 +422,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
         <AgentModal
           isOpen={isAgentModalOpen}
           onClose={() => setIsAgentModalOpen(false)}
-          activeRepo={activeRepo}
+          activeRepo={scopeRepo}
           targetUrl={activeTargetUrl}
         />
         <CommandPalette
@@ -670,7 +696,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                         Switch Project
                       </div>
                       {projects.map((p) => {
-                        const isCurrent = activeRepo === p.repo_full_name && pathname !== "/dashboard";
+                        const isCurrent = scopeRepo === p.repo_full_name && pathname !== "/dashboard";
                         return (
                           <button
                             key={p.repo_full_name}
@@ -789,8 +815,8 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
               {/* Help / Feedback */}
               <Link
                 href={
-                  activeRepo && !activeRepo.startsWith("external:")
-                    ? `https://github.com/${activeRepo}`
+                  scopeRepo && !scopeRepo.startsWith("external:")
+                    ? `https://github.com/${scopeRepo}`
                     : projects[0]?.repo_full_name && !projects[0].repo_full_name.startsWith("external:")
                     ? `https://github.com/${projects[0].repo_full_name}`
                     : "https://github.com"

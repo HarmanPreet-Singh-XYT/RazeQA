@@ -74,7 +74,17 @@ _SAFE_SHA = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class SandboxBootError(RuntimeError):
-    """Raised when a sandbox container fails to build, start, or become ready."""
+    """Raised when a sandbox container fails to build, start, or become ready.
+
+    ``step`` records which phase failed so the caller can report a build
+    failure, a dependency-install failure and an app that will not start as
+    distinct results instead of one opaque string. One of:
+    ``clone``, ``dependency_install``, ``build``, ``app_start``, ``provision``.
+    """
+
+    def __init__(self, message: str, step: str = "provision") -> None:
+        super().__init__(message)
+        self.step = step
 
 
 class CloneError(RuntimeError):
@@ -113,7 +123,12 @@ def _exec(container: str, shell_cmd: str, cwd: str = "/app", timeout: int = 600)
 def _raise_on_failure(step: str, result: subprocess.CompletedProcess, image_tag: str) -> None:
     if result.returncode != 0:
         output = (result.stdout or "") + (result.stderr or "")
-        raise SandboxBootError(f"{step} failed for {image_tag}: {output[-4000:]}")
+        # Normalize the human label into a machine-readable phase.
+        step_key = {
+            "dependency install": "dependency_install",
+            "build": "build",
+        }.get(step, step)
+        raise SandboxBootError(f"{step} failed for {image_tag}: {output[-4000:]}", step=step_key)
 
 
 def _validate_repo_inputs(owner: str, repo: str, sha: str, base_ref: str) -> None:
@@ -295,7 +310,8 @@ def _provision(container: str, image_tag: str) -> tuple[str, int]:
         # instead of a clear "this is not a Node project" signal.
         raise SandboxBootError(
             f"No package.json found at {build_dir} in container {container} "
-            f"(image_tag={image_tag}); cannot provision a Node project."
+            f"(image_tag={image_tag}); cannot provision a Node project.",
+            step="provision",
         )
 
     if config.package_manager != "npm":
@@ -378,7 +394,9 @@ def _wait_until_ready(base_url: str, timeout_s: float = 60.0) -> None:
         except httpx.HTTPError as exc:
             last_error = exc
         time.sleep(0.5)
-    raise SandboxBootError(f"Sandbox at {base_url} did not become ready within {timeout_s}s") from last_error
+    raise SandboxBootError(
+        f"Sandbox at {base_url} did not become ready within {timeout_s}s", step="app_start"
+    ) from last_error
 
 
 def start_sandbox(
@@ -430,7 +448,10 @@ def start_sandbox(
 
     started = _run(run_cmd, timeout=60)
     if started.returncode != 0:
-        raise SandboxBootError(f"docker run failed for {image_tag}: {(started.stderr or '').strip()}")
+        raise SandboxBootError(
+            f"docker run failed for {image_tag}: {(started.stderr or '').strip()}",
+            step="provision",
+        )
 
     try:
         clone_repo_into_container(
@@ -447,7 +468,8 @@ def start_sandbox(
         if detected_port not in container_ports:
             raise SandboxBootError(
                 f"Detected app port {detected_port} is not among the published ports "
-                f"{container_ports}; the sandbox cannot expose it."
+                f"{container_ports}; the sandbox cannot expose it.",
+                step="provision",
             )
         host_port = host_ports[container_ports.index(detected_port)]
         base_url = f"http://localhost:{host_port}"
@@ -458,7 +480,8 @@ def start_sandbox(
         )
         if launch_result.returncode != 0:
             raise SandboxBootError(
-                f"failed to launch app process for {image_tag}: {(launch_result.stderr or '')[-4000:]}"
+                f"failed to launch app process for {image_tag}: {(launch_result.stderr or '')[-4000:]}",
+                step="app_start",
             )
 
         try:
@@ -466,7 +489,8 @@ def start_sandbox(
         except SandboxBootError:
             log_tail = _exec(name, "cat /tmp/app.log 2>/dev/null | tail -c 4000")
             raise SandboxBootError(
-                f"Sandbox app failed to become ready for {image_tag}. App log tail:\n{log_tail.stdout}"
+                f"Sandbox app failed to become ready for {image_tag}. App log tail:\n{log_tail.stdout}",
+                step="app_start",
             ) from None
 
         return SandboxHandle(container_name=name, port=host_port, base_url=base_url)

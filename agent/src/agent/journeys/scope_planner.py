@@ -53,7 +53,7 @@ class TestingConfig(BaseModel):
 
     __test__ = False
 
-    testing_instructions: str = Field(default="", max_length=1000)
+    testing_instructions: str = Field(default="", max_length=4000)
     enable_login_flow: bool = True
     max_routes: int = Field(default=15, ge=1, le=50)
     max_steps: int = Field(default=5, ge=1, le=20)

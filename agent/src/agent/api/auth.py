@@ -20,8 +20,29 @@ from starlette.middleware.base import BaseHTTPMiddleware
 logger = logging.getLogger("agent.api.auth")
 
 # Routes that authenticate themselves via a different mechanism (GitHub HMAC
-# signature, AWS SigV4 gateway) or must be reachable for infra/AgentCore health checks.
-EXEMPT_PATHS = {"/health", "/ping", "/invocations", "/webhooks/github"}
+# signature) or must be reachable for infra health checks.
+# `/invocations` is deliberately NOT here: it is an AgentCore shim that can
+# trigger real work, so it requires the bearer token unless the operator
+# explicitly declares that the gateway authenticates upstream.
+EXEMPT_PATHS = {"/health", "/ping", "/webhooks/github"}
+
+#: AgentCore shim path, handled separately from the infra exemptions.
+INVOCATIONS_PATH = "/invocations"
+
+
+def _trust_invocations_gateway() -> bool:
+    """Whether ``/invocations`` may skip bearer auth.
+
+    Only for deployments where a SigV4-authenticating gateway sits in front of
+    the engine. Default off, because an open invoke endpoint that runs
+    diff analysis is an unauthenticated compute primitive.
+    """
+    return os.environ.get("AGENTCORE_TRUST_GATEWAY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _required_api_key() -> str | None:
@@ -44,6 +65,9 @@ def is_authorized(header_value: str | None) -> bool:
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path in EXEMPT_PATHS:
+            return await call_next(request)
+
+        if request.url.path == INVOCATIONS_PATH and _trust_invocations_gateway():
             return await call_next(request)
 
         if not _required_api_key():

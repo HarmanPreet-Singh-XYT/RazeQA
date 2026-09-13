@@ -23,10 +23,13 @@ from pydantic import BaseModel
 from agent.journeys.cursor_overlay import (
     annotate_cursor,
     click_with_cursor,
+    drift_cursor,
     fill_with_cursor,
     install_cursor_overlay,
     move_mouse_to,
+    move_mouse_to_link,
     move_mouse_to_locator,
+    natural_resting_point,
     restore_cursor,
     wheel_human,
 )
@@ -378,6 +381,15 @@ def scroll_through_page(page: Page) -> int:
         height, viewport = 0, 800
 
     step = max(200, viewport - 100)
+
+    # Put the pointer over the content before the sweep. Scrolling the page
+    # under a pointer parked in a corner (or never moved at all) is part of
+    # why replays read as a static screenshot.
+    try:
+        move_mouse_to(page, *natural_resting_point(page), steps=10)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not position cursor for scroll sweep: %s", exc)
+
     travelled = 0
     gestures = 0
     while travelled < height and gestures < MAX_SCROLL_GESTURES:
@@ -390,6 +402,11 @@ def scroll_through_page(page: Page) -> int:
             logger.debug("Wheel scroll stopped: %s", exc)
             break
         travelled += step
+        # A resting hand still drifts a little between gestures.
+        try:
+            drift_cursor(page, max_px=18.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not drift cursor between gestures: %s", exc)
         try:
             page.wait_for_timeout(random.randint(150, 380))
             if random.random() > 0.75:
@@ -1215,14 +1232,23 @@ def run_agentic_session(
             queue = [r for r in seed_routes if r]
             current_route = queue.pop(0) if queue else "/"
 
-            def _goto(route: str) -> bool:
+            def _goto(route: str, link_url: str | None = None) -> bool:
                 url = route if route.startswith(("http://", "https://")) else (
                     base_url.rstrip("/") + "/" + route.lstrip("/")
                 )
-                annotate_cursor(page, f"navigate to {route}")
-                move_mouse_to(page, 200, 160)
+                # Move onto the link being followed (or to a fresh resting
+                # point) *before* the document is replaced. Every navigation
+                # used to park the pointer on the same hardcoded pixel, so the
+                # replay showed one frozen arrow while whole pages changed
+                # underneath it.
+                if not move_mouse_to_link(page, link_url or url):
+                    move_mouse_to(page, *natural_resting_point(page))
                 page.goto(url, wait_until="domcontentloaded", timeout=15000)
                 restore_cursor(page)
+                # Caption *after* the navigation: the overlay document —
+                # captions included — is recreated on load, so a caption set
+                # before goto() was wiped before a viewer could ever see it.
+                annotate_cursor(page, f"navigate to {route}")
                 settle_page_for_capture(page)
                 restore_cursor(page)
                 return True
@@ -1292,7 +1318,7 @@ def run_agentic_session(
                             break
                         continue
                     try:
-                        _goto(picked)
+                        _goto(picked, link_url=picked)
                         current_route = urlparse(picked).path or "/"
                         notes.append({"url": picked, "did": "navigated", "saw": decision.note or "opened link"})
                         consecutive_failures = 0

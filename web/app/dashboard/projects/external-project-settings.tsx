@@ -701,7 +701,11 @@ export function ExternalProjectSettings({
                         {r.status || "completed"}
                       </span>
                       <a
-                        href="/dashboard/runs"
+                        href={
+                          r.id || r.run_id
+                            ? `/dashboard/runs/${encodeURIComponent(r.id || r.run_id)}/analytics`
+                            : `/dashboard/runs?repo=${encodeURIComponent(selectedRepo)}`
+                        }
                         className="text-slate-400 hover:text-slate-700 p-1"
                         title="View run forensics"
                       >

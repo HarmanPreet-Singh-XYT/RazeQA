@@ -125,6 +125,36 @@ def _aes256_key(configured: bytes) -> bytes:
     return hashlib.sha256(configured).digest()
 
 
+#: One shared cipher for standalone field values (per-repository secrets stored
+#: in `project_context`). The dashboard writes these values with the identical
+#: `v2:` AES-256-GCM format, so a secret saved in the UI decrypts here without a
+#: second key or a round trip.
+_field_cipher: AESGCM | None = None
+
+
+def _field_crypto() -> AESGCM:
+    global _field_cipher
+    if _field_cipher is None:
+        _field_cipher = AESGCM(_aes256_key(_load_key()))
+    return _field_cipher
+
+
+def encrypt_field(plaintext: str) -> str:
+    """Encrypt one value to the portable ``v2:<base64(nonce||ct||tag)>`` form."""
+    nonce = os.urandom(_NONCE_BYTES)
+    blob = _field_crypto().encrypt(nonce, plaintext.encode(), None)
+    return AES_GCM_PREFIX.decode() + base64.b64encode(nonce + blob).decode()
+
+
+def decrypt_field(ciphertext: str) -> str:
+    """Decrypt a value written by :func:`encrypt_field` (or the dashboard)."""
+    if not ciphertext or not ciphertext.startswith(AES_GCM_PREFIX.decode()):
+        raise CredentialDecryptionError("Unsupported secret encoding; expected a v2: payload.")
+    payload = base64.b64decode(ciphertext[len(AES_GCM_PREFIX) :])
+    nonce, blob = payload[:_NONCE_BYTES], payload[_NONCE_BYTES:]
+    return _field_crypto().decrypt(nonce, blob, None).decode()
+
+
 class CredentialStore:
     def __init__(self, path: Path = DEFAULT_STORE_PATH) -> None:
         self._path = path

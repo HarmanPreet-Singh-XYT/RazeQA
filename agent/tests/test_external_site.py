@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.server
+import os
 import threading
 from pathlib import Path
 
@@ -60,7 +61,11 @@ class _ExternalTestServerHandler(http.server.BaseHTTPRequestHandler):
 
 
 @pytest.fixture(scope="module")
-def external_test_server():
+def external_test_server(monkeypatch_module=None):
+    # The external-target guard blocks loopback by default. These tests
+    # deliberately exercise a local server, so they opt in explicitly — the same
+    # switch a self-hosted operator would set to verify an app on their network.
+    os.environ["ALLOW_PRIVATE_EXTERNAL_TARGETS"] = "true"
     server = http.server.HTTPServer(("127.0.0.1", 0), _ExternalTestServerHandler)
     host, port = server.server_address
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -68,6 +73,7 @@ def external_test_server():
     base_url = f"http://{host}:{port}"
     yield base_url
     server.shutdown()
+    os.environ.pop("ALLOW_PRIVATE_EXTERNAL_TARGETS", None)
 
 
 @pytest.mark.asyncio

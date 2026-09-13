@@ -3,13 +3,13 @@
 Supports:
 1. Dynamic Single/Multi-Provider Architecture:
    - AWS Bedrock: When USE_BEDROCK=true (or running on AWS without direct keys), routes to BedrockModel.
-     (Code reasoning defaults to us.anthropic.claude-sonnet-4-5-20250929-v1:0,
-      vision to us.anthropic.claude-sonnet-4-5-20250929-v1:0,
+     (Code reasoning defaults to us.anthropic.claude-sonnet-4-6,
+      vision to us.anthropic.claude-sonnet-4-6,
       nav to us.anthropic.claude-haiku-4-5-20251001-v1:0).
    - Google Gemini: If only GEMINI_API_KEY (or GOOGLE_API_KEY) exists: All roles use Google Gemini models.
-     (Code reasoning defaults to gemini-3.8-flash, vision to gemini-3.5-flash-lite, nav to gemini-3.5-flash).
+     (All roles default to gemini-3.8-flash.)
    - Anthropic Claude: If only ANTHROPIC_API_KEY exists: All roles use Anthropic Claude models.
-     (Code reasoning defaults to claude-sonnet-5, vision to claude-sonnet-5, nav to claude-haiku-4.5).
+     (Code reasoning defaults to claude-sonnet-4.6, vision to claude-sonnet-4.6, nav to claude-haiku-4.5).
    - Both keys exist:
      - When ENABLE_MULTI_MODEL=true: Specializes across models (Claude for code/nav, Gemini for vision).
      - When ENABLE_MULTI_MODEL=false (default): Unifies under single primary provider (DEFAULT_AI_PROVIDER).
@@ -54,6 +54,49 @@ DEFAULT_BEDROCK_VISION_MODEL = os.environ.get(
 DEFAULT_BEDROCK_NAV_MODEL = os.environ.get(
     "BEDROCK_NAV_MODEL", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
+
+#: Retired or deprecated model ids mapped to their current replacement. A
+#: project whose saved settings still hold one of these must not keep calling a
+#: deprecated model — the value is upgraded on read rather than silently used.
+DEPRECATED_MODEL_ALIASES: dict[str, str] = {
+    # Claude 3.5 Sonnet (retired): Bedrock first, then the direct Anthropic ids.
+    "anthropic.claude-3-5-sonnet-20241022-v2:0": "us.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "us.anthropic.claude-sonnet-4-6",
+    "anthropic.claude-3-5-sonnet-20240620-v1:0": "us.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-3-5-sonnet-20240620-v1:0": "us.anthropic.claude-sonnet-4-6",
+    "claude-3-5-sonnet-latest": "claude-sonnet-4.6",
+    "claude-3-5-sonnet-20240620": "claude-sonnet-4.6",
+    "claude-3-5-sonnet-20241022": "claude-sonnet-4.6",
+    # Other retired Claude 3.x models.
+    "claude-3-5-haiku-20241022": "claude-haiku-4.5",
+    "claude-3-haiku-20240307": "claude-haiku-4.5",
+    "claude-3-opus-20240229": "claude-sonnet-4.6",
+    "claude-3-sonnet-20240229": "claude-sonnet-4.6",
+}
+
+
+def normalize_model_id(model_id: str | None) -> str | None:
+    """Upgrade a deprecated model id to its current equivalent.
+
+    The provider prefix is preserved, so ``bedrock/anthropic.claude-3-5-…``
+    becomes ``bedrock/us.anthropic.claude-sonnet-4-6`` while
+    ``anthropic/claude-3-5-…`` becomes ``anthropic/claude-sonnet-4.6``.
+    """
+    if not model_id:
+        return model_id
+    candidate = model_id.strip()
+    direct = DEPRECATED_MODEL_ALIASES.get(candidate.lower())
+    if direct:
+        return direct
+    if "/" in candidate:
+        provider, _, model = candidate.partition("/")
+        replacement = DEPRECATED_MODEL_ALIASES.get(model.strip().lower())
+        if replacement:
+            # A Bedrock model id must carry its inference-profile prefix.
+            if provider.strip().lower() == "bedrock" and not replacement.startswith("us."):
+                replacement = f"us.{replacement}"
+            return f"{provider}/{replacement}"
+    return candidate
 
 
 class ModelRole(str, Enum):

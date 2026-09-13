@@ -146,6 +146,11 @@ export function AgentModal({
       ? activeRepo?.replace("external:", "")
       : activeRepo?.split("/")[1] || activeRepo) || "Active Project";
 
+  // The copilot is scoped to one project, so its run links must be too.
+  const runsHref = activeRepo
+    ? `/dashboard/runs?repo=${encodeURIComponent(activeRepo)}`
+    : "/dashboard/runs";
+
   const [input, setInput] = useState("");
   const [isThinking, setIsThinking] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -436,7 +441,7 @@ export function AgentModal({
                       <button
                         onClick={() => {
                           onClose();
-                          window.location.href = `/dashboard/runs`;
+                          window.location.href = runsHref;
                         }}
                         className="text-emerald-700 hover:underline font-semibold cursor-pointer"
                       >
@@ -536,7 +541,7 @@ export function AgentModal({
             Answers use this project&apos;s saved settings and recorded runs only.
           </span>
           <a
-            href="/dashboard/runs"
+            href={runsHref}
             className="ml-auto inline-flex items-center gap-0.5 hover:text-slate-600"
           >
             Activity &amp; Runs

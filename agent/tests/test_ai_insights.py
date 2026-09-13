@@ -34,7 +34,9 @@ def test_ai_analyst_interactive_query():
     # Test checkout query
     res_checkout = engine.answer_query("Why did checkout fail?", metrics, [])
     assert "checkout" in res_checkout["answer"].lower()
-    assert res_checkout["confidence"] > 0.8
+    # These answers are produced by deterministic rules, not a calibrated model,
+    # so no confidence is reported rather than an invented 0.9.
+    assert res_checkout["confidence"] is None
     assert len(res_checkout["suggested_actions"]) > 0
 
     # Test security query

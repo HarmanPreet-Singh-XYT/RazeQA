@@ -125,6 +125,122 @@ def test_mouse_exactly_one_attempt_at_target_and_within_viewport():
     assert moves[-1] == (300, 200), "final position must be the exact target"
 
 
+def test_cursor_caption_travels_with_the_pointer():
+    """Callers label an action *before* gliding to it, so the caption must
+    follow the cursor rather than stay behind at the old position."""
+    page = _OverlayPage()
+    from agent.journeys.cursor_overlay import install_cursor_overlay
+
+    install_cursor_overlay(page)
+
+    script = page.init_scripts[0]
+    move_body = script.split("move(x, y) {", 1)[1].split("},", 1)[0]
+    assert "caption.style.left" in move_body
+    assert "caption.style.top" in move_body
+
+
+class _MotionPage:
+    """Fake page with a real viewport and a recording mouse."""
+
+    def __init__(self, box=None, scroll_height: int = 0) -> None:
+        self.box = box
+        self._scroll_height = scroll_height
+        self.viewport_size = {"width": 1280, "height": 720}
+        self.moves: list[tuple[float, float]] = []
+        self.wheels: list[tuple[int, int]] = []
+        self.mouse = SimpleNamespace(move=self._move, wheel=self._wheel)
+
+    def _move(self, x: float, y: float) -> None:
+        self.moves.append((x, y))
+
+    def _wheel(self, x: int, y: int) -> None:
+        self.wheels.append((x, y))
+
+    def wait_for_timeout(self, _ms: int) -> None:
+        return None
+
+    def evaluate(self, script: str, arg=None):
+        if "querySelectorAll('a[href]')" in script:
+            return self.box
+        if "scrollHeight" in script and "viewport" in script:
+            return {"height": self._scroll_height, "viewport": 800}
+        if "overflowY" in script:
+            return []
+        return None
+
+
+def test_resting_points_vary_and_stay_inside_the_viewport():
+    page = _MotionPage()
+    from agent.journeys.cursor_overlay import natural_resting_point
+
+    points = [natural_resting_point(page) for _ in range(40)]
+
+    assert len(set(points)) > 1, "a constant resting point is what froze the replay"
+    assert all(0 <= x <= 1280 and 0 <= y <= 720 for x, y in points)
+
+
+def test_move_mouse_to_link_glides_onto_the_anchor():
+    page = _MotionPage(box={"x": 100, "y": 40, "width": 80, "height": 20})
+    from agent.journeys.cursor_overlay import move_mouse_to_link
+
+    assert move_mouse_to_link(page, "http://localhost:3000/about") is True
+    end_x, end_y = page.moves[-1]
+    assert 100 <= end_x <= 180 and 40 <= end_y <= 60, "did not land on the link"
+
+
+def test_move_mouse_to_link_reports_when_there_is_no_anchor():
+    page = _MotionPage(box=None)
+    from agent.journeys.cursor_overlay import move_mouse_to_link
+
+    assert move_mouse_to_link(page, "http://localhost:3000/missing") is False
+    assert page.moves == []
+
+
+def test_move_mouse_to_link_ignores_links_scrolled_out_of_view():
+    """A link above the fold has a negative viewport y; gliding to it would
+    park the overlay cursor off-screen until the next action."""
+    from agent.journeys.cursor_overlay import _LINK_BOX_SCRIPT
+
+    assert "getBoundingClientRect" in _LINK_BOX_SCRIPT
+    assert "innerHeight" in _LINK_BOX_SCRIPT and "innerWidth" in _LINK_BOX_SCRIPT
+
+
+def test_move_mouse_to_link_keeps_the_pointer_on_screen():
+    page = _MotionPage(box={"x": -200, "y": -300, "width": 400, "height": 600})
+    from agent.journeys.cursor_overlay import move_mouse_to_link
+
+    assert move_mouse_to_link(page, "http://localhost:3000/top") is True
+    x, y = page.moves[-1]
+    assert 0 <= x <= 1280 and 0 <= y <= 720, f"pointer parked off-screen at {(x, y)}"
+
+
+def test_drift_cursor_never_leaves_the_viewport():
+    page = _MotionPage()
+    from agent.journeys.cursor_overlay import drift_cursor, move_mouse_to
+
+    move_mouse_to(page, 1270, 710)
+    for _ in range(25):
+        drift_cursor(page, max_px=60)
+        x, y = page.moves[-1]
+        assert 12 <= x <= 1268
+        assert 12 <= y <= 708
+
+
+def test_scroll_sweep_moves_the_pointer_not_just_the_page():
+    """The wheel sweep used to run with the cursor welded in place, so a long
+    scroll read as a static screenshot moving under a frozen arrow."""
+    page = _MotionPage(scroll_height=2600)
+    from agent.journeys.browser_agent import scroll_through_page
+
+    gestures = scroll_through_page(page)
+
+    assert gestures >= 3
+    assert page.moves, "the scroll sweep never moved the pointer"
+    assert len(set(page.moves)) > 3, "pointer was effectively welded in place"
+    # Cursor movement must not replace the gliding wheel gestures.
+    assert len(page.wheels) > gestures * 5
+
+
 # ---------------------------------------------------------------------------
 # Adaptive budget
 # ---------------------------------------------------------------------------
@@ -171,13 +287,20 @@ class _AgentPage:
     def __init__(self) -> None:
         self.url = "http://localhost:3000/"
         self.viewport_size = {"width": 1280, "height": 720}
-        self.mouse = SimpleNamespace(move=lambda *a, **k: None, wheel=lambda *a, **k: None,
+        self.mouse = SimpleNamespace(move=self._move, wheel=lambda *a, **k: None,
                                      down=lambda: None, up=lambda: None)
         self.keyboard = SimpleNamespace(press=lambda *a, **k: None, type=lambda *a, **k: None)
         self.video = None
         self.goto_calls: list[str] = []
+        # Pointer position at the moment each navigation started, and the raw
+        # stream of move() calls, so tests can prove the cursor actually moved.
+        self.mouse_moves: list[tuple[float, float]] = []
+        self.cursor_at_goto: list[tuple[float, float] | None] = []
         self.clicked: list[str] = []
         self.typed: list[tuple[str, str]] = []
+
+    def _move(self, x: float, y: float) -> None:
+        self.mouse_moves.append((x, y))
 
     def add_init_script(self, script: str) -> None:
         return None
@@ -187,6 +310,7 @@ class _AgentPage:
 
     def goto(self, url: str, **_kwargs) -> None:
         self.goto_calls.append(url)
+        self.cursor_at_goto.append(self.mouse_moves[-1] if self.mouse_moves else None)
         self.url = url
 
     def content(self) -> str:
@@ -397,6 +521,29 @@ def test_agent_session_follows_a_link_it_discovered(tmp_path: Path):
     )
     assert any("http://localhost:3000/about" in call for call in page.goto_calls)
     assert "/about" in result["pages_visited"]
+
+
+def test_every_navigation_moves_the_cursor_to_a_new_place(tmp_path: Path):
+    """Regression: _goto used to move the pointer to the same hardcoded pixel
+    on every navigation, so the replayed cursor sat frozen while pages changed
+    underneath it — the recording looked like a slideshow with a stuck arrow."""
+    result, page = _run_session(
+        [
+            ba.AgentAction(action_type="goto", url="http://localhost:3000/about"),
+            ba.AgentAction(action_type="goto", url="http://localhost:3000/about"),
+            ba.AgentAction(action_type="goto", url="http://localhost:3000/about"),
+            ba.AgentAction(action_type="done"),
+        ],
+        tmp_path,
+    )
+
+    # One position recorded per navigation (the initial seed plus three gotos).
+    parked = [pos for pos in page.cursor_at_goto if pos is not None]
+    assert len(parked) >= 4, f"expected a pointer position per navigation, got {parked}"
+    assert all(pos != (200.0, 160.0) for pos in parked), "hardcoded parking spot returned"
+    assert len(set(parked)) == len(parked), f"cursor parked on the same pixel twice: {parked}"
+    assert all(0 <= x <= 1280 and 0 <= y <= 720 for x, y in parked)
+    assert result["steps_used"] == 4
 
 
 def test_agent_session_stops_after_repeated_failures(tmp_path: Path):

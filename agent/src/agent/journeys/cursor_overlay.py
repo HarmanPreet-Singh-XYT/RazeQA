@@ -120,6 +120,14 @@ _CURSOR_OVERLAY_SCRIPT = r"""
       move(x, y) {
         el.style.left = x + 'px';
         el.style.top = y + 'px';
+        // The caption is anchored to the pointer, so it has to travel with
+        // it. Callers label the action *before* gliding to the target, and a
+        // caption that stayed at the old position read as detached from the
+        // cursor it was describing.
+        if (caption.classList.contains('__qa-on')) {
+          caption.style.left = x + 'px';
+          caption.style.top = y + 'px';
+        }
         writePos(x, y);
       },
       press() { el.style.transform = 'translate(-4px, -2px) scale(.86)'; },
@@ -227,7 +235,7 @@ def restore_cursor(page: Page) -> None:
 
 def _get_last_position(page: Page) -> tuple[float, float]:
     if page not in _last_position:
-        viewport = page.viewport_size or {"width": 1280, "height": 720}
+        viewport = _viewport_size(page)
         _last_position[page] = (viewport["width"] / 2, viewport["height"] / 2)
     return _last_position[page]
 
@@ -236,19 +244,115 @@ def _set_last_position(page: Page, x: float, y: float) -> None:
     _last_position[page] = (x, y)
 
 
-def _locator_center(locator: Locator) -> tuple[float, float] | None:
-    box = locator.bounding_box()
-    if not box:
-        return None
-    # Slight jitter within the element so repeated clicks on the same target
-    # don't land on the exact same pixel every time — closer to how a human
-    # never clicks the literal geometric center.
+def _viewport_size(page: Page) -> dict[str, float]:
+    """The page's viewport, with a sane fallback for fakes and odd targets."""
+    viewport = getattr(page, "viewport_size", None)
+    if not isinstance(viewport, dict) or not viewport.get("width") or not viewport.get("height"):
+        return {"width": 1280.0, "height": 720.0}
+    return {"width": float(viewport["width"]), "height": float(viewport["height"])}
+
+
+def _clamp_to_viewport(page: Page, x: float, y: float) -> tuple[float, float]:
+    """A pointer cannot leave the display; the overlay cursor can, and then it
+    vanishes. Keep every sampled point inside the frame."""
+    viewport = _viewport_size(page)
+    return (
+        min(max(x, 0.0), viewport["width"] - 1.0),
+        min(max(y, 0.0), viewport["height"] - 1.0),
+    )
+
+
+def _box_center(box: dict[str, float]) -> tuple[float, float]:
+    """The (jittered) center of a bounding box.
+
+    Slight jitter within the element so repeated clicks on the same target
+    don't land on the exact same pixel every time — closer to how a human
+    never clicks the literal geometric center.
+    """
     jitter_x = box["width"] * random.uniform(-0.15, 0.15)
     jitter_y = box["height"] * random.uniform(-0.15, 0.15)
     return (
         box["x"] + box["width"] / 2 + jitter_x,
         box["y"] + box["height"] / 2 + jitter_y,
     )
+
+
+def _locator_center(locator: Locator) -> tuple[float, float] | None:
+    box = locator.bounding_box()
+    if not box:
+        return None
+    return _box_center(box)
+
+
+_LINK_BOX_SCRIPT = """(target) => {
+  const anchors = Array.from(document.querySelectorAll('a[href]'));
+  const hit = anchors.find((a) => {
+    try { return new URL(a.href, location.href).href === target; }
+    catch (e) { return a.href === target; }
+  });
+  if (!hit) return null;
+  const rect = hit.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  // Only aim at a link a person could actually see. A link scrolled above
+  // the fold has a negative viewport y, and gliding to it would park the
+  // overlay cursor off-screen (where it stays until the next move).
+  const margin = 8;
+  if (rect.bottom < margin || rect.top > window.innerHeight - margin) return null;
+  if (rect.right < margin || rect.left > window.innerWidth - margin) return null;
+  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+}"""
+
+
+def move_mouse_to_link(page: Page, url: str, steps: int = 14) -> bool:
+    """Glide onto the on-page link that points at ``url``.
+
+    A person navigating to another page moves the pointer onto the link before
+    the document changes. Returns False when no matching, measurable anchor
+    exists so the caller can fall back to a resting position.
+    """
+    if not url:
+        return False
+    try:
+        box = page.evaluate(_LINK_BOX_SCRIPT, url)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not locate link %s: %s", url, exc)
+        return False
+    if not box:
+        return False
+    try:
+        x, y = _box_center(box)
+    except (KeyError, TypeError):
+        return False
+    move_mouse_to(page, x, y, steps=steps)
+    return True
+
+
+def natural_resting_point(page: Page) -> tuple[float, float]:
+    """A plausible place for a hand to leave the pointer on this viewport.
+
+    Used when there is no specific target: a *different* point each time, so
+    consecutive navigations don't park the cursor on the same pixel. A fixed
+    coordinate is exactly what made session replays look like a screenshot
+    with pages changing underneath a frozen arrow.
+    """
+    viewport = _viewport_size(page)
+    return (
+        random.uniform(viewport["width"] * 0.16, viewport["width"] * 0.84),
+        random.uniform(viewport["height"] * 0.20, viewport["height"] * 0.58),
+    )
+
+
+def drift_cursor(page: Page, max_px: float = 26.0, steps: int = 6) -> None:
+    """Nudge the pointer a few pixels so it never looks welded in place.
+
+    Real hands are never perfectly still; a long scroll gesture with a pointer
+    that never moves is what makes a recording read as a static screenshot.
+    """
+    start_x, start_y = _get_last_position(page)
+    viewport = _viewport_size(page)
+    target_x = min(max(start_x + random.uniform(-max_px, max_px), 12.0), viewport["width"] - 12.0)
+    target_y = min(max(start_y + random.uniform(-max_px, max_px), 12.0), viewport["height"] - 12.0)
+    move_mouse_to(page, target_x, target_y, steps=steps)
 
 
 def _ease_in_out(t: float) -> float:
@@ -305,10 +409,12 @@ def move_mouse_to(page: Page, x: float, y: float, steps: int = 14) -> None:
     """
     start = _get_last_position(page)
     for px, py in human_path(start, (x, y), steps=steps):
+        px, py = _clamp_to_viewport(page, px, py)
         page.mouse.move(px, py)
         _cursor_move(page, px, py)
         # Variable inter-sample delay, with an occasional longer hesitation.
         page.wait_for_timeout(random.randint(6, 16) if random.random() > 0.15 else random.randint(25, 70))
+    x, y = _clamp_to_viewport(page, x, y)
     page.mouse.move(x, y)
     _cursor_move(page, x, y)
     _set_last_position(page, x, y)

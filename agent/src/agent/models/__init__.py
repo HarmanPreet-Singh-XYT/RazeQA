@@ -1,10 +1,10 @@
 """Multi-Model Strategy via AWS Strands Agents SDK.
 
 Separates models by specialized usecase with dynamic provider fallbacks:
-- AWS Bedrock: Claude Sonnet / Haiku deployed on AWS with IAM auth
-- Code Reasoning: Claude Sonnet 5 (Anthropic) or Gemini 3.8 Flash (Google)
-- Visual Inspection: Gemini 3.5 Flash-Lite (Google) or Claude Sonnet 5 (Anthropic)
-- Browser Navigation: Claude Haiku 4.5 (Anthropic) or Gemini 3.5 Flash (Google)
+- AWS Bedrock: Claude Sonnet 4.6 / Haiku 4.5 deployed on AWS with IAM auth
+- Code Reasoning: Claude Sonnet 4.6 (Anthropic) or Gemini 3.8 Flash (Google)
+- Visual Inspection: Gemini 3.8 Flash (Google) or Claude Sonnet 4.6 (Anthropic)
+- Browser Navigation: Claude Haiku 4.5 (Anthropic) or Gemini 3.8 Flash (Google)
 """
 
 from agent.models.factory import (
@@ -32,6 +32,7 @@ from agent.models.factory import (
     is_aws_environment,
     is_bedrock_enabled,
     is_multi_model_enabled,
+    normalize_model_id,
     resolve_model_id,
 )
 
@@ -60,5 +61,6 @@ __all__ = [
     "is_aws_environment",
     "is_bedrock_enabled",
     "is_multi_model_enabled",
+    "normalize_model_id",
     "resolve_model_id",
 ]

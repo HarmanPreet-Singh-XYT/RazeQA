@@ -1,8 +1,19 @@
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { getTestUser } from "@/lib/auth";
+import { checkRateLimit, getClientIdentifier } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
+  // This route performs several server-side fetches and optionally a seeded
+  // sign-in; cap it so it cannot be used to hammer the app under test.
+  const limit = checkRateLimit("run-journey", getClientIdentifier(request), 10, 60_000);
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { error: "Rate limit exceeded. Please wait before running another journey." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(limit.resetMs / 1000)) } }
+    );
+  }
+
   const body = await request.json().catch(() => ({}));
   const simulateFailure = Boolean(body.simulateFailure);
   const startTime = Date.now();

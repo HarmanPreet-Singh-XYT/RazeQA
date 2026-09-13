@@ -76,6 +76,55 @@ async def list_repo_commits(
         raise HTTPException(status_code=500, detail=f"Failed to list commits: {exc}") from exc
 
 
+@router.get("/pull-requests")
+async def list_repo_pull_requests(
+    repo: str,
+    state: str = "open",
+    per_page: int = 50,
+    installation_id: int | None = None,
+) -> dict[str, Any]:
+    """List pull requests for a repository so a user can pick which to verify.
+
+    Read-only: this never creates a project or dispatches a run. The caller
+    selects from the result and then triggers a run per selected PR.
+    """
+    if "/" not in repo:
+        raise HTTPException(status_code=400, detail="repo must be in 'owner/repository' form.")
+
+    owner, name = repo.split("/", 1)
+    if not owner or not name:
+        raise HTTPException(status_code=400, detail="repo must be in 'owner/repository' form.")
+
+    allowed_states = {"open", "closed", "all"}
+    if state not in allowed_states:
+        raise HTTPException(status_code=400, detail=f"state must be one of {sorted(allowed_states)}.")
+
+    client = GitHubAppClient()
+    try:
+        pulls = await client.list_pull_requests(
+            owner=owner,
+            repo=name,
+            state=state,
+            per_page=per_page,
+            installation_id=installation_id,
+        )
+        return {"repo": repo, "state": state, "pull_requests": pulls, "count": len(pulls)}
+    except GitHubNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        detail = (
+            "GitHub denied access to this repository's pull requests. Confirm the App "
+            "is installed on it."
+            if status in (401, 403, 404)
+            else f"GitHub returned {status} while listing pull requests."
+        )
+        raise HTTPException(status_code=502 if status >= 500 else status, detail=detail) from exc
+    except Exception as exc:
+        logger.error("Failed to list pull requests for %s: %s", repo, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to list pull requests: {exc}") from exc
+
+
 @router.post("/sync")
 async def sync_github_app_repos() -> dict[str, Any]:
     """Fetch all installed repositories from GitHub App and catalogue them in Supabase.
