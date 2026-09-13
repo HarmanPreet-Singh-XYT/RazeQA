@@ -52,7 +52,13 @@ GENERATED_ARTIFACT_DIRS = frozenset(
 
 def is_generated_or_dependency_artifact(path: str) -> bool:
     """True when a path is a dependency lockfile or generated/build output."""
-    cleaned = (path or "").replace("\\", "/").strip().lstrip("./")
+    cleaned = (path or "").replace("\\", "/").strip()
+    # Strip leading "/" and "./" segments without lstrip("./"), which also eats
+    # the leading dot of a dotfile: a root-level ".next/trace" was normalised to
+    # "next/trace" and therefore never matched the ".next" output directory.
+    cleaned = cleaned.lstrip("/")
+    while cleaned.startswith("./"):
+        cleaned = cleaned[2:]
     if not cleaned:
         return False
     if cleaned.rsplit("/", 1)[-1] in GENERATED_ARTIFACT_BASENAMES:

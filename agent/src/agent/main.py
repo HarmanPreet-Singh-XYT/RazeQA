@@ -20,6 +20,7 @@ from agent.api.bridge import router as bridge_router
 from agent.api.copilot import router as copilot_router
 from agent.api.dashboard import router as dashboard_router
 from agent.api.github import router as github_router
+from agent.api.review import router as review_router
 from agent.api.runs import router as runs_router
 from agent.api.webhooks import router as webhooks_router
 
@@ -125,6 +126,7 @@ app.include_router(artifacts_router)
 app.include_router(analytics_router)
 app.include_router(github_router)
 app.include_router(copilot_router)
+app.include_router(review_router)
 
 
 

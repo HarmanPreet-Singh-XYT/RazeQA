@@ -338,6 +338,34 @@ class GitHubAppClient:
             res.raise_for_status()
             return res.json()
 
+    async def create_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        head: str,
+        base: str,
+        body: str = "",
+        draft: bool = False,
+        installation_id: int | None = None,
+    ) -> str:
+        """Open a pull request and return its HTML URL.
+
+        Used to publish an agent-authored fix: the fix lands as an ordinary PR
+        against the branch under review, so CI, branch protection and human
+        review apply unchanged rather than being bypassed.
+        """
+        if not self.token and not (self.app_id and self.private_key):
+            raise GitHubNotConfiguredError("GitHub credentials are required to open a pull request.")
+
+        headers = await self._get_auth_header(installation_id)
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+        payload = {"title": title, "head": head, "base": base, "body": body, "draft": draft}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(url, headers=headers, json=payload)
+            res.raise_for_status()
+            return res.json()["html_url"]
+
     async def create_reaction(
         self,
         owner: str,

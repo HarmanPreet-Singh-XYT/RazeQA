@@ -482,6 +482,28 @@ def test_agent_session_refuses_destructive_clicks(tmp_path: Path):
     assert any("destructive" in str(n.get("did")) for n in result["notes"])
 
 
+def test_step_prompt_gives_the_model_real_selectors():
+    """Regression: the prompt listed element *labels* while the loop's guard
+    only accepted exact selectors, so click/type was impossible for every
+    element without an id. On the live target the model literally returned
+    'button: "..."' as the selector and was refused — leaving goto as the only
+    action it could ever take."""
+    obs = _fake_obs()
+    obs.interactive_candidates = [
+        ba.InteractiveCandidate(
+            selector='[data-pr-testing-key="abc"]',
+            label='button: "Buy now"',
+            key="abc",
+            kind="button",
+        ),
+    ]
+
+    prompt = ba._agentic_step_prompt(obs, [], [], [], 10)
+
+    assert '[data-pr-testing-key="abc"]' in prompt, "the model cannot click what it cannot name"
+    assert "Buy now" in prompt
+
+
 def test_agent_session_never_types_into_a_password_field(tmp_path: Path):
     obs = _fake_obs()
     obs.interactive_candidates = [
@@ -496,6 +518,27 @@ def test_agent_session_never_types_into_a_password_field(tmp_path: Path):
         obs=obs,
     )
     assert page.typed == []
+
+
+def test_destructive_guard_does_not_match_the_current_page_url(tmp_path: Path):
+    """The guard used to be fed the current page URL, so on /checkout, /billing
+    or /payments *every* control was classified destructive and skipped — those
+    routes could never be interacted with at all."""
+    obs = _fake_obs(url="http://localhost:3000/checkout")
+    obs.interactive_candidates = [
+        ba.InteractiveCandidate(selector='[data-pr-testing-idx="0"]', label='button: "Apply coupon"'),
+    ]
+    result, page = _run_session(
+        [
+            ba.AgentAction(action_type="click", selector='[data-pr-testing-idx="0"]'),
+            ba.AgentAction(action_type="done"),
+        ],
+        tmp_path,
+        obs=obs,
+    )
+    assert page.clicked == ['[data-pr-testing-idx="0"]'], (
+        f"a safe control on a checkout route was refused: {result['notes']}"
+    )
 
 
 def test_agent_session_executes_a_safe_click(tmp_path: Path):

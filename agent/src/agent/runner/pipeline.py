@@ -739,6 +739,10 @@ async def _run_journeys(
         ]
         logger.info("Using fallback exploratory routes (%d, scope=%s): %s", len(planned_routes), scope, [p.route for p in planned_routes])
 
+    # Cross-route control ledger: the header nav is the same control on every
+    # page, so it is exercised once per sweep rather than once per route.
+    covered_control_keys: set[str] = set()
+
     for p_route in planned_routes:
         route = p_route.route
         focus = p_route.focus
@@ -751,7 +755,14 @@ async def _run_journeys(
             test_type=test_type,
             storage_state=storage_state_path,
             risk_tag=analysis.risk_tag if analysis else "",
+            covered_keys=covered_control_keys,
+            max_controls=(testing_config.max_controls_per_route if testing_config else 40),
+            control_time_budget_seconds=(
+                float(testing_config.control_time_budget_seconds) if testing_config else 45.0
+            ),
         )
+        coverage = exp_res.get("coverage") or {}
+        covered_control_keys.update(coverage.get("covered_keys") or [])
         j_name = exp_res.get("name", f"exploratory:{route}")
         passed = exp_res.get("passed", False)
         err = exp_res.get("error")
@@ -803,6 +814,11 @@ async def _run_journeys(
             "links_checked": exp_res.get("links_checked", []),
             "broken_links": exp_res.get("broken_links", []),
             "navigation_checks": exp_res.get("navigation_checks", []),
+            # Control coverage: how many of the controls actually discovered on
+            # this route were operated, skipped, or unreachable. Without this
+            # the PR report can never answer "was every button clicked?".
+            "interactive_count": exp_res.get("interactive_count", 0),
+            "coverage": coverage,
         })
 
         domain = "Checkout/Payments" if "checkout" in route else "Dashboard/Navigation" if "dashboard" in route else "UI/Features"

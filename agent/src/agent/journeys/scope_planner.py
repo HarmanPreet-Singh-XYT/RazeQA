@@ -63,6 +63,11 @@ class TestingConfig(BaseModel):
     # Run the agentic exploration session (one continuous, model-driven browser
     # session whose notes are advisory). On by default; disable per project.
     agentic_exploration: bool = True
+    # Control coverage per route. A "full sweep" operates every discovered
+    # control on a page exactly once, bounded by these two knobs so a page with
+    # hundreds of links cannot run away with the whole wall clock.
+    max_controls_per_route: int = Field(default=40, ge=1, le=150)
+    control_time_budget_seconds: int = Field(default=45, ge=5, le=180)
 
 
 class PlannedRoute(BaseModel):

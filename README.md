@@ -41,6 +41,80 @@ Every AI agent in the platform is powered through the **AWS Strands Agents SDK**
 
 ---
 
+## 🔍 Three-Lane Code Review & Verified Fixer
+
+Independently of the browser-journey engine, every pull request can be reviewed
+through three separate lenses. They are separate model calls with separate
+severity ladders and separate messages, because they ask different questions and
+fail in different ways — collapsing them into one prompt reliably over-weights
+style and under-weights anything that matters.
+
+| Lane | Ladder | The question it answers |
+| :--- | :--- | :--- |
+| **Compliance** | `critical` · `must_fix` · `should_fix` | Which legal, licensing or data-handling obligation does this create or break? |
+| **Security** | `must_fix` · `should_fix` · `suggestion` | Is there a path an attacker can actually take from this change? |
+| **Code review** | `must_fix` · `should_fix` · `suggestion` | Will this be correct in production? |
+
+Each rung is anchored to a described failure mode
+(`agent/src/agent/review/models.py`), and the canonical severity is *derived
+from the tier* rather than taken from the model's adjective: a model that calls
+a low-impact issue `critical` has picked the top rung, not invented a new one.
+
+### One click, and the fix has to prove itself
+
+A finding can be dispatched to an on-demand repair agent (`POST /review/fix`).
+The engine generates several candidate patches, verifies each in a throwaway
+sandbox, and keeps the smallest survivor. Nothing trusts the agent's own claim
+of success — a candidate is accepted only when all of this holds
+(`agent/src/agent/review/verification.py`):
+
+1. **It did not weaken a gate.** Modifying, deleting or disabling an existing
+   test, fixture, snapshot, CI workflow or lint config is rejected structurally.
+   *Adding* a new test file is required — that is the regression proof, not a
+   bypass.
+2. **The regression test fails before the fix and passes after it.** A green
+   suite alone proves nothing: it is equally consistent with a test that could
+   never fail. The test half of the patch is applied to the unpatched tree on
+   its own and must fail there.
+3. **The build and the pre-existing suite still pass**, so the fix did not buy
+   one green check with another.
+4. **An adversarial critic failed to falsify it.** A patch that only makes the
+   reported symptom disappear — swallowing the exception, widening a type to
+   `Any`, special-casing the example — is refuted.
+
+Accepted patches are published as a **new branch and a pull request** against
+the branch under review (`agent/src/agent/review/publish.py`). The engine never
+commits to a base branch, never bypasses branch protection and never merges, so
+an agent-authored change is reviewed like any other.
+
+### Endpoints
+
+* `GET /review/lanes` — the three lanes and their ladders.
+* `POST /review/analyze` — run the lanes over an inline `diff` or a server-side
+  `repo_dir` + ref range; returns the merged report, each lane's own markdown,
+  and the combined report.
+* `POST /review/fix` — verify a fix for one finding; optionally publish a branch
+  and open a PR.
+
+`repo_dir` is confined to `REVIEW_ALLOWED_ROOTS` (default: the working
+directory). See `.env.example` §9.
+
+### Run it without credentials
+
+```bash
+cd agent
+uv run python scripts/review_demo.py
+```
+
+The demo builds a throwaway repository whose feature branch introduces an
+authorisation bypass, reviews it, fixes it, and prints the verification
+transcript — including the regression test observed failing before the change
+and passing after it. The lane replies are scripted, but the diff, the sandbox,
+the patch application, the test runs, the branch and the commit are all real.
+Pass `--live` to drive the lanes with the configured model instead.
+
+---
+
 ## 📁 Repository Structure
 
 ```
@@ -62,6 +136,13 @@ Every AI agent in the platform is powered through the **AWS Strands Agents SDK**
 │   │   ├── db/               # Supabase PostgreSQL client with local fallback
 │   │   ├── journeys/         # Playwright journeys, element-targeted scroll & Gemini visual inspector
 │   │   ├── models/           # Strands SDK multi-model factory & role routing
+│   │   ├── projects/         # Registry, saved tests, per-repo automation
+│   │   ├── review/           # Three-lane code review + verified best-of-N fixer
+│   │   │                     #   engine.py       - runs the lanes, merges & ranks
+│   │   │                     #   models.py       - per-lane severity ladders
+│   │   │                     #   verification.py - what "verified" must mean
+│   │   │                     #   fixer.py        - best-of-N sandbox selection
+│   │   │                     #   publish.py      - branch + PR, never a merge
 │   │   ├── remediation/      # Structured markdown fix prompt generator
 │   │   └── runner/           # Baseline comparator (new regression vs pre-existing bug) & pipeline
 │   └── tests/                # 180+ unit, integration & real-Docker tests
