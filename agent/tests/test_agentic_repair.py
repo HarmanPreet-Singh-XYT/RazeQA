@@ -247,6 +247,21 @@ def test_extract_git_diff_handles_renames(tmp_path: Path):
         assert 'web/src/old.tsx -> "web/src/new file.tsx"' not in files
 
 
+def test_read_target_file_contents_reads_fixed_files_from_workspace(tmp_path: Path):
+    """The commit-back path needs the full post-repair text of each modified
+    file (the workspace is torn down after the run, so the diff alone can't
+    reconstruct it later)."""
+    engine = AgenticRepairEngine()
+    fixed_file = tmp_path / "app" / "checkout" / "page.tsx"
+    fixed_file.parent.mkdir(parents=True)
+    fixed_file.write_text("export default function Fixed() { return null; }\n")
+
+    contents = engine._read_target_file_contents(
+        tmp_path, ["app/checkout/page.tsx", "app/checkout/missing.tsx"]
+    )
+    assert contents == {"app/checkout/page.tsx": "export default function Fixed() { return null; }\n"}
+
+
 def test_project_registry_register_and_caching():
     """Verify ProjectRegistry.register caches and returns the ProjectRecord properly."""
     from agent.projects.registry import ProjectRegistry

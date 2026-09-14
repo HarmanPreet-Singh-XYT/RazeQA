@@ -111,6 +111,11 @@ class RepairResult:
     success: bool
     target_files: list[str] = field(default_factory=list)
     unified_diff: str = ""
+    # Full post-repair text of each file in target_files, keyed by path. Used
+    # to commit the fix as a whole-file replace (the workspace/container is
+    # torn down once the run completes, so the diff alone isn't enough to
+    # reconstruct the fixed file later).
+    file_contents: dict[str, str] = field(default_factory=dict)
     steps_taken: int = 0
     max_steps: int = 10
     total_cost_usd: float = 0.0
@@ -460,6 +465,7 @@ Important rules:
         # 4. Post-run build verification & Git Diff extraction
         build_passed, build_out = self._run_build_check(root_path, build_cmd, container=container)
         diff_str, target_files = self._extract_git_diff(root_path, container=container)
+        file_contents = self._read_target_file_contents(root_path, target_files, container=container)
 
         success = (
             bool(diff_str.strip())
@@ -471,6 +477,7 @@ Important rules:
             success=success,
             target_files=target_files,
             unified_diff=diff_str,
+            file_contents=file_contents,
             steps_taken=len(env.trajectory),
             max_steps=self.config.max_steps,
             total_cost_usd=getattr(agent, "cost", 0.0),
@@ -569,3 +576,35 @@ Important rules:
         except Exception as exc:
             logger.warning("Could not extract git diff: %s", exc)
             return "", []
+
+    def _read_target_file_contents(
+        self,
+        root_path: Path,
+        target_files: list[str],
+        container: str | None = None,
+    ) -> dict[str, str]:
+        """Reads the full post-repair text of each modified file.
+
+        The workspace/container is discarded once the run completes, so this
+        is the only way to later commit the fix as a whole-file replace. Files
+        deleted by the repair (no longer present) are silently skipped.
+        """
+        contents: dict[str, str] = {}
+        for rel_path in target_files:
+            try:
+                if container:
+                    res = subprocess.run(
+                        ["docker", "exec", "-w", str(root_path), container, "cat", rel_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    if res.returncode == 0:
+                        contents[rel_path] = res.stdout
+                else:
+                    file_path = root_path / rel_path
+                    if file_path.is_file():
+                        contents[rel_path] = file_path.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                logger.warning("Could not read post-repair content of '%s': %s", rel_path, exc)
+        return contents

@@ -179,6 +179,7 @@ async def _sandbox_for_sha(
     env: dict[str, str],
     github_token: str | None = None,
     run_id: str | None = None,
+    pr_number: int | None = None,
 ):
     """Boots an isolated container, clones `sha` into it in-container, provisions and
     launches it, and yields a SandboxInfo handle. Always tears the container down on exit,
@@ -206,6 +207,7 @@ async def _sandbox_for_sha(
         image_tag=image_tag,
         github_token=github_token,
         env=env,
+        pr_number=pr_number,
     )
     if run_id:
         from agent.runner.queue import default_job_queue
@@ -430,6 +432,7 @@ async def _synthesize_or_repair(
                                 replacement_snippet="",
                                 unified_diff=repair_res.unified_diff,
                                 explanation=f"Verified with '{repair_res.build_command}'",
+                                full_content=repair_res.file_contents.get(tf),
                             )
                         )
                     except Exception as patch_exc:
@@ -1004,6 +1007,22 @@ def _deadline_exhausted(deadline: float | None, reserve: float | None = None) ->
         return False
 
 
+def _baseline_refresh_reserve(sweep_started_at: float) -> float:
+    """How much budget must remain before an inline first-run baseline refresh starts.
+
+    The refresh is a *second* full sandbox boot + route sweep, so it takes
+    roughly as long as the PR sweep that just finished. The previous fixed
+    ``PIPELINE_BASELINE_MIN_BUDGET_S`` floor (180s) let it start with only a few
+    minutes left: the second sweep then ran into the hard pipeline timeout and
+    took the whole run's report down with it, leaving the PR's GitHub Check Run
+    ``in_progress`` forever. Requiring the elapsed sweep time (plus the normal
+    reporting reserve) to still be available refuses work this run cannot
+    finish — the base-branch run seeds the baseline instead.
+    """
+    elapsed = max(0.0, time.monotonic() - sweep_started_at)
+    return max(PIPELINE_BASELINE_MIN_BUDGET_S, elapsed + PIPELINE_REPORT_RESERVE_S)
+
+
 # ---------------------------------------------------------------------------
 # Cooperative run cancellation
 # ---------------------------------------------------------------------------
@@ -1114,7 +1133,22 @@ async def run_pipeline(
     """
     if run_id:
         register_run_cancel_token(run_id)
-    deadline = asyncio.get_running_loop().time() + PIPELINE_TIMEOUT_S
+
+    # Per-project override of the hard pipeline timeout, set in project
+    # settings (Settings > Job Timeout). Falls back to the env-configured
+    # default when the project has no override or isn't registered.
+    pipeline_timeout_s = PIPELINE_TIMEOUT_S
+    try:
+        from agent.projects.registry import default_project_registry
+
+        project_rec = default_project_registry.get_by_repo(f"{owner}/{repo}") or default_project_registry.get_by_repo(repo)
+        raw_timeout = (project_rec.settings or {}).get("pipeline_timeout_s") if project_rec else None
+        if raw_timeout is not None:
+            pipeline_timeout_s = float(raw_timeout)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to load pipeline_timeout_s override for %s/%s; using default", owner, repo, exc_info=True)
+
+    deadline = asyncio.get_running_loop().time() + pipeline_timeout_s
     try:
         return await asyncio.wait_for(
             _run_pipeline_inner(
@@ -1138,7 +1172,7 @@ async def run_pipeline(
                 post_comments=post_comments,
                 deadline=deadline,
             ),
-            timeout=PIPELINE_TIMEOUT_S,
+            timeout=pipeline_timeout_s,
         )
     except asyncio.CancelledError:
         if run_id and is_run_cancelled(run_id):
@@ -1148,12 +1182,28 @@ async def run_pipeline(
             )
         raise
     except TimeoutError:
-        logger.error("Pipeline for %s/%s branch=%s sha=%s timed out after %ss", owner, repo, branch, sha[:8], PIPELINE_TIMEOUT_S)
+        logger.error("Pipeline for %s/%s branch=%s sha=%s timed out after %ss", owner, repo, branch, sha[:8], pipeline_timeout_s)
         # Tell any to_thread worker still running inside the timed-out coroutine
         # to abort at its next cooperative check, rather than leaving it to
         # fight a torn-down sandbox.
         signal_run_cancel(run_id)
-        _mark_run_failed_by_lookup(branch, sha, scope, test_type, run_id, f"Pipeline timed out after {PIPELINE_TIMEOUT_S:.0f}s")
+        _mark_run_failed_by_lookup(branch, sha, scope, test_type, run_id, f"Pipeline timed out after {pipeline_timeout_s:.0f}s")
+        await _notify_run_aborted(
+            owner=owner,
+            repo=repo,
+            sha=sha,
+            pr_number=pr_number,
+            check_run_id=check_run_id,
+            installation_id=installation_id,
+            post_comments=post_comments,
+            message=(
+                f"The autonomous verification run for `{sha[:8]}` timed out after "
+                f"{pipeline_timeout_s:.0f}s and was aborted without a result. "
+                "Re-run it, or raise the project's Job Timeout in Settings if the "
+                "app under test is genuinely slow to build and sweep."
+            ),
+            title="Autonomous Verification: Timed out",
+        )
         raise
     except Exception as exc:  # noqa: BLE001
         # Catch-all: any error not already handled by a specific except
@@ -1161,6 +1211,19 @@ async def run_pipeline(
         # record stuck at "running" with no explanation.
         logger.exception("Unhandled pipeline error for %s/%s branch=%s sha=%s", owner, repo, branch, sha[:8])
         _mark_run_failed_by_lookup(branch, sha, scope, test_type, run_id, f"Unhandled pipeline error: {exc}")
+        await _notify_run_aborted(
+            owner=owner,
+            repo=repo,
+            sha=sha,
+            pr_number=pr_number,
+            check_run_id=check_run_id,
+            installation_id=installation_id,
+            post_comments=post_comments,
+            message=(
+                f"The autonomous verification run for `{sha[:8]}` failed before it "
+                f"could report a result: `{exc}`"
+            ),
+        )
         raise
     finally:
         clear_run_cancel_token(run_id)
@@ -1190,6 +1253,65 @@ def _mark_run_failed_by_lookup(
             )
     except Exception:  # noqa: BLE001
         logger.exception("Failed to mark run as failed after pipeline error")
+
+
+async def _notify_run_aborted(
+    *,
+    owner: str,
+    repo: str,
+    sha: str,
+    pr_number: int | None,
+    check_run_id: int | None,
+    installation_id: int | None,
+    post_comments: bool,
+    message: str,
+    title: str = "Autonomous Verification: Failed",
+) -> None:
+    """Best-effort: settle the GitHub Check Run and PR when the pipeline is
+    killed by its own timeout or catch-all.
+
+    A PR-triggered run that hits ``PIPELINE_TIMEOUT_S`` is marked failed in the
+    dashboard by ``_mark_run_failed_by_lookup``, but the Check Run created when
+    the webhook arrived is never completed — so from the pull request's point of
+    view the verification job runs forever. Complete it (and leave a short
+    comment) so a hung run is visibly a *finished failure*, not a job that never
+    ends.
+    """
+    if not check_run_id and not (pr_number and post_comments):
+        return
+    try:
+        from agent.github.app import GitHubAppClient
+
+        client = GitHubAppClient()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not build GitHub client to report aborted run: %s", exc)
+        return
+
+    if check_run_id:
+        try:
+            await client.update_check_run(
+                owner=owner,
+                repo=repo,
+                check_run_id=check_run_id,
+                conclusion="failure",
+                title=title,
+                summary=message,
+                installation_id=installation_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not complete Check Run %s after abort: %s", check_run_id, exc)
+
+    if pr_number and post_comments:
+        try:
+            await client.post_pr_comment(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                body=f"⚠️ {message}",
+                installation_id=installation_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not comment on PR #%s after abort: %s", pr_number, exc)
 
 
 async def _report_boot_failure(
@@ -1570,6 +1692,9 @@ async def _run_pipeline_inner(
             env=sandbox_env,
             github_token=github_token,
             run_id=record.run_id if record else None,
+            # The PR number lets a fork PR's head commit be fetched from
+            # refs/pull/<n>/head, which a plain clone of the base repo cannot see.
+            pr_number=pr_number,
         ) as sandbox_info:
             container_name = sandbox_info.container_name
             active_source_root = APP_REPO_DIR
@@ -1776,7 +1901,7 @@ async def _run_pipeline_inner(
         default_baseline_store.update_baseline_from_run(repo=repo, journeys=raw_journeys)
         logger.info("Updated baseline for repo '%s' from base-branch run (%d journeys)", repo, len(raw_journeys))
     elif is_run_cancelled(record.run_id) or _deadline_exhausted(
-        deadline, reserve=PIPELINE_BASELINE_MIN_BUDGET_S
+        deadline, reserve=_baseline_refresh_reserve(t_analysis)
     ):
         logger.warning(
             "Skipping first-run baseline refresh for repo '%s': run cancelled or out of time. "
@@ -1852,6 +1977,11 @@ async def _run_pipeline_inner(
                                 discovered_routes=base_discovered_routes or discovered_routes,
                                 git_diff="",
                                 scope=scope,
+                                # Defence in depth: even if the refresh starts
+                                # with what looked like enough budget, its own
+                                # sweep must stop at the report reserve rather
+                                # than run past the hard timeout.
+                                deadline=deadline,
                             )
                     else:
                         dep_graph_base = DependencyGraph(APP_REPO_DIR)
@@ -1875,6 +2005,7 @@ async def _run_pipeline_inner(
                             git_diff="",
                             route_fallback_root=APP_REPO_DIR,
                             scope=scope,
+                            deadline=deadline,
                         )
                 default_baseline_store.update_baseline_from_run(repo=repo, journeys=baseline_journeys["raw_journeys"])
                 logger.info("Refreshed baseline for repo '%s' from live %s run (%d journeys)", repo, base_branch, len(baseline_journeys["raw_journeys"]))

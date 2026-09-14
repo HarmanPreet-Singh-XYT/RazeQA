@@ -61,6 +61,11 @@ class FilePatch(BaseModel):
     replacement_snippet: str
     unified_diff: str = ""
     explanation: str = ""
+    # Full post-fix file text, set only for whole-file replaces (agentic
+    # repair, which edits files directly rather than producing an anchored
+    # snippet). When set, apply_patch_to_text uses this instead of
+    # original_snippet/replacement_snippet anchor matching.
+    full_content: str | None = None
 
     @field_validator("file_path")
     @classmethod
@@ -127,6 +132,9 @@ def apply_patch_to_text(text: str, patch: FilePatch) -> tuple[str, bool]:
     Returns:
         (updated_text, success_boolean)
     """
+    if patch.full_content is not None:
+        return patch.full_content, True
+
     if not patch.original_snippet:
         return text, False
 

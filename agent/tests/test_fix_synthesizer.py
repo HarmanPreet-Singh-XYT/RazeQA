@@ -81,6 +81,18 @@ export default function CheckoutForm() {
     _, ok3 = apply_patch_to_text(duplicate_file, patch_ambiguous)
     assert ok3 is False  # Refused replacement to avoid corrupting duplicate blocks
 
+    # 4. Whole-file replace (agentic repair): full_content wins outright,
+    # regardless of original_snippet/replacement_snippet.
+    patch_full = FilePatch(
+        file_path="app/checkout/page.tsx",
+        original_snippet="",
+        replacement_snippet="",
+        full_content="export default function CheckoutForm() { return null; }\n",
+    )
+    updated4, ok4 = apply_patch_to_text(original_file, patch_full)
+    assert ok4 is True
+    assert updated4 == "export default function CheckoutForm() { return null; }\n"
+
 
 def test_fix_synthesizer_heuristic(tmp_path: Path):
     sample_checkout = tmp_path / "app" / "checkout" / "page.tsx"

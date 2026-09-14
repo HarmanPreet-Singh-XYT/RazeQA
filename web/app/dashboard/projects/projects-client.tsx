@@ -96,6 +96,7 @@ type ProjectSettings = {
   test_type: "functional" | "functional + visual";
   enable_on_push: boolean;
   enable_on_pr: boolean;
+  pipeline_timeout_s?: number;
   auto_repair?: AutoRepairSettings;
   testing?: TestingSettings;
   roles: {
@@ -278,6 +279,7 @@ export default function ProjectsClient() {
     test_type: "functional",
     enable_on_push: true,
     enable_on_pr: true,
+    pipeline_timeout_s: 900,
     auto_repair: {
       enabled: false,
       trigger_mode: "automatic",
@@ -1560,6 +1562,36 @@ export default function ProjectsClient() {
                     <option value="functional">Functional Only</option>
                     <option value="functional + visual">Functional + Visual Defect Spotting</option>
                   </select>
+                </div>
+
+                {/* Job Timeout */}
+                <div className="rounded-lg border border-slate-200 p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <Clock className="h-3.5 w-3.5 text-slate-500" />
+                      Job Timeout
+                    </label>
+                    <span className="font-mono text-xs font-bold text-slate-700">
+                      {Math.round((settings.pipeline_timeout_s ?? 900) / 60)} min
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={300}
+                    max={3600}
+                    step={60}
+                    value={settings.pipeline_timeout_s ?? 900}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      const clamped = isNaN(val) ? 900 : Math.min(3600, Math.max(300, val));
+                      setSettings({ ...settings, pipeline_timeout_s: clamped });
+                    }}
+                    className="w-full accent-indigo-600 cursor-pointer"
+                  />
+                  <p className="text-[11px] text-slate-600">
+                    Hard ceiling for a full run (build, sandbox boot, journeys, baseline). Runs still exceeding
+                    this are aborted and marked failed.
+                  </p>
                 </div>
               </div>
             </div>

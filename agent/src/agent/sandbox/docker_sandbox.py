@@ -219,6 +219,7 @@ def clone_repo_into_container(
     github_token: str | None,
     dest: str = "/app",
     timeout: int = 300,
+    pr_number: int | None = None,
 ) -> None:
     """Clone ``owner/repo`` at ``sha`` into ``dest`` inside ``container``.
 
@@ -232,10 +233,40 @@ def clone_repo_into_container(
     env-var interpolation hides it from logs and shell history but not from `ps`.
     ``GIT_ASKPASS`` avoids that entirely: git invokes a tiny helper that echoes
     ``$GITHUB_TOKEN`` from its own environment, so the URL stays tokenless.
+
+    ``pr_number`` enables pull requests opened from a fork: the head commit of
+    such a PR exists only in the base repository's ``refs/pull/<n>/head``, not
+    as a branch, so a plain clone cannot resolve ``sha``. When the ref is known
+    and the commit is absent, it is fetched before checkout.
     """
     _validate_repo_inputs(owner, repo, sha, base_ref)
 
     tokenless_url = f"https://github.com/{owner}/{repo}.git"
+
+    # The PR ref is attacker-influenced only through GitHub's own PR numbering,
+    # but it is still interpolated into a shell script — coerce to a positive
+    # int so nothing but digits can reach the command.
+    pr_ref_fetch = ""
+    if pr_number is not None:
+        try:
+            pr_number_int = int(pr_number)
+        except (TypeError, ValueError) as exc:
+            raise SandboxBootError(
+                f"Refusing to build sandbox: invalid PR number {pr_number!r}"
+            ) from exc
+        if pr_number_int <= 0:
+            raise SandboxBootError(
+                f"Refusing to build sandbox: invalid PR number {pr_number!r}"
+            )
+        pr_ref_fetch = f"""
+# A PR from a fork has no branch for its head commit in the base repo; the
+# commit is only reachable through refs/pull/<n>/head. Fetch it when the
+# ordinary clone did not already make the SHA resolvable.
+if ! git cat-file -e {_sh_quote(sha)}^{{commit}} 2>/dev/null; then
+  GIT_ASKPASS=/tmp/askpass.sh GIT_TERMINAL_PROMPT=0 \\
+      git fetch --quiet origin refs/pull/{pr_number_int}/head:refs/remotes/origin/pr-{pr_number_int} || true
+fi
+"""
 
     # `base_ref` is fetched into a remote-tracking ref so that
     # `git diff <base_ref>...HEAD` works later: a single-ref blobless clone has
@@ -258,7 +289,7 @@ git -c credential.https://github.com.username=x-access-token \
 cd {_sh_quote(dest)}
 GIT_ASKPASS=/tmp/askpass.sh GIT_TERMINAL_PROMPT=0 \
     git fetch --quiet origin {_sh_quote(base_ref)}:refs/remotes/origin/{_sh_quote(base_ref)} || true
-git checkout --quiet --detach {_sh_quote(sha)}
+{pr_ref_fetch}git checkout --quiet --detach {_sh_quote(sha)}
 # Drop the credential path entirely before any untrusted build script runs.
 git remote remove origin || true
 rm -f /tmp/askpass.sh
@@ -424,6 +455,7 @@ def start_sandbox(
     cpu_limit: str = DEFAULT_CPU_LIMIT,
     ready_timeout_s: float = 120.0,
     container_ports: tuple[int, ...] = CANDIDATE_CONTAINER_PORTS,
+    pr_number: int | None = None,
 ) -> SandboxHandle:
     """Boot a hardened container with no source in it, clone the PR in-container,
     provision it, launch the app, and return a running SandboxHandle.
@@ -474,6 +506,7 @@ def start_sandbox(
             sha=sha,
             base_ref=base_ref,
             github_token=github_token,
+            pr_number=pr_number,
         )
 
         start_command, detected_port = _provision(name, image_tag)
@@ -535,6 +568,7 @@ def run_sandbox(
     memory_limit: str = DEFAULT_MEMORY_LIMIT,
     cpu_limit: str = DEFAULT_CPU_LIMIT,
     ready_timeout_s: float = 120.0,
+    pr_number: int | None = None,
 ):
     """Context manager form of :func:`start_sandbox`; always tears the container down."""
     handle = start_sandbox(
@@ -548,6 +582,7 @@ def run_sandbox(
         memory_limit=memory_limit,
         cpu_limit=cpu_limit,
         ready_timeout_s=ready_timeout_s,
+        pr_number=pr_number,
     )
     try:
         yield handle
