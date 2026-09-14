@@ -17,7 +17,7 @@ import { useDashboard } from "./dashboard-context";
 
 /**
  * A repository the deployment's GitHub App can reach but which has not been
- * imported into AutoQA yet. Discovery is read-only (see lib/github/discovery),
+ * imported into RazeQA yet. Discovery is read-only (see lib/github/discovery),
  * so these entries only become projects when the user selects them.
  */
 export interface AvailableRepo {

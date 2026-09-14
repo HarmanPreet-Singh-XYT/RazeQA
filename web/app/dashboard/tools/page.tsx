@@ -3,7 +3,7 @@ import { getSession } from "@/lib/auth";
 import UserJourneysClient from "./user-journeys-client";
 
 export const metadata = {
-  title: "Synthetic User Journeys — AutoQA",
+  title: "Synthetic User Journeys — RazeQA",
   description:
     "Autonomous multi-step user experience journey test suites, assertion traces, and responsive crawl verification.",
 };

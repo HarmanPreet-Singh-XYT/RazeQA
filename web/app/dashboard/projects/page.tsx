@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import ProjectsClient from "./projects-client";
 
 export const metadata = {
-  title: "Projects & Settings — AutoQA",
+  title: "Projects & Settings — RazeQA",
   description: "Configure GitHub App onboarding, multi-role test credentials, and automated testing policies.",
 };
 

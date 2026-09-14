@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { PullRequestsClient } from "./pull-requests-client";
 
 export const metadata = {
-  title: "Pull Requests — AutoQA",
+  title: "Pull Requests — RazeQA",
   description:
     "Every pull request tested at runtime, with severity-ranked findings, test cases and evidence.",
 };

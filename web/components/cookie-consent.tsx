@@ -7,19 +7,19 @@ export function CookieConsent() {
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
-    const consent = localStorage.getItem("autoqa_consent");
+    const consent = localStorage.getItem("razeqa_consent");
     if (!consent) {
       setIsVisible(true);
     }
   }, []);
 
   const handleAccept = () => {
-    localStorage.setItem("autoqa_consent", "accepted");
+    localStorage.setItem("razeqa_consent", "accepted");
     setIsVisible(false);
   };
 
   const handleDismiss = () => {
-    localStorage.setItem("autoqa_consent", "dismissed");
+    localStorage.setItem("razeqa_consent", "dismissed");
     setIsVisible(false);
   };
 

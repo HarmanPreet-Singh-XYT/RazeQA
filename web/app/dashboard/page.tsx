@@ -4,9 +4,9 @@ import { getSession } from "@/lib/auth";
 import { AgentChatClient } from "./agent/agent-chat-client";
 
 export const metadata = {
-  title: "Copilot — AutoQA",
+  title: "Copilot — RazeQA",
   description:
-    "The AutoQA agent: read runs, findings, pull requests, and analytics, and act on them with per-session controls.",
+    "The RazeQA agent: read runs, findings, pull requests, and analytics, and act on them with per-session controls.",
 };
 
 export default async function DashboardPage() {

@@ -33,7 +33,7 @@ export function OfflineIndicator() {
         <WifiOff className="h-4 w-4 text-slate-950 animate-pulse" />
         <span>You are currently offline</span>
         <span className="font-normal opacity-90 hidden sm:inline">
-          — Connecting to AutoQA network when connection restores.
+          — Connecting to RazeQA network when connection restores.
         </span>
       </div>
       <button

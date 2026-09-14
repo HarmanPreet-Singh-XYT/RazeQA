@@ -69,7 +69,7 @@ function isLoopbackUrl(value: string): boolean {
 async function fetchLiveUrls(
   repoNames: string[]
 ): Promise<Record<string, { url: string; source: string; environment: string | null }>> {
-  const CACHE_KEY = "autoqa_live_urls";
+  const CACHE_KEY = "razeqa_live_urls";
   const CACHE_TTL_MS = 30 * 60 * 1000;
   const wanted = Array.from(new Set(repoNames)).sort();
   if (wanted.length === 0) return {};
@@ -149,7 +149,7 @@ export function DashboardProvider({
     setActiveRepoState(repo);
     if (typeof window !== "undefined" && repo) {
       try {
-        localStorage.setItem("autoqa_active_repo", repo);
+        localStorage.setItem("razeqa_active_repo", repo);
       } catch {}
     }
   }, []);
@@ -211,7 +211,7 @@ export function DashboardProvider({
       // Check localStorage for external sites tested by user
       if (typeof window !== "undefined") {
         try {
-          const stored = localStorage.getItem("autoqa_external_sites");
+          const stored = localStorage.getItem("razeqa_external_sites");
           if (stored) {
             const list: string[] = JSON.parse(stored);
             for (const u of list) {
@@ -280,7 +280,7 @@ export function DashboardProvider({
         }
         if (typeof window !== "undefined") {
           try {
-            const stored = localStorage.getItem("autoqa_active_repo");
+            const stored = localStorage.getItem("razeqa_active_repo");
             if (stored && allProjects.some((p) => p.repo_full_name === stored)) {
               return stored;
             }
@@ -298,11 +298,11 @@ export function DashboardProvider({
   const addExternalProject = useCallback((targetUrl: string) => {
     try {
       const cleanUrl = targetUrl.trim().startsWith("http") ? targetUrl.trim() : `https://${targetUrl.trim()}`;
-      const stored = localStorage.getItem("autoqa_external_sites");
+      const stored = localStorage.getItem("razeqa_external_sites");
       const list: string[] = stored ? JSON.parse(stored) : [];
       if (!list.includes(cleanUrl)) {
         list.push(cleanUrl);
-        localStorage.setItem("autoqa_external_sites", JSON.stringify(list));
+        localStorage.setItem("razeqa_external_sites", JSON.stringify(list));
       }
       refreshProjects();
     } catch {}

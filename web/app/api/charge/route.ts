@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 // Recognized promotional codes and their discount rates
 const PROMO_CODES: Record<string, { type: "flat" | "percent"; value: number; description: string }> = {
   DEVPROMO: { type: "flat", value: 50, description: "$50 off developer discount" },
-  AUTOQA50: { type: "flat", value: 50, description: "$50 off AutoQA launch discount" },
+  RAZEQA50: { type: "flat", value: 50, description: "$50 off RazeQA launch discount" },
   WELCOME20: { type: "percent", value: 20, description: "20% off welcome credit" },
   BUILDER10: { type: "percent", value: 10, description: "10% builder credit" },
 };
@@ -137,7 +137,7 @@ export async function POST(request: Request) {
             amount: Math.round(total * 100).toString(),
             currency: "usd",
             "payment_method_types[]": payment_method === "apple_pay" ? "card" : "card",
-            description: `AutoQA Provisioning Order for ${customer_address.street}, ${customer_address.city}`,
+            description: `RazeQA Provisioning Order for ${customer_address.street}, ${customer_address.city}`,
           }),
         });
         if (stripeRes.ok) {

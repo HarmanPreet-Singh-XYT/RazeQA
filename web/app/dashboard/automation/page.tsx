@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { AutomationClient } from "./automation-client";
 
 export const metadata = {
-  title: "Automation — AutoQA",
+  title: "Automation — RazeQA",
   description: "Control when each repository is reviewed and whether results are posted back to GitHub.",
 };
 

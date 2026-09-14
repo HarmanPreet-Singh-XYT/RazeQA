@@ -128,7 +128,7 @@ export function FirstRunBriefing({
           {step === 1 && (
             <div className="space-y-5 animate-in fade-in-50">
               <p className="text-sm text-slate-600 leading-relaxed">
-                This project has not been verified yet. AutoQA will boot your app in an isolated
+                This project has not been verified yet. RazeQA will boot your app in an isolated
                 container, act as a real user in a headless Chromium browser, and record forensic
                 proof of whatever it finds. Nothing is written to your repository.
               </p>

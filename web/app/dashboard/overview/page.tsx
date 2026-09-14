@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { DashboardOverviewClient } from "./dashboard-overview-client";
 
 export const metadata = {
-  title: "Overview — Projects & Activity — AutoQA",
+  title: "Overview — Projects & Activity — RazeQA",
   description:
     "Vercel-style workspace overview showing all repositories, domains, commits, and autonomous QA health.",
 };

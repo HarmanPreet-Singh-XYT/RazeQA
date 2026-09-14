@@ -49,7 +49,7 @@ interface AvailableRepo {
   imported: boolean;
 }
 
-/** A repository already imported into AutoQA as a project. */
+/** A repository already imported into RazeQA as a project. */
 interface ConnectedProject {
   repo_full_name: string;
   default_branch: string;
@@ -122,7 +122,7 @@ function ConnectGitHubApp({
             Connect GitHub to import repositories
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
-            AutoQA reads your code through a GitHub App. Until it is installed on the
+            RazeQA reads your code through a GitHub App. Until it is installed on the
             account or organization that owns your repositories, there is nothing to
             import — so the repository picker stays locked.
           </p>
@@ -151,7 +151,7 @@ function ConnectGitHubApp({
         <ol className="space-y-3 text-xs text-slate-600">
           <li className="flex items-start gap-2.5">
             <span className={stepBadge}>1</span>
-            <span>Install the AutoQA GitHub App on your account or organization.</span>
+            <span>Install the RazeQA GitHub App on your account or organization.</span>
           </li>
           <li className="flex items-start gap-2.5">
             <span className={stepBadge}>2</span>
@@ -200,7 +200,7 @@ function ConnectGitHubApp({
         <p className="text-[11px] text-slate-400 leading-relaxed">
           Still blocked after installing? Check that the App was installed on the account
           that owns the repositories, and that it was granted at least one repository —
-          AutoQA cannot import a repository the App has no access to.
+          RazeQA cannot import a repository the App has no access to.
         </p>
 
         <div className="pt-3 border-t border-slate-100">
@@ -656,7 +656,7 @@ export default function NewProjectPage() {
             </h1>
             <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
               Repositories below are the ones your GitHub App can access. Importing is an explicit
-              step — nothing becomes an AutoQA project until you choose it here.
+              step — nothing becomes an RazeQA project until you choose it here.
             </p>
           </div>
 
@@ -872,7 +872,7 @@ export default function NewProjectPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="text-[11px] font-medium text-slate-600 block mb-1.5">
-                    AutoQA Workspace
+                    RazeQA Workspace
                   </label>
                   <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border border-slate-200 rounded-md text-slate-900">
                     <span className="truncate">
@@ -1418,7 +1418,7 @@ export default function NewProjectPage() {
                 <div className="flex items-center gap-2">
                   <Check className="h-4 w-4 text-emerald-600 shrink-0" />
                   <span>
-                    <span className="font-semibold">{importedRepo}</span> is now an AutoQA project.
+                    <span className="font-semibold">{importedRepo}</span> is now an RazeQA project.
                   </span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">

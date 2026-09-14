@@ -3,7 +3,7 @@ import { getSession } from "@/lib/auth";
 import JobAnalyticsClient from "./job-analytics-client";
 
 export const metadata = {
-  title: "Job Quality & Per-Path Analytics — AutoQA",
+  title: "Job Quality & Per-Path Analytics — RazeQA",
   description: "Detailed per-job quality dimension audit, per-path latency, accessibility scorecards, and AI remediation.",
 };
 

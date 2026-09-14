@@ -2,7 +2,7 @@
 
 /**
  * CANONICAL DEMO FIXTURE: This page serves as the intentional customer application target
- * evaluated and repaired by the AutoQA test runner (agent/src/agent/runner/baseline.py,
+ * evaluated and repaired by the RazeQA test runner (agent/src/agent/runner/baseline.py,
  * analyzer/quality_dimensions.py, and remediation/fix_synthesizer.py). It is intentionally
  * unlinked from the main dashboard navigation. Do not delete or rename.
  */
@@ -153,7 +153,7 @@ export default function CheckoutPage() {
       } else {
         // Fallback local check if offline
         const code = promo.trim().toUpperCase();
-        if (code === "DEVPROMO" || code === "AUTOQA50") {
+        if (code === "DEVPROMO" || code === "RAZEQA50") {
           setDiscount(50);
           setPromoAppliedMsg("$50 discount applied");
           setErrorMsg(null);
@@ -466,7 +466,7 @@ export default function CheckoutPage() {
                     <div className="flex gap-2">
                       <Input
                         id="promo-code"
-                        placeholder="Promo code (e.g. DEVPROMO, AUTOQA50)"
+                        placeholder="Promo code (e.g. DEVPROMO, RAZEQA50)"
                         value={promo}
                         onChange={(e) => setPromo(e.target.value)}
                         className="text-xs bg-white"

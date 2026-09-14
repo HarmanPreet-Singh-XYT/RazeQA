@@ -112,7 +112,7 @@ async def github_webhook(
                     ).execute()
                     # NOTE: intentionally no `projects` insert here. Installing the
                     # GitHub App grants *access* to repositories; it does not mean the
-                    # user wants each of them configured as an AutoQA project. Rows in
+                    # user wants each of them configured as an RazeQA project. Rows in
                     # `projects` are created only by an explicit import from the
                     # dashboard (POST /api/projects).
 

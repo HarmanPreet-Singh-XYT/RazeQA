@@ -21,22 +21,22 @@ export async function generateMetadata({ params }: ToolPageProps): Promise<Metad
   const tool = getToolById(toolId);
   if (!tool) {
     return {
-      title: "Tool Not Found | AutoQA",
+      title: "Tool Not Found | RazeQA",
     };
   }
 
   return {
     title: `${tool.name} — Free In-Browser Webmaster Tool`,
     description: tool.detailedDescription,
-    keywords: [...tool.tags, "Developer Tool", "Free Online Tool", "AutoQA"],
+    keywords: [...tool.tags, "Developer Tool", "Free Online Tool", "RazeQA"],
     openGraph: {
-      title: `${tool.name} | AutoQA Developer Suite`,
+      title: `${tool.name} | RazeQA Developer Suite`,
       description: tool.detailedDescription,
       type: "website",
     },
     twitter: {
       card: "summary_large_image",
-      title: `${tool.name} | AutoQA Developer Suite`,
+      title: `${tool.name} | RazeQA Developer Suite`,
       description: tool.description,
     },
   };
@@ -84,7 +84,7 @@ export default async function ToolDetailPage({ params }: ToolPageProps) {
                 PR
               </div>
               <span className="font-bold text-slate-900 tracking-tight text-base">
-                AutoQA Platform
+                RazeQA Platform
               </span>
             </Link>
             <span className="text-slate-300">/</span>

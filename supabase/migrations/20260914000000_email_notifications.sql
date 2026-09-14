@@ -2,7 +2,7 @@
 --
 -- Why this exists
 -- ---------------
--- AutoQA had no way to tell a human that something happened. A failed
+-- RazeQA had no way to tell a human that something happened. A failed
 -- verification, a new critical finding, a finished review or a published fix
 -- was visible only to whoever happened to open the dashboard. This adds the
 -- persistence layer for outbound email: one durable row per message, so a

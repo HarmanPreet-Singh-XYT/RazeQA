@@ -52,7 +52,7 @@ import { RunConfigDialog } from "@/components/run-config-dialog";
 import { useDashboard } from "@/components/dashboard-context";
 import { firstRunSatisfied, persistFirstRunRecord, type RunDispatchRecord } from "@/lib/first-run";
 
-// --- Domain Models based on Real AutoQA Backend ---
+// --- Domain Models based on Real RazeQA Backend ---
 
 export type RunRecord = {
   id: string;
@@ -443,7 +443,7 @@ export function OverviewClient({
         setRunsError(errJson.error || `Failed to fetch runs (HTTP ${res.status}).`);
       }
     } catch (err: any) {
-      setRunsError(err?.message || "Could not reach AutoQA server.");
+      setRunsError(err?.message || "Could not reach RazeQA server.");
     } finally {
       setIsRefreshing(false);
       setIsLoadingRuns(false);
@@ -665,7 +665,7 @@ export function OverviewClient({
           <div className="flex items-center gap-3">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-2">
               <Shield className="h-4 w-4 text-emerald-600" />
-              AutoQA Platform Health
+              RazeQA Platform Health
             </span>
             <span className="rounded-md bg-slate-100 border border-slate-200 px-2 py-0.5 text-xs font-mono font-semibold text-slate-900">
               {activeRepoName}
@@ -884,7 +884,7 @@ export function OverviewClient({
             </h3>
             <p className="text-xs text-slate-500 max-w-sm mx-auto">
               {showRunsLoading
-                ? "Connecting to the AutoQA engine and reading recorded runs."
+                ? "Connecting to the RazeQA engine and reading recorded runs."
                 : runsUncertain
                 ? "The engine is unreachable, so this list may be incomplete. It refreshes automatically."
                 : "Trigger a verification run to explore user journeys and generate forensics."}
@@ -1537,7 +1537,7 @@ export function OverviewClient({
                   This stream is optional and currently empty
                 </p>
                 <p className="text-[11px] text-slate-500 leading-relaxed max-w-2xl">
-                  AutoQA already verifies commits from git on its own — nothing here is required for
+                  RazeQA already verifies commits from git on its own — nothing here is required for
                   a run. This panel only fills up if you also run the Coding Agent Bridge alongside
                   your editor, which streams <em>why</em> a file changed (your prompt and the
                   agent&apos;s reasoning) so the diff analyzer has extra context.

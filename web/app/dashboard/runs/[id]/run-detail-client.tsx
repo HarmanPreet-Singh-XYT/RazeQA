@@ -154,7 +154,7 @@ export function RunDetailClient({ runId }: { runId: string }) {
       setData(body);
       setSelectedId((prev) => prev ?? body.test_cases?.[0]?.id ?? null);
     } catch (err: any) {
-      setError(err?.message || "Could not reach the AutoQA server.");
+      setError(err?.message || "Could not reach the RazeQA server.");
     } finally {
       setIsLoading(false);
     }
@@ -181,7 +181,7 @@ export function RunDetailClient({ runId }: { runId: string }) {
       }
       await load(false);
     } catch (err: any) {
-      setCancelError(err?.message || "Could not reach the AutoQA server.");
+      setCancelError(err?.message || "Could not reach the RazeQA server.");
     } finally {
       setCancelling(false);
     }

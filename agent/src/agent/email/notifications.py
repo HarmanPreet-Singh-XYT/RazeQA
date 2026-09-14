@@ -90,7 +90,7 @@ async def _deliver(
         settings,
         to=list(message.get("recipients") or []),
         cc=list(message.get("cc") or []),
-        subject=message.get("subject") or "AutoQA notification",
+        subject=message.get("subject") or "RazeQA notification",
         text=message.get("body_text") or "",
         html=message.get("body_html"),
     )

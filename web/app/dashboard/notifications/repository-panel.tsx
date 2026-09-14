@@ -99,7 +99,7 @@ export function RepositoryPanel() {
       const data = await res.json().catch(() => ({}));
       setStatus(data);
     } catch {
-      setStatus({ warning: "Could not reach the AutoQA server." });
+      setStatus({ warning: "Could not reach the RazeQA server." });
     } finally {
       setLoadingStatus(false);
     }
@@ -130,7 +130,7 @@ export function RepositoryPanel() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (err: any) {
-      setError(err?.message || "Could not reach the AutoQA server.");
+      setError(err?.message || "Could not reach the RazeQA server.");
     } finally {
       setIsSaving(false);
     }
@@ -160,7 +160,7 @@ export function RepositoryPanel() {
       });
       void loadStatus();
     } catch (err: any) {
-      setTestResult({ ok: false, message: err?.message || "Could not reach the AutoQA server." });
+      setTestResult({ ok: false, message: err?.message || "Could not reach the RazeQA server." });
     } finally {
       setTesting(false);
     }

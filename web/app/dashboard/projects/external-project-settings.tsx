@@ -50,7 +50,7 @@ export function ExternalProjectSettings({
   const [newRoute, setNewRoute] = useState("");
 
   const [headers, setHeaders] = useState<{ key: string; value: string }[]>([
-    { key: "User-Agent", value: "AutoQA-Playwright-Autonomous-Crawler/2.0" },
+    { key: "User-Agent", value: "RazeQA-Playwright-Autonomous-Crawler/2.0" },
   ]);
   const [newHeaderKey, setNewHeaderKey] = useState("");
   const [newHeaderVal, setNewHeaderVal] = useState("");
@@ -75,11 +75,11 @@ export function ExternalProjectSettings({
   // Load persisted routes & headers from localStorage
   useEffect(() => {
     try {
-      const storedRoutes = localStorage.getItem(`autoqa_routes_${cleanHostname}`);
+      const storedRoutes = localStorage.getItem(`razeqa_routes_${cleanHostname}`);
       if (storedRoutes) {
         setRoutes(JSON.parse(storedRoutes));
       }
-      const storedHeaders = localStorage.getItem(`autoqa_headers_${cleanHostname}`);
+      const storedHeaders = localStorage.getItem(`razeqa_headers_${cleanHostname}`);
       if (storedHeaders) {
         setHeaders(JSON.parse(storedHeaders));
       }
@@ -122,7 +122,7 @@ export function ExternalProjectSettings({
       const updated = [...routes, formatted];
       setRoutes(updated);
       try {
-        localStorage.setItem(`autoqa_routes_${cleanHostname}`, JSON.stringify(updated));
+        localStorage.setItem(`razeqa_routes_${cleanHostname}`, JSON.stringify(updated));
       } catch {}
     }
     setNewRoute("");
@@ -132,7 +132,7 @@ export function ExternalProjectSettings({
     const updated = routes.filter((r) => r !== routeToRemove);
     setRoutes(updated);
     try {
-      localStorage.setItem(`autoqa_routes_${cleanHostname}`, JSON.stringify(updated));
+      localStorage.setItem(`razeqa_routes_${cleanHostname}`, JSON.stringify(updated));
     } catch {}
   };
 
@@ -142,7 +142,7 @@ export function ExternalProjectSettings({
     const updated = [...headers, { key: newHeaderKey.trim(), value: newHeaderVal.trim() }];
     setHeaders(updated);
     try {
-      localStorage.setItem(`autoqa_headers_${cleanHostname}`, JSON.stringify(updated));
+      localStorage.setItem(`razeqa_headers_${cleanHostname}`, JSON.stringify(updated));
     } catch {}
     setNewHeaderKey("");
     setNewHeaderVal("");
@@ -152,15 +152,15 @@ export function ExternalProjectSettings({
     const updated = headers.filter((_, i) => i !== index);
     setHeaders(updated);
     try {
-      localStorage.setItem(`autoqa_headers_${cleanHostname}`, JSON.stringify(updated));
+      localStorage.setItem(`razeqa_headers_${cleanHostname}`, JSON.stringify(updated));
     } catch {}
   };
 
   const handleSave = () => {
     setIsSaving(true);
     try {
-      localStorage.setItem(`autoqa_routes_${cleanHostname}`, JSON.stringify(routes));
-      localStorage.setItem(`autoqa_headers_${cleanHostname}`, JSON.stringify(headers));
+      localStorage.setItem(`razeqa_routes_${cleanHostname}`, JSON.stringify(routes));
+      localStorage.setItem(`razeqa_headers_${cleanHostname}`, JSON.stringify(headers));
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2500);
     } catch {}
@@ -373,7 +373,7 @@ export function ExternalProjectSettings({
                   </a>
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  AutoQA crawls and verifies Playwright user journeys against this target domain.
+                  RazeQA crawls and verifies Playwright user journeys against this target domain.
                 </p>
               </div>
 

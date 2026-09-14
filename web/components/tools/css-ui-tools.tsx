@@ -297,7 +297,7 @@ export function ContrastChecker() {
           >
             <h3 className="text-xl font-bold">Preview Heading 1 (Large Text)</h3>
             <p className="text-sm leading-relaxed">
-              AutoQA autonomously tests modern web applications with synthetic journeys and visual
+              RazeQA autonomously tests modern web applications with synthetic journeys and visual
               regression forensics.
             </p>
           </div>

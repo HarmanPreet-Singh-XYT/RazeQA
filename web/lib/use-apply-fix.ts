@@ -78,7 +78,7 @@ export function useApplyFix(runId: string, onApplied?: () => void) {
         isApplying: false,
         isSuccess: false,
         appliedVia: null,
-        error: err?.message || "Network error while connecting to AutoQA Engine.",
+        error: err?.message || "Network error while connecting to RazeQA Engine.",
         errorType: "backend_unreachable",
       });
     }

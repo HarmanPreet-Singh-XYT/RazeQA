@@ -1,4 +1,4 @@
-"""AutoQA AI Copilot — a grounded chat endpoint for the dashboard assistant.
+"""RazeQA AI Copilot — a grounded chat endpoint for the dashboard assistant.
 
 The dashboard copilot used to be pure theatre: ``web/components/agent-modal.tsx``
 keyword-matched the user's message and replied with canned strings, inventing a
@@ -1861,7 +1861,7 @@ def build_context_block(request: CopilotChatRequest) -> str:
     return "\n\n".join(parts)
 
 
-SYSTEM_PROMPT = """You are the AutoQA AI Copilot, an agent embedded in an automated QA dashboard.
+SYSTEM_PROMPT = """You are the RazeQA AI Copilot, an agent embedded in an automated QA dashboard.
 
 You help users understand their test runs, diagnose failures, and decide what to
 verify next. You are talking to an engineer who is already looking at the

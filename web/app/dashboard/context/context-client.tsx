@@ -85,7 +85,7 @@ export function ContextSecretsClient() {
       setSecretsConfigured(Boolean(data?.secrets_configured));
       setMigrationRequired(Boolean(data?.migration_required));
     } catch (err: any) {
-      setError(err?.message || "Could not reach the AutoQA server.");
+      setError(err?.message || "Could not reach the RazeQA server.");
     } finally {
       setIsLoading(false);
     }

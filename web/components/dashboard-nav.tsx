@@ -252,7 +252,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                   </div>
                   <span>{userEmail ? userEmail.split("@")[0] : "harmanpreet-singh"}</span>
                   <span className="text-[10px] font-mono text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded shrink-0">
-                    AutoQA
+                    RazeQA
                   </span>
                   <ChevronDown className="h-3 w-3 text-slate-400" />
                 </button>
@@ -593,7 +593,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
             <div className="flex items-center gap-1">
               <Link
                 href={agentHref}
-                title="AutoQA Copilot"
+                title="RazeQA Copilot"
                 className="relative p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100 transition-colors"
               >
                 <Bell className="h-3.5 w-3.5" />
@@ -662,7 +662,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                 {isMobileMenuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
               </button>
 
-              {/* AutoQA Logo Icon */}
+              {/* RazeQA Logo Icon */}
               <Link href="/dashboard" className="flex items-center gap-2 text-slate-900 shrink-0">
                 <div className="h-6 w-6 rounded bg-slate-950 text-white flex items-center justify-center font-bold text-[11px] font-mono shadow-2xs">
                   QA
@@ -842,7 +842,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                   <div className="h-6 w-6 rounded bg-slate-950 text-white flex items-center justify-center font-mono font-bold text-xs">
                     QA
                   </div>
-                  <span className="font-bold text-sm text-slate-950">AutoQA</span>
+                  <span className="font-bold text-sm text-slate-950">RazeQA</span>
                 </div>
                 <button
                   onClick={() => setIsMobileMenuOpen(false)}

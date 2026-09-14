@@ -3,8 +3,8 @@ import Link from "next/link";
 import { ArrowLeft, Shield, ShieldCheck, Lock, Key, Server, Terminal } from "lucide-react";
 
 export const metadata = {
-  title: "Security Overview — AutoQA",
-  description: "Enterprise security architecture, isolation boundaries, and encryption mechanisms of AutoQA.",
+  title: "Security Overview — RazeQA",
+  description: "Enterprise security architecture, isolation boundaries, and encryption mechanisms of RazeQA.",
 };
 
 export default function SecurityPage() {
@@ -18,7 +18,7 @@ export default function SecurityPage() {
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 transition-colors rounded-md border border-slate-200 px-2.5 py-1.5 bg-slate-50"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              <span>Back to AutoQA</span>
+              <span>Back to RazeQA</span>
             </Link>
           </div>
           <span className="font-mono text-xs text-slate-500">Security Model v2.4</span>
@@ -82,7 +82,7 @@ export default function SecurityPage() {
         </section>
 
         <div className="pt-8 border-t border-slate-200 text-xs text-slate-500 flex items-center justify-between">
-          <p>© 2026 AutoQA Platform. All rights reserved.</p>
+          <p>© 2026 RazeQA Platform. All rights reserved.</p>
           <div className="flex gap-4">
             <Link href="/terms" className="hover:underline">Terms of Service</Link>
             <Link href="/privacy" className="hover:underline">Privacy Policy</Link>

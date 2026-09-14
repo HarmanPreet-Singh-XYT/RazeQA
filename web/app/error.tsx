@@ -12,7 +12,7 @@ export default function RootErrorBoundary({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error("AutoQA Client Error Boundary caught exception:", error);
+    console.error("RazeQA Client Error Boundary caught exception:", error);
   }, [error]);
 
   return (

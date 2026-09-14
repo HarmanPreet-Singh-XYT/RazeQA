@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { ProjectDetailClient } from "./project-detail-client";
 
 export const metadata = {
-  title: "Project Details — AutoQA",
+  title: "Project Details — RazeQA",
   description: "Automated test runs, synthetic user journeys, live sandbox verification, and AI fix proposals.",
 };
 

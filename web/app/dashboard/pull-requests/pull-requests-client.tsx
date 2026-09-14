@@ -152,7 +152,7 @@ export function PullRequestsClient() {
       setCounts(data?.counts || { total: 0, with_bugs: 0 });
       setDetectionRate(typeof data?.bug_detection_rate === "number" ? data.bug_detection_rate : null);
     } catch (err: any) {
-      setError(err?.message || "Could not reach the AutoQA server.");
+      setError(err?.message || "Could not reach the RazeQA server.");
       setRows([]);
     } finally {
       setIsLoading(false);
@@ -181,7 +181,7 @@ export function PullRequestsClient() {
       }
       setAvailablePRs(Array.isArray(data?.pull_requests) ? data.pull_requests : []);
     } catch (err: any) {
-      setPickerError(err?.message || "Could not reach the AutoQA server.");
+      setPickerError(err?.message || "Could not reach the RazeQA server.");
       setAvailablePRs([]);
     } finally {
       setIsLoadingPRs(false);
@@ -259,7 +259,7 @@ export function PullRequestsClient() {
       setSelectedPRs(new Set());
       await load();
     } catch (err: any) {
-      setPickerError(err?.message || "Could not reach the AutoQA server.");
+      setPickerError(err?.message || "Could not reach the RazeQA server.");
     } finally {
       setIsDispatching(false);
     }

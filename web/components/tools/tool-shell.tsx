@@ -136,7 +136,7 @@ export function ToolShell({
           <div className="flex items-center gap-2 text-indigo-950">
             <Sparkles className="h-4 w-4 text-indigo-600 shrink-0" />
             <span>
-              <strong className="font-semibold">AutoQA Synergy:</strong> {tool.synergyHint}
+              <strong className="font-semibold">RazeQA Synergy:</strong> {tool.synergyHint}
             </span>
           </div>
           <Link

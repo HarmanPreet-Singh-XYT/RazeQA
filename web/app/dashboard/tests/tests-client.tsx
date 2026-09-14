@@ -74,7 +74,7 @@ export function TestsClient() {
       setMigrationRequired(Boolean(data?.migration_required));
       setTests(Array.isArray(data?.tests) ? data.tests : []);
     } catch (err: any) {
-      setError(err?.message || "Could not reach the AutoQA server.");
+      setError(err?.message || "Could not reach the RazeQA server.");
     } finally {
       setIsLoading(false);
     }

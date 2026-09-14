@@ -541,7 +541,7 @@ module.exports = {
 // ==========================================
 export function HashGenerator() {
   const tool = getToolById("hash-generator")!;
-  const [inputString, setInputString] = useState("AutoQA-Verification-Secret-2026");
+  const [inputString, setInputString] = useState("RazeQA-Verification-Secret-2026");
   const [sha256, setSha256] = useState("");
   const [sha512, setSha512] = useState("");
   const [base64, setBase64] = useState("");
@@ -640,18 +640,18 @@ export function HashGenerator() {
 // ==========================================
 export function SSLChecker() {
   const tool = getToolById("ssl-checker")!;
-  const [domain, setDomain] = useState("autoqa.dev");
+  const [domain, setDomain] = useState("razeqa.dev");
   const [isProbing, setIsProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
 
   const [certData, setCertData] = useState({
-    host: "autoqa.dev",
+    host: "razeqa.dev",
     status: "valid",
     issuer: "Let's Encrypt Authority R3 (US)",
     validFrom: "2026-08-15T00:00:00Z",
     validTo: "2026-11-13T23:59:59Z",
     daysRemaining: 64,
-    san: ["*.autoqa.dev", "autoqa.dev"],
+    san: ["*.razeqa.dev", "razeqa.dev"],
     tlsVersion: "TLS 1.3",
     cipherSuite: "TLS_AES_256_GCM_SHA384",
     alpn: "h2, http/1.1",

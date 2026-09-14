@@ -69,7 +69,7 @@ def run_login_journey(
             click_with_cursor(page, "button[type=submit]")
             page.wait_for_url(f"{base_url}/dashboard", timeout=10_000)
             content = page.content()
-            passed = any(indicator in content for indicator in ("AutoQA Platform", "Sign out", "ecommerce-web", "Authenticated content", "Dashboard"))
+            passed = any(indicator in content for indicator in ("RazeQA Platform", "Sign out", "ecommerce-web", "Authenticated content", "Dashboard"))
             if not passed:
                 error = "Dashboard reached but expected authenticated indicators were missing."
             else:

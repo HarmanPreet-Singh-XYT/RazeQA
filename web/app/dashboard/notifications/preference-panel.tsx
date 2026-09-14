@@ -97,7 +97,7 @@ export function PreferencePanel({ mode }: { mode: Mode }) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (err: any) {
-      setError(err?.message || "Could not reach the AutoQA server.");
+      setError(err?.message || "Could not reach the RazeQA server.");
     } finally {
       setIsSaving(false);
     }

@@ -1,4 +1,4 @@
-"""Autonomous Test Scope Planner for AutoQA.
+"""Autonomous Test Scope Planner for RazeQA.
 
 Leverages a lightweight mini-swe-agent in a strict read-only sandbox to evaluate
 discovered routes, git diffs, and developer testing instructions, producing a
@@ -363,7 +363,7 @@ cat << 'EOF'
 EOF
 """
 
-        system_template = f"""You are an expert Autonomous Test Scope Planner for AutoQA.
+        system_template = f"""You are an expert Autonomous Test Scope Planner for RazeQA.
 Your goal is to inspect the codebase (if necessary) and select the most important routes to test.
 You have a read-only bash environment. You can run inspection commands such as `ls`, `cat`, `grep`, `git diff`.
 

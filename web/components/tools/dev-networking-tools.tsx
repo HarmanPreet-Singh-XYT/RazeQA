@@ -25,7 +25,7 @@ export function RegexTester() {
   const [pattern, setPattern] = useState("([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})");
   const [flags, setFlags] = useState("g");
   const [testString, setTestString] = useState(
-    "Contact engineering at qa@autoqa.dev or security alerts at alex.chen@active.security.com for details."
+    "Contact engineering at qa@razeqa.dev or security alerts at alex.chen@active.security.com for details."
   );
   const [matches, setMatches] = useState<any[]>([]);
   const [regexError, setRegexError] = useState<string | null>(null);

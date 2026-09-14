@@ -61,7 +61,7 @@ export async function GET(request: Request) {
     return NextResponse.json(data);
   } catch (err: any) {
     return NextResponse.json(
-      { error: err?.message || "Could not reach the AutoQA engine." },
+      { error: err?.message || "Could not reach the RazeQA engine." },
       { status: 503 }
     );
   }

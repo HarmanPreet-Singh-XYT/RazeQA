@@ -27,7 +27,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
 # Install Playwright browser and OS-level dependencies for Chromium
-RUN uv run playwright install --with-deps chromium
+RUN uv run --no-project playwright install --with-deps chromium
 
 # Copy application source and documentation
 COPY src/ ./src/

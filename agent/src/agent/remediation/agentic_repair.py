@@ -1,4 +1,4 @@
-"""Autonomous Agentic Repair Module for AutoQA.
+"""Autonomous Agentic Repair Module for RazeQA.
 
 Leverages mini-swe-agent's stateless bash-first architecture to autonomously diagnose,
 patch, and verify regressions in the target workspace. Integrates with AWS Bedrock

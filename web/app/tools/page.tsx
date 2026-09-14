@@ -53,7 +53,7 @@ export default function ToolsHubPage() {
                 QA
               </div>
               <span className="font-bold text-slate-900 tracking-tight text-base">
-                AutoQA Platform
+                RazeQA Platform
               </span>
             </Link>
             <span className="text-slate-300">/</span>
@@ -205,7 +205,7 @@ export default function ToolsHubPage() {
               Autonomous Verification Engine
             </div>
             <h2 className="text-xl sm:text-2xl font-black tracking-tight">
-              Test your entire website autonomously with AutoQA
+              Test your entire website autonomously with RazeQA
             </h2>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
               Don&apos;t just debug one header or tag at a time. Run synthetic browser journeys with Playwright,

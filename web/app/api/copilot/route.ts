@@ -5,7 +5,7 @@ import { canAccessRepo, resolveTenantScope, type TenantScope } from "@/lib/tenan
 import { checkRateLimit } from "@/lib/rate-limit";
 
 /**
- * Server-side proxy for the AutoQA AI Copilot.
+ * Server-side proxy for the RazeQA AI Copilot.
  *
  * The browser never talks to the engine directly. This route:
  *   1. authenticates the signed-in user,
@@ -446,7 +446,7 @@ export async function POST(request: Request) {
     });
   } catch (err: any) {
     return NextResponse.json(
-      { error: err?.message || "Could not reach the AutoQA engine." },
+      { error: err?.message || "Could not reach the RazeQA engine." },
       { status: 503 }
     );
   }

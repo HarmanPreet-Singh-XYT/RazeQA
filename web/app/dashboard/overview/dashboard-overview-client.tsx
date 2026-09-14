@@ -108,7 +108,7 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
   // Initialize starred projects from localStorage only
   useEffect(() => {
     try {
-      const stored = localStorage.getItem("autoqa_starred_projects");
+      const stored = localStorage.getItem("razeqa_starred_projects");
       if (stored) {
         setStarredMap(JSON.parse(stored));
       }
@@ -141,7 +141,7 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
     setStarredMap((prev) => {
       const next = { ...prev, [repoFullName]: !prev[repoFullName] };
       try {
-        localStorage.setItem("autoqa_starred_projects", JSON.stringify(next));
+        localStorage.setItem("razeqa_starred_projects", JSON.stringify(next));
       } catch {}
       return next;
     });

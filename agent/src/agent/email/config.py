@@ -182,7 +182,7 @@ def load_email_settings() -> EmailSettings:
         username=username,
         password=password,
         sender=sender,
-        sender_name=_env("SMTP_FROM_NAME", "AutoQA"),
+        sender_name=_env("SMTP_FROM_NAME", "RazeQA"),
         reply_to=_env("SMTP_REPLY_TO"),
         use_tls=use_tls,
         starttls=starttls,

@@ -21,12 +21,12 @@ import {
 // ==========================================
 export function OpenGraphPreviewer() {
   const tool = getToolById("open-graph-previewer")!;
-  const [title, setTitle] = useState("AutoQA — Autonomous PR Testing Engine & Quality Forensics");
+  const [title, setTitle] = useState("RazeQA — Autonomous PR Testing Engine & Quality Forensics");
   const [description, setDescription] = useState(
     "Continuous autonomous verification for pull requests and live websites with per-path quality analysis and AI insights."
   );
-  const [url, setUrl] = useState("https://autoqa.dev/features");
-  const [siteName, setSiteName] = useState("AutoQA Platform");
+  const [url, setUrl] = useState("https://razeqa.dev/features");
+  const [siteName, setSiteName] = useState("RazeQA Platform");
   const [imageUrl, setImageUrl] = useState("https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=1200&auto=format&fit=crop&q=80");
   const [twitterCard, setTwitterCard] = useState<"summary_large_image" | "summary">("summary_large_image");
   const [previewPlatform, setPreviewPlatform] = useState<"twitter" | "facebook" | "linkedin" | "discord">("twitter");
@@ -97,9 +97,9 @@ export function OpenGraphPreviewer() {
       outputCode={generatedHtml}
       outputFilename="meta-tags.html"
       onReset={() => {
-        setTitle("AutoQA — Autonomous PR Testing Engine");
+        setTitle("RazeQA — Autonomous PR Testing Engine");
         setDescription("Continuous autonomous verification for pull requests and live websites.");
-        setUrl("https://autoqa.dev");
+        setUrl("https://razeqa.dev");
         setImageUrl("https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=1200&auto=format&fit=crop&q=80");
       }}
     >
@@ -285,12 +285,12 @@ export function OpenGraphPreviewer() {
                     }}
                   />
                   <span className="absolute bottom-2 left-2 rounded bg-black/75 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                    {new URL(url || "https://autoqa.dev").hostname}
+                    {new URL(url || "https://razeqa.dev").hostname}
                   </span>
                 </div>
                 <div className="p-3.5 space-y-1">
                   <div className="text-[11px] text-slate-400 truncate">
-                    {new URL(url || "https://autoqa.dev").hostname}
+                    {new URL(url || "https://razeqa.dev").hostname}
                   </div>
                   <div className="text-xs font-bold text-slate-900 line-clamp-1">
                     {title}
@@ -309,7 +309,7 @@ export function OpenGraphPreviewer() {
                 </div>
                 <div className="p-3 bg-white border-t border-slate-200 space-y-0.5">
                   <div className="text-[10px] uppercase font-mono text-slate-400">
-                    {new URL(url || "https://autoqa.dev").hostname}
+                    {new URL(url || "https://razeqa.dev").hostname}
                   </div>
                   <div className="text-xs font-bold text-slate-900 line-clamp-1">{title}</div>
                   <div className="text-[11px] text-slate-500 line-clamp-1">{description}</div>
@@ -325,7 +325,7 @@ export function OpenGraphPreviewer() {
                 <div className="p-3 space-y-1">
                   <div className="text-xs font-bold text-slate-900 line-clamp-2">{title}</div>
                   <div className="text-[10px] text-slate-400">
-                    {new URL(url || "https://autoqa.dev").hostname} • 1 min read
+                    {new URL(url || "https://razeqa.dev").hostname} • 1 min read
                   </div>
                 </div>
               </div>
@@ -371,12 +371,12 @@ export function SchemaGenerator() {
   // FAQ Schema State
   const [faqs, setFaqs] = useState([
     {
-      q: "What is AutoQA?",
-      a: "AutoQA is an autonomous PR verification engine and synthetic journey testing platform.",
+      q: "What is RazeQA?",
+      a: "RazeQA is an autonomous PR verification engine and synthetic journey testing platform.",
     },
     {
-      q: "Does AutoQA run headless Playwright sandboxes?",
-      a: "Yes, AutoQA spins up deterministic headless browser environments with video and trace recording.",
+      q: "Does RazeQA run headless Playwright sandboxes?",
+      a: "Yes, RazeQA spins up deterministic headless browser environments with video and trace recording.",
     },
   ]);
 
@@ -384,11 +384,11 @@ export function SchemaGenerator() {
   const [productName, setProductName] = useState("Enterprise QA Fleet License");
   const [productPrice, setProductPrice] = useState("499");
   const [currency, setCurrency] = useState("USD");
-  const [productSku, setProductSku] = useState("AUTOQA-ENT-01");
+  const [productSku, setProductSku] = useState("RAZEQA-ENT-01");
 
   // Article Schema State
   const [articleHeadline, setArticleHeadline] = useState("How Autonomous PR Testing Eliminates Flaky Regressions");
-  const [authorName, setAuthorName] = useState("AutoQA Engineering");
+  const [authorName, setAuthorName] = useState("RazeQA Engineering");
 
   const buildJsonLd = () => {
     if (schemaType === "FAQPage") {
@@ -434,9 +434,9 @@ export function SchemaGenerator() {
     return {
       "@context": "https://schema.org",
       "@type": "Organization",
-      name: "AutoQA Platform",
-      url: "https://autoqa.dev",
-      logo: "https://autoqa.dev/logo.png",
+      name: "RazeQA Platform",
+      url: "https://razeqa.dev",
+      logo: "https://razeqa.dev/logo.png",
     };
   };
 
@@ -626,7 +626,7 @@ export function SitemapGenerator() {
   const [priority, setPriority] = useState("0.8");
 
   // Automation & Loading State
-  const [crawlUrl, setCrawlUrl] = useState("https://autoqa.dev");
+  const [crawlUrl, setCrawlUrl] = useState("https://razeqa.dev");
   const [isCrawling, setIsCrawling] = useState(false);
   const [crawlError, setCrawlError] = useState<string | null>(null);
   const [crawlSuccess, setCrawlSuccess] = useState<string | null>(null);

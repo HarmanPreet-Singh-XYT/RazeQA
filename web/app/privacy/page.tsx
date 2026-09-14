@@ -3,8 +3,8 @@ import Link from "next/link";
 import { ArrowLeft, Lock, ShieldCheck, EyeOff } from "lucide-react";
 
 export const metadata = {
-  title: "Privacy Policy — AutoQA",
-  description: "Privacy practices and data handling policies of the AutoQA verification platform.",
+  title: "Privacy Policy — RazeQA",
+  description: "Privacy practices and data handling policies of the RazeQA verification platform.",
 };
 
 export default function PrivacyPage() {
@@ -18,7 +18,7 @@ export default function PrivacyPage() {
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 transition-colors rounded-md border border-slate-200 px-2.5 py-1.5 bg-slate-50"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              <span>Back to AutoQA</span>
+              <span>Back to RazeQA</span>
             </Link>
           </div>
           <span className="font-mono text-xs text-slate-500">Last Updated: September 2026</span>
@@ -35,14 +35,14 @@ export default function PrivacyPage() {
             Privacy Policy
           </h1>
           <p className="text-sm text-slate-600 leading-relaxed">
-            How AutoQA collects, handles, redacts, and stores telemetry and source code data.
+            How RazeQA collects, handles, redacts, and stores telemetry and source code data.
           </p>
         </div>
 
         <section className="space-y-4 text-sm text-slate-700 leading-relaxed">
           <h2 className="text-lg font-bold text-slate-950">1. Information We Collect</h2>
           <p>
-            AutoQA collects authentication credentials via Supabase Auth (email address and GitHub OAuth user identifiers). During PR verification runs, we collect ephemeral test execution artifacts including DOM snapshots, Playwright execution traces, console logs, and network telemetry.
+            RazeQA collects authentication credentials via Supabase Auth (email address and GitHub OAuth user identifiers). During PR verification runs, we collect ephemeral test execution artifacts including DOM snapshots, Playwright execution traces, console logs, and network telemetry.
           </p>
 
           <h2 className="text-lg font-bold text-slate-950">2. Automated Secret Redaction</h2>
@@ -62,12 +62,12 @@ export default function PrivacyPage() {
 
           <h2 className="text-lg font-bold text-slate-950">5. Contact &amp; Data Subject Rights</h2>
           <p>
-            To request deletion of your account, organization telemetry, or connected repositories, please contact your AutoQA workspace administrator or email <code className="text-indigo-600 font-mono text-xs">privacy@autoqa.dev</code>.
+            To request deletion of your account, organization telemetry, or connected repositories, please contact your RazeQA workspace administrator or email <code className="text-indigo-600 font-mono text-xs">privacy@razeqa.dev</code>.
           </p>
         </section>
 
         <div className="pt-8 border-t border-slate-200 text-xs text-slate-500 flex items-center justify-between">
-          <p>© 2026 AutoQA Platform. All rights reserved.</p>
+          <p>© 2026 RazeQA Platform. All rights reserved.</p>
           <div className="flex gap-4">
             <Link href="/terms" className="hover:underline">Terms of Service</Link>
             <Link href="/security" className="hover:underline">Security Overview</Link>

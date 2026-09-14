@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { TestsClient } from "./tests-client";
 
 export const metadata = {
-  title: "Tests — AutoQA",
+  title: "Tests — RazeQA",
   description: "The reusable regression suite the agent exercises on every run.",
 };
 

@@ -385,7 +385,7 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
           )}
 
           <p className="text-[11px] text-slate-500 pt-2 border-t border-slate-100">
-            AutoQA automatically flags selector regressions and synthesizes automated code patches.
+            RazeQA automatically flags selector regressions and synthesizes automated code patches.
           </p>
         </div>
       </div>

@@ -5,8 +5,8 @@ import { ArrowLeft } from "lucide-react";
 import { AuthForm } from "@/app/login/page";
 
 export const metadata: Metadata = {
-  title: "Create Account | AutoQA Platform",
-  description: "Sign up for AutoQA autonomous PR testing and quality forensics.",
+  title: "Create Account | RazeQA Platform",
+  description: "Sign up for RazeQA autonomous PR testing and quality forensics.",
 };
 
 export default function RegisterPage() {
@@ -43,7 +43,7 @@ export default function RegisterPage() {
           </div>
         </Link>
         <h1 className="text-xl font-bold tracking-tight text-slate-950">
-          AutoQA Platform
+          RazeQA Platform
         </h1>
         <p className="text-xs text-slate-500 mt-1 max-w-xs">
           Autonomous testing platform for Claude Code

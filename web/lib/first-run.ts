@@ -54,7 +54,7 @@ export interface CommitOption {
   html_url?: string | null;
 }
 
-const STORAGE_PREFIX = "autoqa_first_run:";
+const STORAGE_PREFIX = "razeqa_first_run:";
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -185,7 +185,7 @@ export function AuthForm({ initialTab = "login" }: { initialTab?: "login" | "reg
 
           <div>
             <CardTitle className="text-xl font-bold tracking-tight text-slate-950">
-              {mode === "login" ? "Sign in to AutoQA" : "Create developer account"}
+              {mode === "login" ? "Sign in to RazeQA" : "Create developer account"}
             </CardTitle>
             <CardDescription className="text-xs text-slate-500 mt-1.5 leading-relaxed">
               {mode === "login"
@@ -542,7 +542,7 @@ export function AuthForm({ initialTab = "login" }: { initialTab?: "login" | "reg
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              Enter the email address registered with your AutoQA account. We will send a secure link to reset your password.
+              Enter the email address registered with your RazeQA account. We will send a secure link to reset your password.
             </p>
 
             {forgotSuccess ? (
@@ -657,7 +657,7 @@ export default function LoginPage() {
           </div>
         </Link>
         <h1 className="text-xl font-bold tracking-tight text-slate-950">
-          AutoQA
+          RazeQA
         </h1>
         <p className="text-xs text-slate-500 mt-1 max-w-xs">
           Autonomous testing platform for Claude Code

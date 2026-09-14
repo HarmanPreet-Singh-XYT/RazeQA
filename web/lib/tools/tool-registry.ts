@@ -91,7 +91,7 @@ export const TOOLS_REGISTRY: ToolDefinition[] = [
     tags: ["Sitemap", "XML", "Robots", "SEO", "Webmaster"],
     icon: "FileSpreadsheet",
     badge: "Essential",
-    synergyHint: "Seed your AutoQA automated crawler journeys directly from an exported sitemap.",
+    synergyHint: "Seed your RazeQA automated crawler journeys directly from an exported sitemap.",
   },
   {
     id: "canonical-hreflang",
@@ -209,7 +209,7 @@ export const TOOLS_REGISTRY: ToolDefinition[] = [
     tags: ["Accessibility", "a11y", "WCAG", "Contrast", "Colors", "UI"],
     icon: "Eye",
     badge: "Essential",
-    synergyHint: "Direct remediation tool when AutoQA accessibility audits flag failing color contrast ratios.",
+    synergyHint: "Direct remediation tool when RazeQA accessibility audits flag failing color contrast ratios.",
   },
   {
     id: "css-generator",
@@ -352,7 +352,7 @@ export const TOOLS_REGISTRY: ToolDefinition[] = [
     detailedDescription: "Calculate IP subnet allocations, total usable addresses, binary representations, and wildcard masks for cloud network rules and firewall configurations.",
     tags: ["IPv4", "CIDR", "Subnet", "Networking", "IP", "DevOps"],
     icon: "Network",
-    synergyHint: "Configure firewall whitelisting for AutoQA runner IPs accessing staging environments.",
+    synergyHint: "Configure firewall whitelisting for RazeQA runner IPs accessing staging environments.",
   },
 ];
 

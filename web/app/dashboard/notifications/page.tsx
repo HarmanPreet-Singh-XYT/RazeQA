@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { NotificationsClient } from "./notifications-client";
 
 export const metadata = {
-  title: "Notifications — AutoQA",
+  title: "Notifications — RazeQA",
   description: "Choose who is emailed when a verification, finding, review or fix needs attention.",
 };
 

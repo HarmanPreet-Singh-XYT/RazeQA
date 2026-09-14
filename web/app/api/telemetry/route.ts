@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
     // In production, forward to Datadog / OpenTelemetry / Supabase telemetry table
     // In local development, log sanitized event
     if (process.env.NODE_ENV !== "production") {
-      console.log(`[AutoQA Telemetry] ${eventType}: ${eventName} on ${eventUrl}`);
+      console.log(`[RazeQA Telemetry] ${eventType}: ${eventName} on ${eventUrl}`);
     }
 
     return NextResponse.json({ status: "received" }, { status: 200 });

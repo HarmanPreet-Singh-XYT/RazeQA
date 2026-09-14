@@ -142,7 +142,7 @@ export function OnboardingWizard({ onCompleted, userEmail }: OnboardingWizardPro
       <div className="text-center mb-8 space-y-2">
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-800 mb-2">
           <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
-          <span>Welcome to AutoQA Platform</span>
+          <span>Welcome to RazeQA Platform</span>
         </div>
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-950">
           Get started with your first repository
@@ -209,7 +209,7 @@ export function OnboardingWizard({ onCompleted, userEmail }: OnboardingWizardPro
                 <p className="text-xs text-slate-500 mt-0.5">
                   {installedRepos.length > 0 && !useManualInput
                     ? "Select a repository discovered from your installed GitHub App, or switch to manual input."
-                    : "Specify the repository (owner/repo) that AutoQA will monitor for automated PR testing."}
+                    : "Specify the repository (owner/repo) that RazeQA will monitor for automated PR testing."}
                 </p>
               </div>
               {installedRepos.length > 0 && (
@@ -377,7 +377,7 @@ export function OnboardingWizard({ onCompleted, userEmail }: OnboardingWizardPro
                 <span>Build &amp; Test Configuration</span>
               </h2>
               <p className="text-xs text-slate-500 leading-relaxed">
-                AutoQA runs your build inside a containerized sandbox. Choose a preset or specify your safe build binary.
+                RazeQA runs your build inside a containerized sandbox. Choose a preset or specify your safe build binary.
               </p>
             </div>
 

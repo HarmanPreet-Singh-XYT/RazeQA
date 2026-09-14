@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { RunDetailClient } from "./run-detail-client";
 
 export const metadata = {
-  title: "Test Run Detail — AutoQA",
+  title: "Test Run Detail — RazeQA",
   description:
     "Every test case in one run, with its recording, reproduction steps, mock context, code analysis and downloadable artifacts.",
 };

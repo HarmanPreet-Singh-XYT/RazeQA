@@ -601,7 +601,7 @@ export default function ProjectsClient() {
         // Clear the stored selection so the dashboard does not restore a repo
         // that no longer exists.
         try {
-          localStorage.removeItem("autoqa_active_repo");
+          localStorage.removeItem("razeqa_active_repo");
         } catch {}
         setDashboardActiveRepo(null);
         router.replace(
@@ -1187,7 +1187,7 @@ export default function ProjectsClient() {
               </div>
 
               <p className="text-xs text-slate-600">
-                AutoQA automatically fingerprints commit SHAs and diff boundaries. When a commit is already verified green, cached forensics are returned instantly with zero LLM token consumption.
+                RazeQA automatically fingerprints commit SHAs and diff boundaries. When a commit is already verified green, cached forensics are returned instantly with zero LLM token consumption.
               </p>
 
               <div className="grid grid-cols-1 gap-2 pt-1 border-t border-indigo-100/80">

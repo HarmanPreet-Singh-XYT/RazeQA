@@ -21,8 +21,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "AutoQA — Autonomous PR Testing Engine & Quality Forensics",
-    template: "%s | AutoQA",
+    default: "RazeQA — Autonomous PR Testing Engine & Quality Forensics",
+    template: "%s | RazeQA",
   },
   description:
     "Autonomous pull request testing engine, visual regression forensics, and non-functional quality dimension analysis with predictive AI insights.",
@@ -35,20 +35,20 @@ export const metadata: Metadata = {
     "Quality Dimensions",
     "Visual Regression",
   ],
-  authors: [{ name: "AutoQA Team" }],
-  creator: "AutoQA",
+  authors: [{ name: "RazeQA Team" }],
+  creator: "RazeQA",
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: "https://autoqa.dev",
-    title: "AutoQA — Autonomous PR Testing Engine & Quality Forensics",
+    url: "https://razeqa.dev",
+    title: "RazeQA — Autonomous PR Testing Engine & Quality Forensics",
     description:
       "Continuous autonomous verification for pull requests and live websites with per-path quality analysis and AI insights.",
-    siteName: "AutoQA Platform",
+    siteName: "RazeQA Platform",
   },
   twitter: {
     card: "summary_large_image",
-    title: "AutoQA — Autonomous PR Testing Engine",
+    title: "RazeQA — Autonomous PR Testing Engine",
     description: "Autonomous PR verification, forensic artifact packaging, and non-functional quality attributes.",
   },
   robots: {
@@ -60,7 +60,7 @@ export const metadata: Metadata = {
 const jsonLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  name: "AutoQA Autonomous Verification Platform",
+  name: "RazeQA Autonomous Verification Platform",
   operatingSystem: "Cloud / Linux / macOS",
   applicationCategory: "DeveloperApplication",
   offers: {

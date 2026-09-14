@@ -1,4 +1,4 @@
-"""Unit tests for the AutoQA AI Copilot endpoint.
+"""Unit tests for the RazeQA AI Copilot endpoint.
 
 These cover the two things that must never regress:
 

@@ -58,7 +58,7 @@ function MemberRow({
       onChanged(data.member);
       setEditing(false);
     } catch {
-      setError("Could not reach the AutoQA server.");
+      setError("Could not reach the RazeQA server.");
     } finally {
       setBusy(false);
     }
@@ -80,7 +80,7 @@ function MemberRow({
       }
       onChanged(data.member);
     } catch {
-      setError("Could not reach the AutoQA server.");
+      setError("Could not reach the RazeQA server.");
     } finally {
       setBusy(false);
     }
@@ -100,7 +100,7 @@ function MemberRow({
       }
       onRemoved(member.id);
     } catch {
-      setError("Could not reach the AutoQA server.");
+      setError("Could not reach the RazeQA server.");
     } finally {
       setBusy(false);
     }
@@ -222,7 +222,7 @@ export function TeamPanel() {
       setMembers(data.members || []);
       if (!targetOrg && (data.orgs || []).length > 0) setOrg(data.orgs[0]);
     } catch {
-      setError("Could not reach the AutoQA server.");
+      setError("Could not reach the RazeQA server.");
     } finally {
       setLoading(false);
     }
@@ -263,7 +263,7 @@ export function TeamPanel() {
       setNewRole("member");
       await load(org);
     } catch {
-      setError("Could not reach the AutoQA server.");
+      setError("Could not reach the RazeQA server.");
     } finally {
       setAdding(false);
     }
@@ -303,7 +303,7 @@ export function TeamPanel() {
       {orgs.length === 0 ? (
         <p className="rounded-xl border border-slate-200 bg-white p-6 text-center text-xs text-slate-500">
           <Users className="h-4 w-4 mx-auto mb-2 text-slate-400" />
-          No GitHub organization found. Install the AutoQA GitHub App on an organization and import a
+          No GitHub organization found. Install the RazeQA GitHub App on an organization and import a
           repository, then its members can be managed here.
         </p>
       ) : (

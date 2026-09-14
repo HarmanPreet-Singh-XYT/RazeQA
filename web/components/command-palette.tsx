@@ -245,7 +245,7 @@ export function CommandPalette({
         {/* Footer */}
         <div className="px-4 py-2 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-500">
           <span>Tip: Press <kbd className="text-slate-700 font-mono bg-white border border-slate-200 px-1 rounded shadow-2xs">F</kbd> anytime to open search</span>
-          <span>AutoQA Platform</span>
+          <span>RazeQA Platform</span>
         </div>
       </div>
     </div>

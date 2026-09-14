@@ -87,7 +87,7 @@ export function ApplyFixButton({
                   {errorType === "missing_api_key"
                     ? "Backend Not Connected (Missing AGENT_API_KEY)"
                     : errorType === "backend_unreachable"
-                    ? "AutoQA Engine Unreachable"
+                    ? "RazeQA Engine Unreachable"
                     : "Failed to Apply Fix"}
                 </div>
                 <div className="text-[11px] text-slate-700 leading-relaxed">

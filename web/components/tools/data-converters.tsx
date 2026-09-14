@@ -267,7 +267,7 @@ export function JsonToTypesConverter() {
 // ==========================================
 export function EncodingDecoding() {
   const tool = getToolById("encoding-decoding")!;
-  const [inputText, setInputText] = useState("Hello AutoQA World! 🚀 Let's verify routes.");
+  const [inputText, setInputText] = useState("Hello RazeQA World! 🚀 Let's verify routes.");
   const [mode, setMode] = useState<"base64" | "url" | "html">("base64");
   const [action, setAction] = useState<"encode" | "decode">("encode");
   const [result, setResult] = useState("");

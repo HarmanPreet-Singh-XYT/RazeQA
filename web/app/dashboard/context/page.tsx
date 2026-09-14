@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { ContextSecretsClient } from "./context-client";
 
 export const metadata = {
-  title: "Context & Secrets — AutoQA",
+  title: "Context & Secrets — RazeQA",
   description: "Per-repository variables, encrypted secrets, and seed data used during a run.",
 };
 

@@ -15,7 +15,7 @@ import { sanitizeReturnPath } from "@/lib/github/connection";
  * configured as `/api/github/install/callback`. It is validated here because an
  * unvalidated value turns this route into an open redirect.
  *
- * Configuration: set GITHUB_APP_SLUG (the App's URL slug, e.g. `autoqa-engine`)
+ * Configuration: set GITHUB_APP_SLUG (the App's URL slug, e.g. `razeqa-engine`)
  * in the web environment. When it is not configured we fall back to `/login`
  * rather than redirecting to a URL that would 404.
  */

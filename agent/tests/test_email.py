@@ -43,8 +43,8 @@ def make_settings(**overrides) -> EmailSettings:
         "port": 587,
         "username": "",
         "password": "",
-        "sender": "autoqa@example.com",
-        "sender_name": "AutoQA",
+        "sender": "razeqa@example.com",
+        "sender_name": "RazeQA",
         "reply_to": "",
         "use_tls": False,
         "starttls": True,
@@ -54,7 +54,7 @@ def make_settings(**overrides) -> EmailSettings:
         "global_recipients_only": False,
         "max_attempts": 3,
         "retry_interval_s": 60.0,
-        "dashboard_url": "https://autoqa.example.com",
+        "dashboard_url": "https://razeqa.example.com",
     }
     base.update(overrides)
     return EmailSettings(**base)
@@ -126,7 +126,7 @@ def test_templates_escape_html():
             "findings": [
                 {"severity": "critical", "title": "<img src=x onerror=alert(1)>"}
             ],
-            "dashboard_url": "https://autoqa.example.com",
+            "dashboard_url": "https://razeqa.example.com",
         },
     )
     assert "<script>" not in rendered.html
@@ -245,7 +245,7 @@ def test_send_email_sync_uses_starttls_and_skips_login_without_username(monkeypa
     server = _FakeSMTP.instances[-1]
     assert server.started_tls is True
     assert server.logged_in is None
-    assert server.sent and server.sent[0][1] == "autoqa@example.com"
+    assert server.sent and server.sent[0][1] == "razeqa@example.com"
 
 
 def test_send_email_sync_rejects_malformed_recipients(monkeypatch):
@@ -534,7 +534,7 @@ def test_email_status_endpoint_reports_configuration(client, monkeypatch):
     from conftest import AUTH_HEADERS
 
     monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
-    monkeypatch.setenv("SMTP_FROM", "autoqa@example.com")
+    monkeypatch.setenv("SMTP_FROM", "razeqa@example.com")
     res = client.get("/email/status?repo=acme/web", headers=AUTH_HEADERS)
     assert res.status_code == 200
     body = res.json()
@@ -556,7 +556,7 @@ def test_email_test_endpoint_rejects_bad_address(client, monkeypatch):
     from conftest import AUTH_HEADERS
 
     monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
-    monkeypatch.setenv("SMTP_FROM", "autoqa@example.com")
+    monkeypatch.setenv("SMTP_FROM", "razeqa@example.com")
     res = client.post(
         "/email/test", headers=AUTH_HEADERS, json={"to": "not-an-address"}
     )

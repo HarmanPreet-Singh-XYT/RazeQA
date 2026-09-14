@@ -82,7 +82,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
               QA
             </div>
             <div className="flex items-center gap-2">
-              <span className="font-bold text-slate-900 tracking-tight text-base">AutoQA</span>
+              <span className="font-bold text-slate-900 tracking-tight text-base">RazeQA</span>
               <span className="hidden sm:inline-block rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-600">
                 v1.0
               </span>
@@ -574,7 +574,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
                 <tr className="border-b border-slate-200 bg-slate-50 font-semibold text-slate-700">
                   <th className="py-3 px-5">Capability</th>
                   <th className="py-3 px-5 text-slate-500">Traditional CI Suite</th>
-                  <th className="py-3 px-5 text-slate-950 font-bold">AutoQA Platform</th>
+                  <th className="py-3 px-5 text-slate-950 font-bold">RazeQA Platform</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 font-normal text-slate-700">
@@ -753,7 +753,7 @@ Fix regression in /checkout: Ensure the Apple Pay session handler passes the def
       <footer className="border-t border-slate-200 py-8 bg-slate-50 text-xs text-slate-500">
         <div className="mx-auto max-w-6xl px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2 font-medium text-slate-700">
-            <span className="font-bold text-slate-950">AutoQA</span>
+            <span className="font-bold text-slate-950">RazeQA</span>
             <span>—</span>
             <span>Autonomous PR verification for AI coding agents</span>
           </div>

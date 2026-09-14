@@ -134,7 +134,7 @@ const MODES: { id: AgentMode; label: string; icon: typeof Eye; blurb: string }[]
   },
 ];
 
-const SETTINGS_KEY = "autoqa_copilot_settings_v1";
+const SETTINGS_KEY = "razeqa_copilot_settings_v1";
 
 interface CopilotSettings {
   mode: AgentMode;
@@ -157,7 +157,7 @@ function nowLabel(): string {
 }
 
 function threadKey(repo: string | null | undefined): string {
-  return `autoqa_copilot_thread_${repo || "workspace"}`;
+  return `razeqa_copilot_thread_${repo || "workspace"}`;
 }
 
 function initials(email: string | null): string {
@@ -366,10 +366,10 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
       // the client, which is a hydration mismatch. Every other turn is created
       // in an event handler, so it is client-only.
       content: isWorkspace
-        ? `Hello! I am your AutoQA AI Copilot for the whole workspace. I can read runs, findings, and the health of every project you have imported, and tell you which one needs attention.\n\nAsk about any project by name, or pick one above to act on it.`
+        ? `Hello! I am your RazeQA AI Copilot for the whole workspace. I can read runs, findings, and the health of every project you have imported, and tell you which one needs attention.\n\nAsk about any project by name, or pick one above to act on it.`
         : isExternal
-        ? `Hello! I am your AutoQA AI Copilot for **${displayName}** (external website). I can explain recent verification runs, check route and HTTP findings, or audit this site.\n\nWhat would you like to look at?`
-        : `Hello! I am your AutoQA AI Copilot for **${displayName}**. I can read runs, findings, pull requests, commits, and analytics — and act on them when you ask.\n\nWhat would you like to know?`,
+        ? `Hello! I am your RazeQA AI Copilot for **${displayName}** (external website). I can explain recent verification runs, check route and HTTP findings, or audit this site.\n\nWhat would you like to look at?`
+        : `Hello! I am your RazeQA AI Copilot for **${displayName}**. I can read runs, findings, pull requests, commits, and analytics — and act on them when you ask.\n\nWhat would you like to know?`,
       timestamp: "",
     }),
     [displayName, isExternal, isWorkspace]
@@ -588,7 +588,7 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="truncate text-sm font-bold text-foreground">AutoQA Copilot</h1>
+                <h1 className="truncate text-sm font-bold text-foreground">RazeQA Copilot</h1>
                 {lastModel && (
                   <span
                     className="hidden rounded border border-border px-1.5 py-px font-mono text-[10px] text-muted-foreground sm:inline"
@@ -678,7 +678,7 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
                   ) : (
                     <MessageAvatar
                       src={COPILOT_AVATAR}
-                      alt="AutoQA Copilot"
+                      alt="RazeQA Copilot"
                       fallback="QA"
                       className={cn(isError && "ring-1 ring-amber-300")}
                     />
@@ -807,7 +807,7 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
 
             {isThinking && (
               <div className="flex items-start gap-3">
-                <MessageAvatar src={COPILOT_AVATAR} alt="AutoQA Copilot" fallback="QA" />
+                <MessageAvatar src={COPILOT_AVATAR} alt="RazeQA Copilot" fallback="QA" />
                 <div className="min-w-0 flex-1 space-y-2">
                   <ThinkingBar text="Working…" onStop={stop} stopLabel="Stop generating" />
                   <Steps defaultOpen>

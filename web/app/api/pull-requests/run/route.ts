@@ -175,7 +175,7 @@ export async function POST(request: Request) {
       results.push({
         pr_number: prNumber,
         status: "failed",
-        error: err?.message || "Could not reach the AutoQA engine.",
+        error: err?.message || "Could not reach the RazeQA engine.",
       });
     }
   }

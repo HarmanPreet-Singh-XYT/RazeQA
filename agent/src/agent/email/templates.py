@@ -50,7 +50,7 @@ def _wrap(title: str, intro: str, body_rows: str, footer_url: str) -> str:
     cta = (
         f'<p style="margin:24px 0 0;"><a href="{_esc(footer_url)}" '
         'style="background:#0f172a;color:#ffffff;padding:10px 16px;border-radius:6px;'
-        'text-decoration:none;font-weight:600;">Open in AutoQA</a></p>'
+        'text-decoration:none;font-weight:600;">Open in RazeQA</a></p>'
         if footer_url
         else ""
     )
@@ -63,7 +63,7 @@ def _wrap(title: str, intro: str, body_rows: str, footer_url: str) -> str:
         f'<p style="margin:0 0 16px;color:#475569;font-size:13px;">{intro}</p>'
         f"{body_rows}{cta}"
         '<p style="margin:24px 0 0;color:#94a3b8;font-size:11px;">'
-        "Sent by AutoQA. Manage these notifications in Dashboard → Notifications."
+        "Sent by RazeQA. Manage these notifications in Dashboard → Notifications."
         "</p></div></body></html>"
     )
 
@@ -126,7 +126,7 @@ def render_run_completed(ctx: dict) -> RenderedEmail:
         "success": "passed",
         "inconclusive": "was inconclusive",
     }.get(status, status)
-    subject = f"[AutoQA] Verification {status_label} — {repo} ({branch})"
+    subject = f"[RazeQA] Verification {status_label} — {repo} ({branch})"
 
     rows: list[tuple[str, str]] = [
         ("Repository", _esc(repo)),
@@ -160,7 +160,7 @@ def render_run_completed(ctx: dict) -> RenderedEmail:
         )
 
     text_lines = [
-        f"AutoQA verification {status_label} for {repo} ({branch}).",
+        f"RazeQA verification {status_label} for {repo} ({branch}).",
         "",
     ]
     text_lines += [
@@ -206,10 +206,10 @@ def render_findings_alert(ctx: dict) -> RenderedEmail:
     count = len(findings)
     noun = "finding" if count == 1 else "findings"
     highest = str((findings[0] if findings else {}).get("severity") or "high").lower()
-    subject = f"[AutoQA] {count} new {highest} {noun} — {repo}"
+    subject = f"[RazeQA] {count} new {highest} {noun} — {repo}"
 
     text_lines = [
-        f"AutoQA recorded {count} new {noun} on {repo}.",
+        f"RazeQA recorded {count} new {noun} on {repo}.",
         "",
     ]
     for finding in findings:
@@ -237,7 +237,7 @@ def render_review_completed(ctx: dict) -> RenderedEmail:
     critical = int(ctx.get("critical_findings") or 0)
     dashboard_url = ctx.get("dashboard_url") or ""
     noun = "finding" if total == 1 else "findings"
-    subject = f"[AutoQA] Code review finished — {repo} ({total} {noun})"
+    subject = f"[RazeQA] Code review finished — {repo} ({total} {noun})"
 
     rows = [("Repository", _esc(repo))]
     for lane in lanes:
@@ -257,7 +257,7 @@ def render_review_completed(ctx: dict) -> RenderedEmail:
         )
 
     text_lines = [
-        f"AutoQA finished a three-lane review of {repo}.",
+        f"RazeQA finished a three-lane review of {repo}.",
         f"Total findings: {total} (critical: {critical})",
     ]
     for lane in lanes:
@@ -282,7 +282,7 @@ def render_fix_published(ctx: dict) -> RenderedEmail:
     pr_url = ctx.get("pr_url") or ""
     finding_title = ctx.get("finding_title") or "Verified fix"
     dashboard_url = ctx.get("dashboard_url") or ""
-    subject = f"[AutoQA] Verified fix published — {repo} ({branch})"
+    subject = f"[RazeQA] Verified fix published — {repo} ({branch})"
 
     rows = [
         ("Repository", _esc(repo)),
@@ -293,7 +293,7 @@ def render_fix_published(ctx: dict) -> RenderedEmail:
         rows.append(("Pull request", _link(pr_url, pr_url)))
 
     text_lines = [
-        f"AutoQA published a verified fix for {repo}.",
+        f"RazeQA published a verified fix for {repo}.",
         f"Finding: {finding_title}",
         f"Branch: {branch}",
     ]
@@ -321,19 +321,19 @@ def render_test(ctx: dict) -> RenderedEmail:
         ("Sender", _esc(settings.get("from") or "(not set)")),
     ]
     html = _wrap(
-        "AutoQA SMTP test",
-        "This is a test message from your AutoQA deployment.",
+        "RazeQA SMTP test",
+        "This is a test message from your RazeQA deployment.",
         _summary_table(rows),
         dashboard_url,
     )
     text = (
-        "AutoQA SMTP test\n\n"
-        "This is a test message from your AutoQA deployment.\n\n"
+        "RazeQA SMTP test\n\n"
+        "This is a test message from your RazeQA deployment.\n\n"
         f"Sent at: {now}\n"
         f"SMTP host: {settings.get('host') or '(not set)'}\n"
         f"Sender: {settings.get('from') or '(not set)'}\n"
     )
-    return RenderedEmail(subject="[AutoQA] SMTP test message", text=text, html=html)
+    return RenderedEmail(subject="[RazeQA] SMTP test message", text=text, html=html)
 
 
 #: Every notification kind the system knows how to render.

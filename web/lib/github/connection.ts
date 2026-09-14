@@ -323,8 +323,8 @@ export async function authorizeRepoImport(
       installationId: null,
       connection,
       error:
-        "Connect the AutoQA GitHub App to this account before importing a repository. " +
-        "Install it on the repositories you want AutoQA to test, then return here.",
+        "Connect the RazeQA GitHub App to this account before importing a repository. " +
+        "Install it on the repositories you want RazeQA to test, then return here.",
     };
   }
 
