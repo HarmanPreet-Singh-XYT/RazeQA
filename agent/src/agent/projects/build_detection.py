@@ -84,8 +84,41 @@ def detect_project_config(repo_dir: Path | str) -> ProjectConfig:
         return _detect_node_project(root, package_json_path, has_dockerfile)
 
     # 2. Check for Python projects
-    if (root / "pyproject.toml").is_file() or (root / "requirements.txt").is_file():
+    if (root / "pyproject.toml").is_file() or (root / "requirements.txt").is_file() or (root / "Pipfile").is_file():
         return _detect_python_project(root, has_dockerfile)
+
+    # 3. Check for Flutter/Dart projects
+    if (root / "pubspec.yaml").is_file():
+        return ProjectConfig(
+            framework="flutter",
+            package_manager="flutter",
+            build_command="flutter build web",
+            start_command="npx serve build/web -l 3000",
+            port=3000,
+            has_custom_dockerfile=has_dockerfile,
+        )
+
+    # 4. Check for Rust projects
+    if (root / "Cargo.toml").is_file():
+        return ProjectConfig(
+            framework="rust",
+            package_manager="cargo",
+            build_command="cargo build --release",
+            start_command="./target/release/app",
+            port=8080,
+            has_custom_dockerfile=has_dockerfile,
+        )
+
+    # 5. Check for Go projects
+    if (root / "go.mod").is_file():
+        return ProjectConfig(
+            framework="go",
+            package_manager="go",
+            build_command="go build -o app .",
+            start_command="./app",
+            port=8080,
+            has_custom_dockerfile=has_dockerfile,
+        )
 
     # Default fallback
     return ProjectConfig(

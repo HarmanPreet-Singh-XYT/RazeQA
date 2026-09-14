@@ -48,9 +48,9 @@ from agent.sandbox.container_extract import extract_container_path
 
 logger = logging.getLogger("agent.sandbox.docker_sandbox")
 
-DEFAULT_MEMORY_LIMIT = "1g"
-DEFAULT_CPU_LIMIT = "1.0"
-DEFAULT_PIDS_LIMIT = "256"
+DEFAULT_MEMORY_LIMIT = os.environ.get("SANDBOX_MEMORY_LIMIT", "3g")
+DEFAULT_CPU_LIMIT = os.environ.get("SANDBOX_CPU_LIMIT", "2.0")
+DEFAULT_PIDS_LIMIT = os.environ.get("SANDBOX_PIDS_LIMIT", "512")
 
 # Name of the shared toolchain image (see sandbox/Dockerfile.toolchain).
 TOOLCHAIN_IMAGE = "pr-testing-toolchain:latest"
@@ -348,13 +348,22 @@ def _provision(container: str, image_tag: str) -> tuple[str, int]:
             _raise_on_failure("dependency install", install_result, image_tag)
         return config.start_command, config.port
 
+    if config.framework == "flutter":
+        raise SandboxBootError(
+            f"Detected Flutter/Dart project ({build_dir}/pubspec.yaml). "
+            "RazeQA's autonomous browser verification engine currently tests web applications "
+            "(Node.js, Next.js, React, Vite, Python Web, or projects with a custom Dockerfile). "
+            "To test Flutter Web, please add a Dockerfile to the repository to build and serve the Flutter web app.",
+            step="provision",
+        )
+
     if not _container_file_exists(container, f"{build_dir}/package.json"):
-        # Mirrors the Python branch above: no manifest means there is nothing to
-        # install. Running `npm install` anyway produces a confusing ENOENT dump
-        # instead of a clear "this is not a Node project" signal.
+        if _container_file_exists(container, f"{build_dir}/Dockerfile") or _container_file_exists(container, "/app/Dockerfile"):
+            return config.start_command, config.port
         raise SandboxBootError(
             f"No package.json found at {build_dir} in container {container} "
-            f"(image_tag={image_tag}); cannot provision a Node project.",
+            f"(image_tag={image_tag}). RazeQA's automatic sandbox supports Node.js and Python web applications. "
+            "For custom frameworks, provide a Dockerfile in the repository or configure a subfolder root directory.",
             step="provision",
         )
 
@@ -370,7 +379,8 @@ def _provision(container: str, image_tag: str) -> tuple[str, int]:
     if config.build_command and "no build script" not in config.build_command:
         # Failures are deliberately not suppressed: if the PR's code does not
         # build, the run must fail rather than silently exercise stale output.
-        build_result = _exec(container, config.build_command, cwd=build_dir)
+        build_cmd = f"NODE_OPTIONS='--max-old-space-size=2048' {config.build_command}"
+        build_result = _exec(container, build_cmd, cwd=build_dir)
         _raise_on_failure("build", build_result, image_tag)
 
     return config.start_command, config.port
