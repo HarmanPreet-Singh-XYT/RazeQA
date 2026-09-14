@@ -4,7 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/dashboard";
+  const nextParam = searchParams.get("next");
+  const type = searchParams.get("type");
 
   if (code) {
     const supabase = await createClient();
@@ -12,7 +13,13 @@ export async function GET(request: Request) {
     // via createClient()'s cookie handlers — nothing else to persist here.
     const { data, error } = await supabase.auth.exchangeCodeForSession(code);
     if (!error && data?.user?.email) {
-      return NextResponse.redirect(`${origin}${next}`);
+      if (type === "recovery" || nextParam === "/reset-password") {
+        return NextResponse.redirect(`${origin}/reset-password`);
+      }
+      const target = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//")
+        ? nextParam
+        : "/dashboard";
+      return NextResponse.redirect(`${origin}${target}`);
     }
   }
 

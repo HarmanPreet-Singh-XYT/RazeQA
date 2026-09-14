@@ -135,7 +135,7 @@ export function AuthForm({ initialTab = "login" }: { initialTab?: "login" | "reg
     try {
       const supabase = createClient();
       const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail.trim(), {
-        redirectTo: `${window.location.origin}/auth/callback?next=/dashboard`,
+        redirectTo: `${window.location.origin}/auth/callback?next=/reset-password`,
       });
       if (error) {
         setForgotError(error.message);
