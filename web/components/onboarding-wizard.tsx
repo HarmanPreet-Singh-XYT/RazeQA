@@ -286,7 +286,7 @@ export function OnboardingWizard({ onCompleted, userEmail }: OnboardingWizardPro
                     Enter repository name manually
                   </button>
                   <a
-                    href="https://github.com/apps"
+                    href="/api/github/install"
                     target="_blank"
                     rel="noreferrer"
                     className="text-slate-500 hover:text-slate-900 flex items-center gap-1 font-medium"

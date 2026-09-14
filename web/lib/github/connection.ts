@@ -93,13 +93,54 @@ interface InstallationRow {
 }
 
 /**
- * Whether a GitHub App is configured for this deployment. The slug is what the
- * install redirect needs; the App id is accepted as a hint because deployments
- * that install the App from the landing page may only set that.
+ * Resolves the target GitHub App installation URL from environment variables:
+ * - GITHUB_APP_URL or NEXT_PUBLIC_GITHUB_APP_URL (e.g. "https://github.com/apps/my-app" or "https://github.com/apps/my-app/installations/new")
+ * - GITHUB_APP_SLUG or NEXT_PUBLIC_GITHUB_APP_SLUG (e.g. "my-app")
+ */
+export function getGitHubAppInstallUrl(state?: string): string | null {
+  const rawUrl =
+    process.env.NEXT_PUBLIC_GITHUB_APP_URL || process.env.GITHUB_APP_URL;
+  const slug =
+    process.env.NEXT_PUBLIC_GITHUB_APP_SLUG || process.env.GITHUB_APP_SLUG;
+
+  let installUrl: URL | null = null;
+
+  if (rawUrl) {
+    try {
+      const base = rawUrl.startsWith("http://") || rawUrl.startsWith("https://")
+        ? rawUrl
+        : `https://${rawUrl}`;
+      const parsed = new URL(base);
+      if (parsed.pathname.endsWith("/installations/new")) {
+        installUrl = parsed;
+      } else {
+        parsed.pathname = `${parsed.pathname.replace(/\/+$/, "")}/installations/new`;
+        installUrl = parsed;
+      }
+    } catch {
+      installUrl = null;
+    }
+  } else if (slug) {
+    installUrl = new URL(
+      `https://github.com/apps/${encodeURIComponent(slug)}/installations/new`
+    );
+  }
+
+  if (installUrl && state) {
+    installUrl.searchParams.set("state", state);
+  }
+
+  return installUrl ? installUrl.toString() : null;
+}
+
+/**
+ * Whether a GitHub App is configured for this deployment.
  */
 export function isGitHubAppConfigured(): boolean {
   return Boolean(
-    process.env.GITHUB_APP_SLUG ||
+    process.env.GITHUB_APP_URL ||
+      process.env.NEXT_PUBLIC_GITHUB_APP_URL ||
+      process.env.GITHUB_APP_SLUG ||
       process.env.NEXT_PUBLIC_GITHUB_APP_SLUG ||
       process.env.GITHUB_APP_ID
   );
