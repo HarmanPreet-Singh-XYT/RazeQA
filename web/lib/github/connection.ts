@@ -314,6 +314,14 @@ export async function resolveGitHubConnection(
       (row.account_login || "").trim().toLowerCase() === identity.login.toLowerCase()
     ) {
       installations.push({ ...toConnectionInstallation(row), installed_by_user: false });
+      continue;
+    }
+
+    // 3. Email-authenticated user fallback: when signed in with email/password
+    //    (no OAuth identity attached), allow available installations so the user
+    //    is not blocked from discovering and importing repositories.
+    if (!identity.id && !identity.login) {
+      installations.push({ ...toConnectionInstallation(row), installed_by_user: true });
     }
   }
 

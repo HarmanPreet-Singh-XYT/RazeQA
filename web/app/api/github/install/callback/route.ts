@@ -33,21 +33,17 @@ export async function GET(request: Request) {
   const installationId = searchParams.get("installation_id");
   const setupAction = searchParams.get("setup_action");
 
+  if (installationId || setupAction === "install" || setupAction === "update") {
+    await syncInstallations();
+  }
+
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   if (!user) {
-    // The install itself happened against their GitHub account. `/login` does
-    // not carry a return path today, so send them there plainly: once they are
-    // signed in, the import screen resolves the connection on its own (the
-    // webhook will have landed by then).
-    return NextResponse.redirect(new URL("/login", origin));
-  }
-
-  if (installationId || setupAction === "install" || setupAction === "update") {
-    await syncInstallations();
+    return NextResponse.redirect(new URL(`/login?next=${encodeURIComponent(state)}`, origin));
   }
 
   return NextResponse.redirect(new URL(state, origin));
