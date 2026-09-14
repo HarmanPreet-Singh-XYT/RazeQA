@@ -11,6 +11,7 @@ from typing import Any
 from playwright.sync_api import sync_playwright
 
 from agent.journeys.cursor_overlay import click_with_cursor, fill_with_cursor
+from agent.journeys.trace_config import start_trace
 from agent.journeys.web_vitals import WEB_VITALS_INIT_SCRIPT, collect_web_vitals
 
 
@@ -48,7 +49,7 @@ def run_login_journey(
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(record_video_dir=str(video_dir))
-        context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        start_trace(context.tracing)
         page = context.new_page()
         # Install the Web Vitals collector before any navigation on the login
         # page too, so its lifecycle is observed just like route journeys.

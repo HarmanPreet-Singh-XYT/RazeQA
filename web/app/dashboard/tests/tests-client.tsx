@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AlertCircle, ClipboardList, ListChecks, RefreshCw, Trash2 } from "lucide-react";
 import { useDashboard } from "@/components/dashboard-context";
+import { SkeletonList } from "@/components/loading-state";
 
 /**
  * The reusable regression suite.
@@ -37,12 +38,15 @@ const CATEGORY_STYLE: Record<string, string> = {
 };
 
 export function TestsClient() {
-  const { projects, activeRepo } = useDashboard();
+  const { projects, activeRepo, isLoadingProjects } = useDashboard();
   const gitProjects = useMemo(() => projects.filter((p) => p.type !== "external"), [projects]);
 
   const [repo, setRepo] = useState(activeRepo || "");
   const [tests, setTests] = useState<SavedTest[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  // Starts true: the suite is fetched from `repo` in an effect below, so the
+  // first paint is always a pending one. Starting false rendered a blank table
+  // (or the "no saved tests" empty state) during the request.
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [migrationRequired, setMigrationRequired] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -52,7 +56,11 @@ export function TestsClient() {
   }, [gitProjects, repo]);
 
   const load = async (target: string) => {
-    if (!target) return;
+    if (!target) {
+      // Nothing to fetch yet; do not leave the view stuck in a loading state.
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
@@ -107,6 +115,12 @@ export function TestsClient() {
   };
 
   const enabledCount = tests.filter((t) => t.enabled).length;
+
+  // Until a repository is selected there is nothing to fetch. If the project
+  // list is still arriving (or has arrived but the selection effect has not run
+  // yet) this is still a loading window, not an empty suite.
+  const awaitingRepo = !repo && (isLoadingProjects || gitProjects.length > 0);
+  const showLoading = isLoading || awaitingRepo;
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-6xl mx-auto w-full text-slate-900 animate-in fade-in-50">
@@ -167,7 +181,9 @@ export function TestsClient() {
         </div>
       )}
 
-      {tests.length === 0 && !isLoading ? (
+      {showLoading ? (
+        <SkeletonList rows={4} />
+      ) : tests.length === 0 ? (
         <div className="rounded-xl border border-slate-200 bg-white p-10 text-center space-y-2">
           <ClipboardList className="h-6 w-6 text-slate-400 mx-auto" />
           <p className="text-sm font-semibold text-slate-800">No saved tests yet</p>

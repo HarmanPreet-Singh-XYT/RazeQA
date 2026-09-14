@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Bot,
   Trash2,
@@ -23,7 +23,6 @@ import {
   ThumbsUp,
   ThumbsDown,
   RefreshCw,
-  Gauge,
 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -224,10 +223,18 @@ function loadSettings(): CopilotSettings {
 
 export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
   const searchParams = useSearchParams();
-  const { activeRepo, projects } = useDashboard();
+  const router = useRouter();
+  const { projects } = useDashboard();
 
+  // The URL decides the scope — deliberately *not* the persisted active
+  // project. Falling back to it meant a bare /dashboard (the workspace
+  // overview's Copilot) silently became one project's copilot.
   const urlRepo = searchParams ? searchParams.get("repo") : null;
-  const repo = urlRepo || activeRepo || projects[0]?.repo_full_name || "";
+  const repo = (urlRepo || "").trim();
+  // No repo in the URL means a workspace session: every project the caller owns,
+  // resolved server-side and handed to the agent as an allowlist.
+  const isWorkspace = !repo;
+  const canAsk = Boolean(repo) || isWorkspace;
   const isExternal = Boolean(repo.startsWith("external:"));
 
   const displayName = useMemo(() => {
@@ -358,15 +365,23 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
       // No timestamp: `toLocaleTimeString` differs between the server render and
       // the client, which is a hydration mismatch. Every other turn is created
       // in an event handler, so it is client-only.
-      content: isExternal
+      content: isWorkspace
+        ? `Hello! I am your AutoQA AI Copilot for the whole workspace. I can read runs, findings, and the health of every project you have imported, and tell you which one needs attention.\n\nAsk about any project by name, or pick one above to act on it.`
+        : isExternal
         ? `Hello! I am your AutoQA AI Copilot for **${displayName}** (external website). I can explain recent verification runs, check route and HTTP findings, or audit this site.\n\nWhat would you like to look at?`
         : `Hello! I am your AutoQA AI Copilot for **${displayName}**. I can read runs, findings, pull requests, commits, and analytics — and act on them when you ask.\n\nWhat would you like to know?`,
       timestamp: "",
     }),
-    [displayName, isExternal]
+    [displayName, isExternal, isWorkspace]
   );
 
-  const quickPrompts = isExternal
+  const quickPrompts = isWorkspace
+    ? [
+        "How are my projects doing?",
+        "What is failing across the workspace?",
+        "Which project needs attention?",
+      ]
+    : isExternal
     ? [
         "How is the external website performing?",
         "Audit this site now",
@@ -555,8 +570,15 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
 
   const activeMode = MODES.find((m) => m.id === settings.mode) ?? MODES[1];
 
+  // The workspace copilot renders inside the dashboard tab shell (a two-row
+  // header, no project sidebar); the project copilot renders inside the project
+  // shell (a single-row header plus the context rail).
+  const shellHeight = isWorkspace
+    ? "h-[calc(100dvh-4.75rem)]"
+    : "h-[calc(100dvh-3.5rem)]";
+
   return (
-    <div className="flex h-[calc(100dvh-3.5rem)] w-full bg-background">
+    <div className={`flex ${shellHeight} w-full bg-background`}>
       {/* ---------------- chat column ---------------- */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-6">
@@ -582,12 +604,38 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
                 ) : (
                   <FolderGit2 className="size-3 shrink-0" />
                 )}
-                <span className="truncate">{isExternal ? displayName : repo || "No project selected"}</span>
+                <span className="truncate">
+                  {isWorkspace
+                    ? `Workspace · ${projects.length} project${projects.length === 1 ? "" : "s"}`
+                    : isExternal
+                    ? displayName
+                    : repo}
+                </span>
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Workspace scope can be narrowed to one project; the URL is the
+                source of truth, so this navigates rather than holding state. */}
+            {isWorkspace && projects.length > 0 && (
+              <select
+                value=""
+                onChange={(e) => {
+                  const next = e.target.value;
+                  if (next) router.push(`/dashboard?repo=${encodeURIComponent(next)}`);
+                }}
+                title="Narrow this copilot to one project"
+                className="h-8 max-w-[180px] rounded-md border border-border bg-background px-2 text-xs text-foreground"
+              >
+                <option value="">All projects</option>
+                {projects.map((p) => (
+                  <option key={p.repo_full_name} value={p.repo_full_name}>
+                    {p.name || p.repo_full_name}
+                  </option>
+                ))}
+              </select>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -810,7 +858,7 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
                     variant="outline"
                     size="sm"
                     className="text-xs"
-                    disabled={isThinking || !repo}
+                    disabled={isThinking || !canAsk}
                     onClick={() => sendTurn(prompt)}
                   >
                     {prompt}
@@ -844,15 +892,19 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
               className="rounded-2xl"
             >
               <PromptInputTextarea
-                placeholder={repo ? `Ask about ${displayName}…` : "Import a project to ask about its runs…"}
-                disabled={!repo}
+                placeholder={
+                  isWorkspace
+                    ? "Ask about any project, or the whole workspace…"
+                    : `Ask about ${displayName}…`
+                }
+                disabled={!canAsk}
               />
               <PromptInputActions className="justify-end px-1 pt-1">
                 <PromptInputAction tooltip={isThinking ? "Stop" : "Send"}>
                   <Button
                     size="icon-sm"
                     className="rounded-full"
-                    disabled={isThinking ? false : !input.trim() || !repo}
+                    disabled={isThinking ? false : !input.trim() || !canAsk}
                     onClick={() => (isThinking ? stop() : sendTurn(input))}
                   >
                     {isThinking ? <Square className="size-3.5" /> : <Send className="size-3.5" />}
@@ -880,15 +932,19 @@ export function AgentChatClient({ userEmail }: { userEmail: string | null }) {
         </div>
       </div>
 
-      {/* ---------------- context rail ---------------- */}
-      <ContextRail
-        repo={repo}
-        displayName={displayName}
-        isExternal={isExternal}
-        targetUrl={targetUrl}
-        runs={railRuns}
-        settings={settings}
-      />
+      {/* ---------------- context rail ----------------
+          Only for a project-scoped session. A workspace session has no single
+          project to describe, so it uses the full tab width instead. */}
+      {!isWorkspace && (
+        <ContextRail
+          repo={repo}
+          displayName={displayName}
+          isExternal={isExternal}
+          targetUrl={targetUrl}
+          runs={railRuns}
+          settings={settings}
+        />
+      )}
     </div>
   );
 }
@@ -931,24 +987,6 @@ function SessionControls({
           );
         })}
       </div>
-
-      <label className="flex items-center gap-1 rounded-full border border-border px-2 py-1 text-[11px] text-muted-foreground">
-        <Gauge className="size-3" />
-        <span className="sr-only">Tool budget</span>
-        <select
-          value={settings.maxToolCalls}
-          disabled={disabled}
-          onChange={(e) => onChange({ maxToolCalls: Number(e.target.value) })}
-          className="cursor-pointer bg-transparent text-[11px] text-foreground outline-none disabled:opacity-50"
-          title="Maximum tool calls per turn"
-        >
-          {[4, 8, 12, 16].map((n) => (
-            <option key={n} value={n}>
-              {n} tools
-            </option>
-          ))}
-        </select>
-      </label>
 
       <select
         value={settings.scope}

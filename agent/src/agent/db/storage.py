@@ -7,6 +7,7 @@ allowing callers to fall back to local disk-based artifact URLs.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,56 @@ from agent.db.supabase import get_supabase_client
 logger = logging.getLogger("agent.db.storage")
 
 DEFAULT_BUCKET = "run-artifacts"
+
+# Supabase Storage enforces a per-bucket maximum object size (50 MiB on the
+# free tier by default). A Playwright trace zip for a large sweep can exceed
+# that, and the storage API answers with an opaque 413
+# ("The object exceeded the maximum allowed size"). Uploading it is futile, so
+# oversized artifacts are skipped and the caller falls back to the local
+# /artifacts route — an explicit, quiet skip instead of a scary failure log on
+# every run. Override when the bucket limit is higher (e.g. a Pro project):
+#   MAX_ARTIFACT_UPLOAD_BYTES=524288000
+DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+_SIZE_SUFFIXES = {
+    "b": 1,
+    "kb": 1024,
+    "kib": 1024,
+    "mb": 1024 * 1024,
+    "mib": 1024 * 1024,
+    "gb": 1024 * 1024 * 1024,
+    "gib": 1024 * 1024 * 1024,
+}
+
+
+def _parse_size(value: str | int | None, default: int = DEFAULT_MAX_UPLOAD_BYTES) -> int:
+    """Parse ``MAX_ARTIFACT_UPLOAD_BYTES`` accepting plain bytes or a ``50MB`` style suffix."""
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    # Longest suffix first: "1gb" also ends in "b", so a naive scan would try to
+    # parse "1g" as bytes and fall back to the default.
+    for suffix in sorted(_SIZE_SUFFIXES, key=len, reverse=True):
+        multiplier = _SIZE_SUFFIXES[suffix]
+        if text.endswith(suffix):
+            number = text[: -len(suffix)].strip()
+            try:
+                return int(float(number) * multiplier)
+            except ValueError:
+                return default
+    try:
+        return int(text)
+    except ValueError:
+        return default
+
+
+def max_upload_bytes() -> int:
+    """Configured per-object upload ceiling, read fresh so tests/ops can override."""
+    return _parse_size(os.environ.get("MAX_ARTIFACT_UPLOAD_BYTES"))
 
 # Forensic artifacts (videos/traces/screenshots) may contain application UI
 # and data from the PR under test, so the bucket is private and every URL
@@ -41,6 +92,22 @@ class SupabaseArtifactStorage:
     def __init__(self, client: Any | None = None, bucket: str = DEFAULT_BUCKET) -> None:
         self._client = client
         self.bucket = bucket
+        # Oversized files are skipped on every attempt; remember which ones were
+        # already reported so a run with N routes does not log N identical
+        # warnings (and the console stays readable).
+        self._warned_oversize: set[str] = set()
+
+    def _remember_oversize(self, path: Path) -> bool:
+        """Record an oversized path, returning False when it was already reported."""
+        key = str(path)
+        if key in self._warned_oversize:
+            return False
+        # Bound the set: a long-lived worker could otherwise accumulate one
+        # entry per oversized artifact forever.
+        if len(self._warned_oversize) >= 500:
+            self._warned_oversize.pop()
+        self._warned_oversize.add(key)
+        return True
 
     @property
     def client(self) -> Any | None:
@@ -84,6 +151,28 @@ class SupabaseArtifactStorage:
             logger.debug("Supabase client not configured; skipping upload for %s", path)
             return None
 
+        # Check the ceiling before reading the file: a multi-hundred-MB trace
+        # should not even be loaded into memory just to be rejected by the
+        # bucket's own limit.
+        limit = max_upload_bytes()
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            logger.warning("Could not stat artifact %s for upload: %s", path, exc)
+            return None
+        if limit > 0 and size > limit:
+            if self._remember_oversize(path):
+                logger.warning(
+                    "Artifact %s (%.1f MiB) exceeds the Supabase upload limit of %.1f MiB; "
+                    "skipping upload and serving it from local artifacts instead. "
+                    "Raise MAX_ARTIFACT_UPLOAD_BYTES if the bucket limit is higher, or "
+                    "shrink traces (PLAYWRIGHT_TRACE_SCREENSHOTS=false).",
+                    path.name,
+                    size / (1024 * 1024),
+                    limit / (1024 * 1024),
+                )
+            return None
+
         if content_type is None:
             content_type = CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
@@ -111,6 +200,18 @@ class SupabaseArtifactStorage:
             logger.info("Successfully uploaded %s to Supabase Storage (signed URL issued)", path.name)
             return signed_url
         except Exception as exc:  # noqa: BLE001
+            # 413 has a single, actionable cause (the object is larger than the
+            # bucket allows). Log it once as a skip-style message rather than a
+            # generic failure that looks like an outage.
+            if "413" in str(exc) or "exceeded the maximum allowed size" in str(exc):
+                if self._remember_oversize(path):
+                    logger.warning(
+                        "Supabase rejected %s as too large (413); serving it from local "
+                        "artifacts instead. Raise MAX_ARTIFACT_UPLOAD_BYTES or the bucket "
+                        "limit to store it.",
+                        path.name,
+                    )
+                return None
             logger.warning(
                 "Failed to upload %s to Supabase Storage bucket '%s': %s",
                 path,

@@ -163,9 +163,23 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         lanes=request.lanes,
         index=index,
     )
+    report_json = report_to_json(report)
+
+    # Notify a real repository's watchers. A review of an ad-hoc diff carries
+    # repo="default", which has no project to resolve recipients from, so it is
+    # skipped rather than mailed to the deployment-wide inbox alone.
+    if request.repo and request.repo != "default":
+        try:
+            from agent.email.notifications import notify_review_completed
+
+            await notify_review_completed(
+                repo=request.repo, report=report_json, head_ref=request.head_ref
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not send review-completed notification: %s", exc)
 
     return AnalyzeResponse(
-        report=report_to_json(report),
+        report=report_json,
         lane_markdown={
             lane_report.lane.value: render_lane_markdown(
                 lane_report, repo=report.repo, head_ref=report.head_ref
@@ -246,6 +260,20 @@ async def fix(request: FixRequest) -> dict[str, Any]:
                 installation_id=request.installation_id,
             )
             payload["published"]["pr_url"] = pr_url
+
+        # Announce only what actually became reviewable: a branch, and at most a
+        # pull request. Best-effort, like every other notification.
+        try:
+            from agent.email.notifications import notify_fix_published
+
+            await notify_fix_published(
+                repo_full_name=request.repo_full_name or request.owner,
+                branch=published.branch,
+                pr_url=payload["published"].get("pr_url"),
+                finding_title=getattr(request.finding, "title", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not send fix-published notification: %s", exc)
 
     return payload
 

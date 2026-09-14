@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDashboard } from "@/components/dashboard-context";
+import { SkeletonCards, SkeletonList } from "@/components/loading-state";
 
 export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
   const { activeRepo, projects } = useDashboard();
@@ -212,7 +213,15 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
         </div>
       </div>
 
-      {/* 3 Overview Metric Cards */}
+      {isLoading ? (
+        <div className="space-y-6" role="status" aria-busy="true" aria-live="polite">
+          <span className="sr-only">Loading analytics…</span>
+          <SkeletonCards count={3} className="sm:grid-cols-3 lg:grid-cols-3" />
+          <SkeletonList rows={5} />
+        </div>
+      ) : (
+        <>
+          {/* 3 Overview Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {/* Pass Rate Card */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2 shadow-xs">
@@ -380,6 +389,8 @@ export default function AnalyticsClient({ userEmail }: { userEmail: string }) {
           </p>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

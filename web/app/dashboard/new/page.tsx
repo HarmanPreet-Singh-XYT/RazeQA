@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -67,6 +67,156 @@ interface ProgressStep {
   state: "active" | "done" | "failed";
 }
 
+/**
+ * GitHub App connection state for the signed-in user, as reported by
+ * `/api/github/repos`. `connected: false` is not an error: it means the App is
+ * configured for this deployment but this account has not installed it, and the
+ * import picker must not be shown until it is.
+ */
+interface GitHubConnectionState {
+  appConfigured: boolean;
+  connected: boolean;
+  connectUrl: string;
+  /**
+   * Whether this account has a linked GitHub identity. Ownership is proved with
+   * the GitHub user id, so an email/password account that never linked GitHub
+   * cannot be matched to an installation however many times it installs the App.
+   */
+  githubIdentityLinked: boolean;
+}
+
+/**
+ * Shown when the deployment has a GitHub App but the signed-in account has not
+ * installed it (or has not granted it any repositories).
+ *
+ * This is a required setup step, not an error and not an empty state, so it gets
+ * its own screen. The repository picker would otherwise render as "No
+ * repositories detected" — which reads as a bug — and offer a manual import
+ * field that the server now rejects.
+ */
+function ConnectGitHubApp({
+  connectUrl,
+  githubIdentityLinked,
+  awaitingInstall,
+  isChecking,
+  onRecheck,
+}: {
+  connectUrl: string;
+  githubIdentityLinked: boolean;
+  awaitingInstall: boolean;
+  isChecking: boolean;
+  onRecheck: () => void;
+}) {
+  const stepBadge =
+    "h-5 w-5 rounded-full bg-slate-900 text-white text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5";
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-6 sm:p-8 space-y-6 shadow-sm">
+        <div className="space-y-2">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-800">
+            <AlertCircle className="h-3.5 w-3.5" />
+            Setup required
+          </span>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
+            Connect GitHub to import repositories
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
+            AutoQA reads your code through a GitHub App. Until it is installed on the
+            account or organization that owns your repositories, there is nothing to
+            import — so the repository picker stays locked.
+          </p>
+        </div>
+
+        {!githubIdentityLinked && (
+          <div className="p-3.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-2">
+            <p className="font-semibold">This account is not linked to GitHub</p>
+            <p className="leading-relaxed">
+              Ownership of an installation is proved with your GitHub user id, so this
+              account cannot be matched to one yet. Sign out and use{" "}
+              <span className="font-semibold">Continue with GitHub</span> on the sign-in
+              page with the GitHub account that owns your repositories, then come back
+              here.
+            </p>
+            <Link
+              href="/login"
+              className="inline-flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-1.5 font-semibold text-white hover:bg-slate-800"
+            >
+              <GithubIcon className="h-3.5 w-3.5" />
+              Go to sign-in
+            </Link>
+          </div>
+        )}
+
+        <ol className="space-y-3 text-xs text-slate-600">
+          <li className="flex items-start gap-2.5">
+            <span className={stepBadge}>1</span>
+            <span>Install the AutoQA GitHub App on your account or organization.</span>
+          </li>
+          <li className="flex items-start gap-2.5">
+            <span className={stepBadge}>2</span>
+            <span>
+              Grant it access to the repositories you want tested. You can change the
+              selection later from GitHub without reinstalling.
+            </span>
+          </li>
+          <li className="flex items-start gap-2.5">
+            <span className={stepBadge}>3</span>
+            <span>You are returned here and the repository picker unlocks.</span>
+          </li>
+        </ol>
+
+        {awaitingInstall && (
+          <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-start gap-2">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0 mt-0.5" />
+            <span>
+              Waiting for GitHub to confirm the installation. This usually takes a few
+              seconds; the picker unlocks on its own once it lands.
+            </span>
+          </div>
+        )}
+
+        <div className="flex flex-col sm:flex-row gap-3 pt-1">
+          <a
+            href={connectUrl}
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors"
+          >
+            <GithubIcon className="h-4 w-4" />
+            Install GitHub App
+            <ArrowRight className="h-3.5 w-3.5" />
+          </a>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onRecheck}
+            disabled={isChecking}
+            className="border-slate-200 text-slate-700 hover:bg-slate-100 text-xs h-10 px-4"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 mr-2 ${isChecking ? "animate-spin" : ""}`} />
+            I have already installed it
+          </Button>
+        </div>
+
+        <p className="text-[11px] text-slate-400 leading-relaxed">
+          Still blocked after installing? Check that the App was installed on the account
+          that owns the repositories, and that it was granted at least one repository —
+          AutoQA cannot import a repository the App has no access to.
+        </p>
+
+        <div className="pt-3 border-t border-slate-100">
+          <Link
+            href="/dashboard"
+            className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1 font-medium"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Back to dashboard
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function NewProjectPage() {
   const router = useRouter();
   const { userEmail, setActiveRepo, refreshProjects } = useDashboard();
@@ -78,6 +228,9 @@ export default function NewProjectPage() {
   const [repoSearch, setRepoSearch] = useState("");
   const [manualRepo, setManualRepo] = useState("");
   const [selectedRepo, setSelectedRepo] = useState<AvailableRepo | null>(null);
+  const [connection, setConnection] = useState<GitHubConnectionState | null>(null);
+  /** True when we returned from GitHub's install page and are waiting on the webhook. */
+  const [awaitingInstall, setAwaitingInstall] = useState(false);
 
   // Configure form fields
   const [projectName, setProjectName] = useState("");
@@ -132,71 +285,134 @@ export default function NewProjectPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [steps, setSteps] = useState<ProgressStep[]>([]);
   const [importError, setImportError] = useState<string | null>(null);
+  /** Machine-readable code from a failed import (`github_app_required`, ...). */
+  const [importErrorCode, setImportErrorCode] = useState<string | null>(null);
   const [importedRepo, setImportedRepo] = useState<string | null>(null);
 
+  const isMountedRef = useRef(true);
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadRepositories() {
-      setIsLoadingRepos(true);
-      setLoadError(null);
-      try {
-        const [ghRes, projRes] = await Promise.all([
-          fetch("/api/github/repos"),
-          fetch("/api/projects"),
-        ]);
-
-        const ghData = ghRes.ok ? await ghRes.json() : null;
-        const projData = projRes.ok ? await projRes.json() : null;
-
-        if (cancelled) return;
-
-        const projects: any[] = projData?.projects || [];
-        const projectNames = new Set(
-          projects.map((p: any) => String(p.repo_full_name).toLowerCase())
-        );
-
-        setConnected(
-          projects.map((p: any) => ({
-            repo_full_name: p.repo_full_name,
-            default_branch: p.default_branch || "main",
-            framework: p.settings?.framework || "nextjs",
-            created_at: p.created_at,
-          }))
-        );
-
-        const repos: AvailableRepo[] = (ghData?.repositories || []).map((item: any) => ({
-          repo_full_name: item.repo_full_name,
-          repo_name:
-            item.repo_name || item.repo_full_name?.split("/")[1] || item.repo_full_name,
-          default_branch: item.default_branch || "main",
-          private: !!item.private,
-          imported: projectNames.has(String(item.repo_full_name).toLowerCase()),
-        }));
-
-        setAvailable(repos);
-
-        if (!ghRes.ok) {
-          setLoadError(
-            ghRes.status === 401
-              ? "Your session expired. Sign in again to list repositories."
-              : "Could not reach the GitHub App service. You can still enter a repository manually."
-          );
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setLoadError("Could not load repositories. You can still enter one manually.");
-        }
-      } finally {
-        if (!cancelled) setIsLoadingRepos(false);
-      }
-    }
-
-    loadRepositories();
+    isMountedRef.current = true;
     return () => {
-      cancelled = true;
+      isMountedRef.current = false;
     };
   }, []);
+
+  // Detect the return from GitHub's install page. Read from `window` rather
+  // than `useSearchParams()` so the page does not need a Suspense boundary.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("github_app") === "connected") {
+      setAwaitingInstall(true);
+    }
+  }, []);
+
+  const loadRepositories = useCallback(async (options?: { quiet?: boolean }) => {
+    if (!options?.quiet) setIsLoadingRepos(true);
+    setLoadError(null);
+    try {
+      const [ghRes, projRes] = await Promise.all([
+        fetch("/api/github/repos", { cache: "no-store" }),
+        fetch("/api/projects"),
+      ]);
+
+      const ghData = ghRes.ok ? await ghRes.json() : null;
+      const projData = projRes.ok ? await projRes.json() : null;
+
+      if (!isMountedRef.current) return;
+
+      if (ghData) {
+        setConnection({
+          appConfigured: Boolean(ghData.app_configured),
+          // Absent flag (older backend) is treated as "not gated" so a
+          // deployment without the App keeps working.
+          connected: ghData.github_app_connected !== false,
+          connectUrl:
+            typeof ghData.connect_url === "string"
+              ? ghData.connect_url
+              : "/api/github/install",
+          // Absent flag (older backend) is assumed linked so a deployment that
+          // predates the flag does not show a spurious sign-in prompt.
+          githubIdentityLinked: ghData.github_identity_linked !== false,
+        });
+      }
+
+      const projects: any[] = projData?.projects || [];
+      const projectNames = new Set(
+        projects.map((p: any) => String(p.repo_full_name).toLowerCase())
+      );
+
+      setConnected(
+        projects.map((p: any) => ({
+          repo_full_name: p.repo_full_name,
+          default_branch: p.default_branch || "main",
+          framework: p.settings?.framework || "nextjs",
+          created_at: p.created_at,
+        }))
+      );
+
+      const repos: AvailableRepo[] = (ghData?.repositories || []).map((item: any) => ({
+        repo_full_name: item.repo_full_name,
+        repo_name:
+          item.repo_name || item.repo_full_name?.split("/")[1] || item.repo_full_name,
+        default_branch: item.default_branch || "main",
+        private: !!item.private,
+        imported: projectNames.has(String(item.repo_full_name).toLowerCase()),
+      }));
+
+      setAvailable(repos);
+
+      if (!ghRes.ok) {
+        setLoadError(
+          ghRes.status === 401
+            ? "Your session expired. Sign in again to list repositories."
+            : "Could not reach the GitHub App service. You can still enter a repository manually."
+        );
+      }
+    } catch (err) {
+      if (isMountedRef.current) {
+        setLoadError("Could not load repositories. You can still enter one manually.");
+      }
+    } finally {
+      if (isMountedRef.current && !options?.quiet) setIsLoadingRepos(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRepositories();
+  }, [loadRepositories]);
+
+  // After an install, ownership is recorded by the `installation.created`
+  // webhook, which is asynchronous. Poll briefly so the user is not stuck on
+  // the connect screen for the second or two the delivery takes.
+  useEffect(() => {
+    if (!awaitingInstall || connection?.connected) return;
+
+    let cancelled = false;
+    let attempts = 0;
+
+    const timer = setInterval(async () => {
+      if (cancelled) return;
+      attempts += 1;
+      if (attempts > 10) {
+        // Give up rather than spin forever behind an unresponsive webhook. The
+        // "I have already installed it" button remains as a manual retry.
+        clearInterval(timer);
+        setAwaitingInstall(false);
+        return;
+      }
+      await loadRepositories({ quiet: true });
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [awaitingInstall, connection?.connected, loadRepositories]);
+
+  const appConnectionRequired = Boolean(
+    connection && connection.appConfigured && !connection.connected
+  );
 
   const filteredAvailable = useMemo(() => {
     const query = repoSearch.trim().toLowerCase();
@@ -217,6 +433,7 @@ export default function NewProjectPage() {
     setProjectName(repo.repo_name.toLowerCase().replace(/[^a-z0-9-]/g, "-"));
     setSteps([]);
     setImportError(null);
+    setImportErrorCode(null);
     setImportedRepo(null);
   };
 
@@ -250,6 +467,7 @@ export default function NewProjectPage() {
     setIsImporting(true);
     setSteps([]);
     setImportError(null);
+    setImportErrorCode(null);
     setImportedRepo(null);
 
     const runStep = async (label: string, fn: () => Promise<void>) => {
@@ -344,7 +562,14 @@ export default function NewProjectPage() {
 
         if (!res.ok) {
           const errorData = await res.json().catch(() => ({}));
-          throw new Error(errorData.error || `Import failed (HTTP ${res.status}).`);
+          // Carry the server's machine-readable code through so the UI can
+          // offer the right next step ("Connect GitHub App") instead of a bare
+          // error string.
+          const failure = new Error(
+            errorData.error || `Import failed (HTTP ${res.status}).`
+          ) as Error & { code?: string };
+          failure.code = errorData.code;
+          throw failure;
         }
 
         // The credentials have been persisted server-side; do not keep copies in
@@ -386,6 +611,7 @@ export default function NewProjectPage() {
       );
     } catch (err: any) {
       setImportError(err?.message || "Could not import this repository.");
+      setImportErrorCode(typeof err?.code === "string" ? err.code : null);
     } finally {
       setIsImporting(false);
     }
@@ -409,6 +635,19 @@ export default function NewProjectPage() {
       </div>
 
       {!selectedRepo ? (
+        appConnectionRequired ? (
+          /* VIEW A0: Import is gated. The deployment has a GitHub App but this
+             account has not installed it / granted it access, so the picker is
+             withheld rather than shown empty. The server enforces the same
+             rule, so this screen is the only way forward. */
+          <ConnectGitHubApp
+            connectUrl={connection?.connectUrl || "/api/github/install"}
+            githubIdentityLinked={connection?.githubIdentityLinked !== false}
+            awaitingInstall={awaitingInstall}
+            isChecking={isLoadingRepos}
+            onRecheck={() => void loadRepositories()}
+          />
+        ) : (
         /* VIEW A: Import Repository */
         <div className="max-w-3xl mx-auto space-y-6">
           <div className="space-y-2">
@@ -540,12 +779,19 @@ export default function NewProjectPage() {
                   {available.length === 0 ? (
                     <>
                       <p className="font-medium text-slate-700">
-                        No repositories detected from the GitHub App.
+                        No repositories available to this account.
                       </p>
                       <p className="text-[11px] text-slate-500">
-                        Install the AutoQA GitHub App on the repositories you want to test, then
-                        reload this page.
+                        The GitHub App is connected, but it has not been granted any
+                        repositories yet. Grant it access to the repositories you want to
+                        test, then reload this page.
                       </p>
+                      <a
+                        href={connection?.connectUrl || "/api/github/install"}
+                        className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-900 underline"
+                      >
+                        Manage repository access on GitHub
+                      </a>
                     </>
                   ) : (
                     <p>
@@ -590,6 +836,7 @@ export default function NewProjectPage() {
             </form>
           </div>
         </div>
+        )
       ) : (
         /* VIEW B: Configure & Import */
         <div className="max-w-2xl mx-auto space-y-6">
@@ -1143,13 +1390,24 @@ export default function NewProjectPage() {
               </div>
             )}
 
-            {/* Error message */}
+            {/* Error message. A gated import gets the connect action inline
+                rather than a dead end. */}
             {importError && (
               <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <p className="font-medium">Import failed</p>
                   <p>{importError}</p>
+                  {importErrorCode === "github_app_required" && (
+                    <a
+                      href={connection?.connectUrl || "/api/github/install"}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-1.5 font-semibold text-white hover:bg-slate-800"
+                    >
+                      <GithubIcon className="h-3.5 w-3.5" />
+                      Connect GitHub App
+                      <ArrowRight className="h-3 w-3" />
+                    </a>
+                  )}
                 </div>
               </div>
             )}
@@ -1195,6 +1453,7 @@ export default function NewProjectPage() {
                   setSelectedRepo(null);
                   setSteps([]);
                   setImportError(null);
+                  setImportErrorCode(null);
                   setImportedRepo(null);
                 }}
                 disabled={isImporting}

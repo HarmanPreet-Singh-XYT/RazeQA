@@ -170,11 +170,12 @@ function formatDuration(seconds: number): string {
 export type IntentLog = {
   id: string;
   branch: string;
-  user: string;
-  time: string;
-  fileModified: string;
-  prompt: string;
-  inferredIntent: string;
+  /** All nullable: an absent capture must read as absent, not as invented text. */
+  user: string | null;
+  time: string | null;
+  fileModified: string | null;
+  prompt: string | null;
+  inferredIntent: string | null;
   status: "in-flight" | "verified";
 };
 
@@ -478,13 +479,13 @@ export function OverviewClient({
           const mapped = data.intents.map((e: any, idx: number) => ({
             id: e.id || `int_${idx}`,
             branch: e.branch || targetBranch,
-            user: e.user || e.repo || "agent",
+            user: e.user || e.repo || null,
             time: e.timestamp
               ? new Date(e.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-              : "Recent",
-            fileModified: Array.isArray(e.files) ? e.files.join(", ") : e.files || "N/A",
-            prompt: e.prompt_summary || e.prompt || "Code modification",
-            inferredIntent: e.reasoning || e.inferredIntent || "Automated test verification",
+              : null,
+            fileModified: Array.isArray(e.files) ? e.files.join(", ") : e.files || null,
+            prompt: e.prompt_summary || e.prompt || null,
+            inferredIntent: e.reasoning || e.inferredIntent || null,
             status: "in-flight" as const,
           }));
           setIntents(mapped);
@@ -995,6 +996,13 @@ export function OverviewClient({
                     <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-mono text-slate-600">
                       Type: {selectedRun.testType}
                     </span>
+                    <Link
+                      href={`/dashboard/runs/${selectedRun.id}`}
+                      className="rounded-md border border-slate-900 bg-slate-950 hover:bg-slate-800 text-white px-2.5 py-0.5 text-xs font-semibold flex items-center gap-1 transition-colors shadow-2xs"
+                    >
+                      <Play className="h-3 w-3" />
+                      <span>Run Detail</span>
+                    </Link>
                     <Link
                       href={`/dashboard/runs/${selectedRun.id}/analytics`}
                       className="rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-800 px-2.5 py-0.5 text-xs font-semibold flex items-center gap-1 transition-colors shadow-2xs"
@@ -1560,26 +1568,26 @@ export function OverviewClient({
               >
                 <div className="flex items-center justify-between text-[11px] font-sans">
                   <span className="font-semibold text-slate-900 truncate max-w-[160px]">{intent.branch}</span>
-                  <span className="text-slate-400">{intent.time}</span>
+                  <span className="text-slate-400">{intent.time || "time not recorded"}</span>
                 </div>
 
                 <div className="text-slate-600 truncate">
                   <span className="text-slate-400">File: </span>
-                  <span className="font-semibold text-slate-800">{intent.fileModified}</span>
+                  <span className="font-semibold text-slate-800">{intent.fileModified || "no file recorded"}</span>
                 </div>
 
                 <div className="text-slate-600 text-[11px] font-sans line-clamp-2">
                   <span className="font-semibold text-slate-900">Prompt: </span>
-                  &quot;{intent.prompt}&quot;
+                  {intent.prompt ? `"${intent.prompt}"` : "no prompt captured"}
                 </div>
 
                 <div className="text-slate-500 text-[10px] font-sans line-clamp-2">
                   <span className="font-semibold text-slate-700">Inferred: </span>
-                  {intent.inferredIntent}
+                  {intent.inferredIntent || "no reasoning captured"}
                 </div>
 
                 <div className="pt-1 flex items-center justify-between text-[10px]">
-                  <span className="text-slate-500 truncate max-w-[120px]">{intent.user}</span>
+                  <span className="text-slate-500 truncate max-w-[120px]">{intent.user || "unknown"}</span>
                   {intent.status === "in-flight" ? (
                     <span className="rounded bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.2 font-bold font-mono">
                       IN-FLIGHT

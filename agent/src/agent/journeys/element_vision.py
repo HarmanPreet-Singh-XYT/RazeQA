@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import time
+from typing import Any
 
 from playwright.sync_api import Locator, Page
 from pydantic import BaseModel, Field
@@ -23,6 +26,30 @@ from strands.types.media import ImageSource
 from agent.models.factory import ModelRole, create_strands_agent, has_api_key_for_role
 
 logger = logging.getLogger("agent.journeys.element_vision")
+
+# Model providers occasionally answer with a transient 5xx/429 (Gemini's
+# "503 UNAVAILABLE. The service is currently unavailable." is the common one).
+# A single blip previously discarded the vision result and let a possibly-broken
+# element pass, so retry a bounded number of times with a short backoff.
+VISION_MAX_ATTEMPTS = max(1, int(os.environ.get("VISION_MAX_ATTEMPTS", "3")))
+VISION_RETRY_BASE_DELAY_S = float(os.environ.get("VISION_RETRY_BASE_DELAY_S", "0.75"))
+
+_TRANSIENT_MARKERS = (
+    "503",
+    "502",
+    "504",
+    "500",
+    "429",
+    "unavailable",
+    "overloaded",
+    "rate limit",
+    "too many requests",
+    "timeout",
+    "timed out",
+    "connection reset",
+    "temporarily",
+)
+
 
 SYSTEM_PROMPT = """You are inspecting a single cropped screenshot of one UI
 element (a button, link, or form field) taken during automated browser
@@ -38,6 +65,39 @@ class ElementVisionResult(BaseModel):
     looks_broken: bool = False
     confidence: float = 0.5
     reason: str = ""
+
+
+def _is_transient(exc: Exception) -> bool:
+    """Whether a vision failure is worth retrying (provider hiccup, not a bug)."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+def _structured_output_with_retry(agent: Any, schema: Any, messages: list[Message]) -> Any:
+    """Call ``agent.structured_output``, retrying transient provider failures.
+
+    Non-transient errors propagate to the caller, which fails open (returns
+    None) and preserves the cheap heuristic's finding.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, VISION_MAX_ATTEMPTS + 1):
+        try:
+            return agent.structured_output(schema, messages)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= VISION_MAX_ATTEMPTS or not _is_transient(exc):
+                raise
+            delay = VISION_RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
+            logger.info(
+                "Element vision check hit a transient error (attempt %d/%d): %s; retrying in %.2fs",
+                attempt,
+                VISION_MAX_ATTEMPTS,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+    # Unreachable: the loop either returns or raises.
+    raise last_exc if last_exc else RuntimeError("vision retry loop did not run")
 
 
 def _crop_to_element(page: Page, locator: Locator, padding: int = 8) -> bytes | None:
@@ -93,7 +153,7 @@ def inspect_element_visually(
             "content": [{"text": prompt_text}, {"image": img_content}],
         }
 
-        result = agent.structured_output(ElementVisionResult, [message])
+        result = _structured_output_with_retry(agent, ElementVisionResult, [message])
         logger.info(
             "Element vision check on %s: looks_broken=%s confidence=%.2f",
             selector, result.looks_broken, result.confidence,

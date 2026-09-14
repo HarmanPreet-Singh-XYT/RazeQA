@@ -451,7 +451,7 @@ export default function JobAnalyticsClient({
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
                 {pathKeys.map((p) => {
                   const isSelected = p === selectedPath;
-                  const pathScore = perPathMap[p]?.composite_score || 85;
+                  const pathScore = perPathMap[p]?.composite_score ?? null;
                   return (
                     <button
                       key={p}
@@ -467,12 +467,12 @@ export default function JobAnalyticsClient({
                         className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${
                           isSelected
                             ? "bg-white/20 text-white"
-                            : pathScore >= 90
+                            : pathScore !== null && pathScore >= 90
                             ? "bg-emerald-100 text-emerald-800"
                             : "bg-amber-100 text-amber-800"
                         }`}
                       >
-                        {pathScore}
+                        {pathScore ?? "—"}
                       </span>
                     </button>
                   );
@@ -595,7 +595,9 @@ export default function JobAnalyticsClient({
                   <span>Dead-Ends ({stateGraph.coverage_stats?.dead_end_count || 0})</span>
                 </span>
                 <span className="bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded border border-indigo-200">
-                  {stateGraph.coverage_stats?.coverage_pct || 85}% Coverage
+                  {stateGraph.coverage_stats?.coverage_pct != null
+                    ? `${stateGraph.coverage_stats.coverage_pct}% Coverage`
+                    : "Coverage not measured"}
                 </span>
               </div>
             </div>
@@ -647,10 +649,17 @@ export default function JobAnalyticsClient({
               </div>
 
               <div className="text-[11px] font-mono text-slate-400 border-t border-slate-800 pt-3 flex items-center justify-between">
-                <span>Optimal Action Trajectory: {trajectory.optimal_steps || 1} clicks</span>
-                <span>Actual Journey Path: {trajectory.actual_steps || 1} actions</span>
+                <span>
+                  Optimal Action Trajectory:{" "}
+                  {trajectory.optimal_steps != null ? `${trajectory.optimal_steps} clicks` : "not measured"}
+                </span>
+                <span>
+                  Actual Journey Path:{" "}
+                  {trajectory.actual_steps != null ? `${trajectory.actual_steps} actions` : "not measured"}
+                </span>
                 <span className="text-emerald-400 font-bold">
-                  Path Efficiency: {trajectory.efficiency_score || 95}%
+                  Path Efficiency:{" "}
+                  {trajectory.efficiency_score != null ? `${trajectory.efficiency_score}%` : "not measured"}
                 </span>
               </div>
             </div>
@@ -663,7 +672,9 @@ export default function JobAnalyticsClient({
                   <span>Trajectory Efficiency &amp; Cyclical Loop Check</span>
                 </h4>
                 <p className="text-xs text-slate-600">
-                  {trajectory.cyclical_detected
+                  {trajectory.cyclical_detected == null
+                    ? "No trajectory loop analysis was recorded for this run."
+                    : trajectory.cyclical_detected
                     ? "Cyclical navigation loop flagged! Agent repeatedly backtracked across identical state nodes."
                     : "Zero cyclical navigation loops or backtracking detected. Agent traversed the optimal shortest path."}
                 </p>
@@ -1050,26 +1061,28 @@ export default function JobAnalyticsClient({
                 </p>
               </div>
               <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
-                Rating: {flakiness.rating || "Deterministic"} ({(flakiness.flakiness_score ?? 0).toFixed(1)}/10)
+                {flakiness.flakiness_score == null
+                  ? "Flakiness: not measured"
+                  : `Rating: ${flakiness.rating || "unrated"} (${flakiness.flakiness_score.toFixed(1)}/10)`}
               </span>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1">
                 <span className="text-slate-500 font-medium">Timing Jitter</span>
-                <div className="text-base font-bold font-mono text-slate-900">{flakiness.timing_jitter_ms ?? 0}ms</div>
+                <div className="text-base font-bold font-mono text-slate-900">{flakiness.timing_jitter_ms != null ? `${flakiness.timing_jitter_ms}ms` : "—"}</div>
               </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1">
                 <span className="text-slate-500 font-medium">Hydration Delay</span>
-                <div className="text-base font-bold font-mono text-slate-900">{flakiness.hydration_delay_ms ?? 0}ms</div>
+                <div className="text-base font-bold font-mono text-slate-900">{flakiness.hydration_delay_ms != null ? `${flakiness.hydration_delay_ms}ms` : "—"}</div>
               </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1">
                 <span className="text-slate-500 font-medium">Status Variance</span>
-                <div className="text-base font-bold font-mono text-slate-900">{flakiness.network_status_variance ?? 0.0}</div>
+                <div className="text-base font-bold font-mono text-slate-900">{flakiness.network_status_variance != null ? flakiness.network_status_variance : "—"}</div>
               </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1">
                 <span className="text-slate-500 font-medium">Rerun Consistency</span>
-                <div className="text-base font-bold font-mono text-emerald-700">{flakiness.rerun_pass_consistency_pct ?? 100}%</div>
+                <div className="text-base font-bold font-mono text-emerald-700">{flakiness.rerun_pass_consistency_pct != null ? `${flakiness.rerun_pass_consistency_pct}%` : "—"}</div>
               </div>
             </div>
           </div>
@@ -1214,9 +1227,9 @@ export default function JobAnalyticsClient({
             <div className="rounded-xl border border-slate-200 p-5 bg-white space-y-2">
               <h4 className="text-xs font-bold text-slate-900">Click &amp; Step Distance to Value</h4>
               <div className="text-xs text-slate-600 space-y-1 font-mono">
-                <div>Total Steps: {clickDistance.total_steps ?? 1}</div>
-                <div>DOM Traversed: {clickDistance.dom_traversed_count ?? 0} nodes</div>
-                <div>Duration to Value: {clickDistance.duration_to_value_ms ?? 0}ms</div>
+                <div>Total Steps: {clickDistance.total_steps != null ? clickDistance.total_steps : "—"}</div>
+                <div>DOM Traversed: {clickDistance.dom_traversed_count != null ? `${clickDistance.dom_traversed_count} nodes` : "—"}</div>
+                <div>Duration to Value: {clickDistance.duration_to_value_ms != null ? `${clickDistance.duration_to_value_ms}ms` : "—"}</div>
               </div>
             </div>
 

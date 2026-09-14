@@ -213,7 +213,10 @@ export default function UserJourneysClient({ userEmail }: { userEmail?: string }
                 step: 1,
                 action: "Navigate",
                 target: routeStr,
-                expected: `HTTP 200 Surface Load (${ja?.interactive_count || 1} interactive elements)`,
+                expected:
+                  ja?.interactive_count != null
+                    ? `HTTP 200 Surface Load (${ja.interactive_count} interactive elements)`
+                    : "HTTP 200 Surface Load",
                 status: isPassed ? "passed" : "failed",
               },
               {
@@ -446,7 +449,7 @@ export default function UserJourneysClient({ userEmail }: { userEmail?: string }
         <div className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-2xs">
           <div className="text-[11px] text-slate-500 font-medium">Monitored Scope</div>
           <div className="text-lg font-bold text-slate-900 mt-1 font-mono truncate">
-            {projectFilter !== "all" ? displayProjectName : `${projects.length || 1} Projects`}
+            {projectFilter !== "all" ? displayProjectName : `${projects.length} Projects`}
           </div>
         </div>
       </div>

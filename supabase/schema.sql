@@ -11,14 +11,29 @@
 create extension if not exists "pgcrypto";
 
 -- 1. GitHub App Installations
+--
+-- `installed_by_*` records who clicked Install, taken from the
+-- signature-verified `installation` webhook `sender`. Import is gated on it:
+-- a repository may only be imported through an installation the signed-in user
+-- installed (see web/lib/github/connection.ts). Both columns are nullable
+-- because pre-existing rows and installations synced from `GET /app/installations`
+-- have no installer to record; readers fall back to matching `account_login`.
 create table if not exists installations (
   installation_id bigint primary key,
   account_login text not null,
   account_id bigint not null,
   repositories jsonb not null default '[]'::jsonb,
+  installed_by_github_user_id bigint,
+  installed_by_login text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
+
+-- Bring databases created before the ownership columns existed up to date.
+-- Kept here as well as in supabase/migrations/20260916000000_installation_ownership.sql
+-- so a fresh bootstrap and an in-place upgrade converge on the same schema.
+alter table installations add column if not exists installed_by_github_user_id bigint;
+alter table installations add column if not exists installed_by_login text;
 
 -- 2. Projects (Registered Repositories)
 -- A row here means the user explicitly imported the repository. Discovery
@@ -320,3 +335,81 @@ drop policy if exists "Users can view own saved tests" on saved_tests;
 create policy "Users can view own saved tests" on saved_tests for select using (
   exists (select 1 from projects where projects.id = saved_tests.project_id and projects.user_id = auth.uid())
 );
+
+-- 9. Outbound email notifications
+--    Kept in sync with supabase/migrations/20260914000000_email_notifications.sql.
+
+create table if not exists email_messages (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid references projects(id) on delete set null,
+  repo_full_name text,
+  run_id text,
+  pr_number integer,
+  kind text not null,
+  recipients jsonb not null default '[]'::jsonb,
+  cc jsonb not null default '[]'::jsonb,
+  subject text not null,
+  body_text text not null,
+  body_html text,
+  status text not null default 'queued',
+  attempts integer not null default 0,
+  last_error text,
+  provider_message_id text,
+  dedupe_key text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  sent_at timestamptz
+);
+create unique index if not exists idx_email_messages_dedupe
+  on email_messages (dedupe_key)
+  where dedupe_key is not null;
+create index if not exists idx_email_messages_status on email_messages (status, created_at desc);
+create index if not exists idx_email_messages_repo on email_messages (repo_full_name, created_at desc);
+create index if not exists idx_email_messages_project on email_messages (project_id, created_at desc);
+
+alter table email_messages enable row level security;
+
+drop policy if exists "Service role full access on email_messages" on email_messages;
+create policy "Service role full access on email_messages" on email_messages
+  for all
+  using (auth.role() = 'service_role')
+  with check (auth.role() = 'service_role');
+
+drop policy if exists "Users can view own email messages" on email_messages;
+create policy "Users can view own email messages" on email_messages for select using (
+  exists (select 1 from projects where projects.id = email_messages.project_id and projects.user_id = auth.uid())
+);
+
+-- 10. Per-user notification settings (workspace defaults + personal prefs)
+--     Kept in sync with supabase/migrations/20260915000000_notification_settings.sql.
+
+create table if not exists notification_settings (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  defaults jsonb not null default '{}'::jsonb,
+  personal jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table notification_settings enable row level security;
+
+drop policy if exists "Service role full access on notification_settings" on notification_settings;
+create policy "Service role full access on notification_settings" on notification_settings
+  for all
+  using (auth.role() = 'service_role')
+  with check (auth.role() = 'service_role');
+
+drop policy if exists "Users manage own notification settings" on notification_settings;
+create policy "Users manage own notification settings" on notification_settings
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- Case-insensitive uniqueness for team recipients (invite by address before the
+-- invitee has a Supabase account; NULLs in the existing (org_login, user_id)
+-- constraint are distinct, so that one cannot deduplicate them).
+create unique index if not exists idx_team_members_org_email
+  on team_members (org_login, lower(email))
+  where email is not null;
+create index if not exists idx_team_members_email on team_members (lower(email));

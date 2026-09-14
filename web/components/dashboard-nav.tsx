@@ -144,13 +144,29 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
     return currentTab === targetTab;
   };
 
+  // Pages that are intentionally fleet-wide: they carry no project in the URL
+  // and must not inherit the persisted active project.
+  const isOverviewPage =
+    !urlRepoParam &&
+    (pathname === "/dashboard/overview" ||
+      // The copilot home is an ordinary dashboard tab: it keeps the same header
+      // and tab strip, and only drops into the project shell when a repo is in
+      // the URL (the project-scoped copilot).
+      pathname === "/dashboard" ||
+      pathname === "/dashboard/runs" ||
+      pathname === "/dashboard/tools" ||
+      pathname === "/dashboard/journeys" ||
+      pathname === "/dashboard/logs" ||
+      pathname === "/dashboard/analytics");
+
   // Every project-level destination keeps the active project in view; only the
-  // overview pages (rendered below) are intentionally fleet-wide.
+  // overview pages above are intentionally fleet-wide.
   const scopeQuery = scopeRepo ? `?repo=${encodeURIComponent(scopeRepo)}` : "";
 
-  // The copilot is a full page now, not a modal; every entry point keeps the
-  // active project in scope through the same `repo` query param.
-  const agentHref = `/dashboard${scopeQuery}`;
+  // The copilot is a full page, and it follows the page's scope. A project page
+  // opens it on that project; an overview page opens the *workspace* copilot,
+  // which the web layer scopes to the caller's own projects.
+  const agentHref = isOverviewPage ? "/dashboard" : `/dashboard${scopeQuery}`;
 
   const navPrimary = [
     {
@@ -203,19 +219,11 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
           { href: "/dashboard/projects?tab=env-vars", label: "Sandbox Secrets", icon: Sliders },
           { href: "/dashboard/context", label: "Context & Secrets", icon: KeyRound },
           { href: "/dashboard/automation", label: "Automation", icon: Workflow },
+          { href: "/dashboard/notifications", label: "Notifications", icon: Bell },
         ]
       : []),
     { href: `/dashboard${scopeQuery}`, label: "Copilot", icon: Cpu },
   ];
-
-  const isOverviewPage =
-    !urlRepoParam &&
-    (pathname === "/dashboard/overview" ||
-      pathname === "/dashboard/runs" ||
-      pathname === "/dashboard/tools" ||
-      pathname === "/dashboard/journeys" ||
-      pathname === "/dashboard/logs" ||
-      pathname === "/dashboard/analytics");
 
   if (isOverviewPage) {
     return (
@@ -355,7 +363,11 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
           <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 flex items-center gap-1 overflow-x-auto text-xs font-medium text-slate-600 no-scrollbar">
             <Link
               href="/dashboard"
-              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent transition-colors whitespace-nowrap hover:text-slate-950 hover:border-slate-300"
+              className={`flex items-center gap-1.5 px-3 py-2 border-b-2 transition-colors whitespace-nowrap ${
+                pathname === "/dashboard"
+                  ? "border-slate-950 text-slate-950 font-bold"
+                  : "border-transparent hover:text-slate-950 hover:border-slate-300"
+              }`}
             >
               <Cpu className="h-3.5 w-3.5" />
               <span>Copilot</span>

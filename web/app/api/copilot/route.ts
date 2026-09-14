@@ -136,6 +136,54 @@ async function loadProjectContext(
   return { project: (data as ProjectRow) ?? null };
 }
 
+/** Cap on how many projects a workspace turn may fan out over. */
+const MAX_WORKSPACE_REPOS = 25;
+
+interface WorkspaceRepo {
+  repo_full_name: string;
+  name: string;
+  type: string;
+  default_branch: string;
+  target_url: string;
+  settings: Record<string, any>;
+}
+
+/**
+ * The projects a workspace-level turn may read.
+ *
+ * Built from the caller's tenant scope — never from the request body — because
+ * this allowlist is the only thing bounding a fleet-wide copilot to its own
+ * data. The agent validates every repo it is asked about against this list.
+ */
+async function loadWorkspaceRepos(
+  admin: ReturnType<typeof createAdminClient>,
+  scope: TenantScope
+): Promise<WorkspaceRepo[]> {
+  const base = admin.from("projects").select("repo_full_name, default_branch, settings");
+  const query = scope.includeUnowned
+    ? base.or(`user_id.eq.${scope.userId},user_id.is.null`)
+    : base.eq("user_id", scope.userId);
+
+  const { data, error } = await query.limit(MAX_WORKSPACE_REPOS);
+  if (error) throw new Error(error.message);
+
+  return (data || [])
+    .filter((p: any) => typeof p?.repo_full_name === "string" && p.repo_full_name)
+    .map((p: any) => {
+      const settings = p.settings || {};
+      const isExternal =
+        p.repo_full_name.startsWith("external:") || settings.type === "external";
+      return {
+        repo_full_name: p.repo_full_name,
+        name: settings.name || p.repo_full_name.split("/")[1] || p.repo_full_name,
+        type: isExternal ? "external" : "git",
+        default_branch: p.default_branch || "main",
+        target_url: String(settings.domain || settings.target_url || ""),
+        settings,
+      };
+    });
+}
+
 /** Recent runs for the project, from the engine with a DB fallback. */
 async function loadRecentRuns(repoFullName: string): Promise<any[]> {
   if (!ENGINE_API_KEY || !repoFullName || repoFullName.startsWith("external:")) {
@@ -253,6 +301,9 @@ export async function POST(request: Request) {
   }
 
   const repoFullName = (body.repo_full_name || "").trim();
+  // No repo means the caller is asking about the whole workspace. The repo
+  // allowlist is resolved from their scope here, on the server.
+  const isWorkspace = !repoFullName;
   const isExternal = repoFullName.startsWith("external:");
   const { project, error: projectError } = await loadProjectContext(
     admin,
@@ -277,6 +328,20 @@ export async function POST(request: Request) {
   // External sites have no `projects` row to join runs against.
   const runs = repoFullName && !isExternal ? await loadRecentRuns(repoFullName) : [];
 
+  // A workspace turn carries the repos the agent may read; per-repo runs are
+  // fetched by the agent's own tools rather than being inlined here.
+  let workspaceRepos: WorkspaceRepo[] = [];
+  if (isWorkspace) {
+    try {
+      workspaceRepos = await loadWorkspaceRepos(admin, scope);
+    } catch (err: any) {
+      return NextResponse.json(
+        { error: `Cannot resolve workspace projects: ${err?.message ?? "unknown error"}` },
+        { status: 503 }
+      );
+    }
+  }
+
   const history = (Array.isArray(body.history) ? body.history : [])
     .filter((t) => t && (t.role === "user" || t.role === "assistant") && typeof t.content === "string")
     .slice(-MAX_HISTORY)
@@ -300,8 +365,11 @@ export async function POST(request: Request) {
     .filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 128)
     .slice(0, 10);
 
-  // A read-only session cannot dispatch, whatever the caller asked for.
-  const allowTrigger = Boolean(body.allow_trigger !== false && canTrigger && mode !== "read_only");
+  // A read-only session cannot dispatch, whatever the caller asked for — and a
+  // workspace turn cannot either: there is no single project to dispatch on.
+  const allowTrigger = Boolean(
+    body.allow_trigger !== false && canTrigger && mode !== "read_only" && !isWorkspace
+  );
 
   const payload = {
     message: message.slice(0, 4000),
@@ -327,6 +395,11 @@ export async function POST(request: Request) {
             : String(project.settings?.domain || ""),
           settings: project.settings || {},
         }
+      : null,
+    // Present instead of `project` in workspace mode; the agent validates every
+    // repository it is asked about against this list.
+    workspace: isWorkspace
+      ? { label: "Workspace", repos: workspaceRepos }
       : null,
     runs: runs.slice(0, MAX_RUNS).map((r: any) => ({
       run_id: String(r.run_id || r.id || ""),

@@ -21,6 +21,7 @@ from agent.api.copilot import (
     CopilotChatResponse,
     ProjectContext,
     RunContext,
+    WorkspaceContext,
     _extract_text,
     build_context_block,
     wants_run,
@@ -356,11 +357,127 @@ def _payload(result):
 
 
 def test_tools_are_built_for_every_turn():
-    from agent.api.copilot import ALL_TOOLS, build_copilot_tools
+    from agent.api.copilot import ALL_TOOLS, READ_ONLY_TOOLS, WORKSPACE_TOOLS, build_copilot_tools
 
     tools = build_copilot_tools(_turn(), [])
-    assert {t.tool_name for t in tools} == set(ALL_TOOLS)
-    assert len(tools) == len(ALL_TOOLS) == 16
+    # A project turn gets everything except the workspace-only reads.
+    assert {t.tool_name for t in tools} == set(ALL_TOOLS) - set(WORKSPACE_TOOLS)
+    assert len(tools) == 16
+    # Workspace reads are ordinary read-only tools, so a read-only session is
+    # not refused the only reads it has.
+    assert WORKSPACE_TOOLS <= READ_ONLY_TOOLS <= set(ALL_TOOLS)
+
+
+# ---------------------------------------------------------------------------
+# Workspace mode: no single project, an allowlist of repos instead. The list is
+# the only thing keeping a fleet-wide copilot inside one tenant, so these tests
+# pin that a repo outside it cannot be read, however it is named.
+# ---------------------------------------------------------------------------
+
+
+def _workspace_turn(repos: list[str] | None = None):
+    from agent.api.copilot import _TurnState
+
+    names = repos if repos is not None else ["acme/storefront", "acme/api"]
+    return _TurnState(
+        request=CopilotChatRequest(
+            message="how are my projects doing?",
+            allow_trigger=False,
+            project=None,
+            workspace=WorkspaceContext(
+                label="Workspace",
+                repos=[ProjectContext(repo_full_name=n, type="git") for n in names],
+            ),
+        )
+    )
+
+
+def test_workspace_turn_adds_the_workspace_tools():
+    from agent.api.copilot import build_copilot_tools
+
+    names = {t.tool_name for t in build_copilot_tools(_workspace_turn(), [])}
+    assert {"list_projects", "get_workspace_overview"} <= names
+    assert "get_project_overview" in names
+
+
+def test_workspace_overview_covers_only_allowlisted_repos(monkeypatch):
+    from agent.api import copilot as copilot_module
+
+    seen: list[str] = []
+
+    class Store:
+        def list_all(self, *, repo=None, limit=None, **kwargs):
+            seen.append(repo)
+            return []
+
+    monkeypatch.setattr("agent.api.runs.get_run_store", lambda: Store())
+
+    trace: list = []
+    tools = copilot_module.build_copilot_tools(_workspace_turn(), trace)
+    payload = _payload(_tool(tools, "get_workspace_overview")(limit=2))
+
+    assert seen == ["acme/api", "acme/storefront"]
+    assert payload["project_count"] == 2
+    assert {p["repo_full_name"] for p in payload["projects"]} == {"acme/api", "acme/storefront"}
+
+
+def test_workspace_reads_reject_a_repo_outside_the_allowlist(monkeypatch):
+    from agent.api import copilot as copilot_module
+
+    class Store:
+        def list_all(self, *, repo=None, limit=None, **kwargs):
+            raise AssertionError(f"must not read {repo}")
+
+    monkeypatch.setattr("agent.api.runs.get_run_store", lambda: Store())
+
+    trace: list = []
+    tools = copilot_module.build_copilot_tools(_workspace_turn(), trace)
+    result = _tool(tools, "list_recent_runs")(target="someone-else/private")
+
+    assert result["status"] == "error"
+    assert "not one of this workspace's projects" in _payload(result)["error"]
+
+
+def test_workspace_run_lookup_denies_another_tenants_run(monkeypatch):
+    from agent.api import copilot as copilot_module
+    from agent.api.copilot import _run_row
+
+    class Record:
+        def model_dump(self):
+            return {
+                "run_id": "run_other123",
+                "repo": "default",
+                "result": {"repo": "private", "owner": "someone-else"},
+            }
+
+    class Store:
+        def get(self, run_id):
+            return Record()
+
+    monkeypatch.setattr("agent.api.runs.get_run_store", lambda: Store())
+
+    trace: list = []
+    tools = copilot_module.build_copilot_tools(_workspace_turn(), trace)
+    result = _tool(tools, "get_run_details")(run_id="run_other123")
+
+    assert result["status"] == "error"
+    assert "does not belong to the projects in scope" in _payload(result)["error"]
+
+
+def test_project_turn_resolves_the_real_repo_from_the_result():
+    from agent.api.copilot import _run_row
+
+    class Record:
+        def model_dump(self):
+            return {
+                "run_id": "run_abc",
+                "repo": "default",
+                "result": {"repo": "storefront", "owner": "acme"},
+            }
+
+    # Engine records are stamped `repo: "default"`; comparing that against the
+    # active project denied every run.
+    assert _run_row(Record())["repo"] == "acme/storefront"
 
 
 def test_list_runs_is_scoped_to_the_active_project(monkeypatch):

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
@@ -490,6 +491,7 @@ async def _run_journeys(
     route_fallback_root: Path | None = None,
     scope: str = "changed",
     change_impact: Any | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Runs discovered route validation, login (if present), and autonomous exploratory
     journeys against `base_url`, returning collected results.
@@ -746,6 +748,29 @@ async def _run_journeys(
     for p_route in planned_routes:
         route = p_route.route
         focus = p_route.focus
+        if is_run_cancelled(run_id):
+            logger.info("Run %s cancelled; skipping remaining %d route(s)", run_id, len(planned_routes) - len(raw_journeys))
+            additional_findings.append("Run cancelled by user; remaining routes were skipped.")
+            break
+        route_budget = (
+            float(testing_config.control_time_budget_seconds) if testing_config else 45.0
+        )
+        if deadline is not None:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= PIPELINE_REPORT_RESERVE_S:
+                skipped = len(planned_routes) - len(raw_journeys)
+                logger.warning(
+                    "Pipeline time budget nearly exhausted (%.0fs left); stopping sweep with %d route(s) untested",
+                    remaining,
+                    skipped,
+                )
+                additional_findings.append(
+                    f"Time budget exhausted before {skipped} route(s) could be tested."
+                )
+                break
+            # No single route may eat the whole remaining budget; leave the
+            # reporting reserve intact.
+            route_budget = min(route_budget, max(5.0, remaining - PIPELINE_REPORT_RESERVE_S))
         logger.info("Executing exploratory journey for route %s (focus: %s)", route, focus)
         exp_res = await asyncio.to_thread(
             run_route_journey,
@@ -757,10 +782,13 @@ async def _run_journeys(
             risk_tag=analysis.risk_tag if analysis else "",
             covered_keys=covered_control_keys,
             max_controls=(testing_config.max_controls_per_route if testing_config else 40),
-            control_time_budget_seconds=(
-                float(testing_config.control_time_budget_seconds) if testing_config else 45.0
-            ),
+            control_time_budget_seconds=route_budget,
+            should_abort=lambda: is_run_cancelled(run_id),
         )
+        if exp_res.get("cancelled"):
+            logger.info("Route %s aborted mid-journey because run %s was cancelled", route, run_id)
+            additional_findings.append(f"Run cancelled by user during route {route}.")
+            break
         coverage = exp_res.get("coverage") or {}
         covered_control_keys.update(coverage.get("covered_keys") or [])
         j_name = exp_res.get("name", f"exploratory:{route}")
@@ -883,7 +911,14 @@ async def _run_journeys(
             run_agentic_session,
         )
 
-        if agentic_exploration_enabled(testing_config):
+        if is_run_cancelled(run_id):
+            logger.info("Skipping agentic exploration for run %s: cancelled", run_id)
+        elif (
+            deadline is not None
+            and deadline - asyncio.get_running_loop().time() <= PIPELINE_REPORT_RESERVE_S
+        ):
+            logger.warning("Skipping agentic exploration for run %s: time budget exhausted", run_id)
+        elif agentic_exploration_enabled(testing_config):
             session_budget = estimate_session_budget(planned_routes, testing_config)
             logger.info(
                 "Starting agentic exploration session (%d routes, %d step budget) for %s",
@@ -900,6 +935,7 @@ async def _run_journeys(
                 storage_state=storage_state_path,
                 risk_tag=analysis.risk_tag if analysis else "",
                 max_steps=session_budget,
+                should_abort=lambda: is_run_cancelled(run_id),
             )
             for finding in agentic_session.get("findings", []):
                 additional_findings.append(f"Agent note — {finding}")
@@ -936,6 +972,111 @@ async def _run_journeys(
 # indication anything is wrong.
 PIPELINE_TIMEOUT_S = float(os.environ.get("PIPELINE_TIMEOUT_S", "900"))
 
+# How much of the pipeline budget to keep in reserve for baseline comparison,
+# report/check-run posting and artifact upload once the route sweep stops.
+# Without a reserve, a sweep that runs to the hard timeout leaves nothing for
+# the report and the run ends with no actionable result.
+PIPELINE_REPORT_RESERVE_S = float(os.environ.get("PIPELINE_REPORT_RESERVE_S", "75"))
+
+# Minimum remaining budget needed before the first-run baseline refresh is
+# started. It boots a second sandbox and re-runs the whole sweep, so starting it
+# with only a minute left guarantees the hard timeout fires with no report.
+PIPELINE_BASELINE_MIN_BUDGET_S = float(os.environ.get("PIPELINE_BASELINE_MIN_BUDGET_S", "180"))
+
+# How many characters of redacted build/boot output to persist with a failed
+# run. This is what the dashboard's log viewer shows; it is deliberately much
+# larger than the GitHub-comment tail so a build error is debuggable in the UI.
+PIPELINE_BUILD_LOG_CHARS = int(os.environ.get("PIPELINE_BUILD_LOG_CHARS", "50000"))
+
+
+def _deadline_exhausted(deadline: float | None, reserve: float | None = None) -> bool:
+    """True when the pipeline should stop starting expensive new work.
+
+    ``reserve`` overrides how much budget must remain; baseline refresh passes a
+    larger reserve because it boots a second sandbox and re-runs the sweep.
+    """
+    if deadline is None:
+        return False
+    try:
+        threshold = PIPELINE_REPORT_RESERVE_S if reserve is None else reserve
+        return asyncio.get_running_loop().time() >= deadline - threshold
+    except RuntimeError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Cooperative run cancellation
+# ---------------------------------------------------------------------------
+# A user can cancel a run from the dashboard. The pipeline spends most of its
+# time inside synchronous Playwright calls dispatched with asyncio.to_thread;
+# cancelling the asyncio task alone does not stop the thread, so the thread is
+# given a cheap flag to poll between browser actions. The task handle is kept
+# too, so a cancel can interrupt an await point (sandbox boot, model call)
+# immediately rather than waiting for the next control loop.
+_run_cancel_events: dict[str, threading.Event] = {}
+_run_tasks: dict[str, asyncio.Task[Any]] = {}
+_MAX_RETAINED_CANCEL_TOKENS = 200
+
+
+def register_run_cancel_token(run_id: str) -> None:
+    """Track the running task for ``run_id`` so it can be cancelled from the API."""
+    _run_cancel_events.setdefault(run_id, threading.Event())
+    task = asyncio.current_task()
+    if task is not None:
+        _run_tasks[run_id] = task
+
+
+def clear_run_cancel_token(run_id: str | None) -> None:
+    if not run_id:
+        return
+    _run_tasks.pop(run_id, None)
+    event = _run_cancel_events.get(run_id)
+    # A set event is deliberately retained: a to_thread worker (Playwright) can
+    # outlive the cancelled coroutine, and it still needs to observe the
+    # cancellation on its next cooperative check.
+    if event is not None and not event.is_set():
+        _run_cancel_events.pop(run_id, None)
+    # Bound the retained set so a long-lived process cannot grow it forever.
+    while len(_run_cancel_events) > _MAX_RETAINED_CANCEL_TOKENS:
+        _run_cancel_events.pop(next(iter(_run_cancel_events)), None)
+
+
+def signal_run_cancel(run_id: str | None) -> None:
+    """Set the cooperative cancel flag without touching the task handle."""
+    if not run_id:
+        return
+    _run_cancel_events.setdefault(run_id, threading.Event()).set()
+
+
+def is_run_cancelled(run_id: str | None) -> bool:
+    """Cooperative check used both on the event loop and inside worker threads."""
+    if not run_id:
+        return False
+    event = _run_cancel_events.get(run_id)
+    if event is not None and event.is_set():
+        return True
+    # Queue-backed jobs also carry a status the pipeline can observe.
+    try:
+        from agent.runner.queue import default_job_queue
+
+        return default_job_queue.is_job_cancelled(run_id)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def request_run_cancel(run_id: str, reason: str = "Cancelled by user") -> bool:
+    """Signal cancellation for a run. Returns True if a live run was signalled."""
+    signal_run_cancel(run_id)
+    task = _run_tasks.get(run_id)
+    if task is not None and not task.done():
+        try:
+            task.get_loop().call_soon_threadsafe(task.cancel)
+        except RuntimeError:
+            task.cancel()
+        logger.info("Cancellation requested for run %s: %s", run_id, reason)
+        return True
+    return False
+
 
 async def run_pipeline(
     owner: str,
@@ -971,6 +1112,9 @@ async def run_pipeline(
     but never the discovered-route allowlist: a route that does not exist in the
     app is still dropped rather than invented.
     """
+    if run_id:
+        register_run_cancel_token(run_id)
+    deadline = asyncio.get_running_loop().time() + PIPELINE_TIMEOUT_S
     try:
         return await asyncio.wait_for(
             _run_pipeline_inner(
@@ -992,11 +1136,23 @@ async def run_pipeline(
                 update_baseline=update_baseline,
                 forced_routes=forced_routes,
                 post_comments=post_comments,
+                deadline=deadline,
             ),
             timeout=PIPELINE_TIMEOUT_S,
         )
+    except asyncio.CancelledError:
+        if run_id and is_run_cancelled(run_id):
+            logger.info("Pipeline for %s/%s branch=%s sha=%s cancelled by user", owner, repo, branch, sha[:8])
+            _mark_run_failed_by_lookup(
+                branch, sha, scope, test_type, run_id, "Cancelled by user", status="cancelled"
+            )
+        raise
     except TimeoutError:
         logger.error("Pipeline for %s/%s branch=%s sha=%s timed out after %ss", owner, repo, branch, sha[:8], PIPELINE_TIMEOUT_S)
+        # Tell any to_thread worker still running inside the timed-out coroutine
+        # to abort at its next cooperative check, rather than leaving it to
+        # fight a torn-down sandbox.
+        signal_run_cancel(run_id)
         _mark_run_failed_by_lookup(branch, sha, scope, test_type, run_id, f"Pipeline timed out after {PIPELINE_TIMEOUT_S:.0f}s")
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1006,23 +1162,30 @@ async def run_pipeline(
         logger.exception("Unhandled pipeline error for %s/%s branch=%s sha=%s", owner, repo, branch, sha[:8])
         _mark_run_failed_by_lookup(branch, sha, scope, test_type, run_id, f"Unhandled pipeline error: {exc}")
         raise
+    finally:
+        clear_run_cancel_token(run_id)
 
 
 def _mark_run_failed_by_lookup(
-    branch: str, sha: str, scope: str, test_type: str, run_id: str | None, error: str
+    branch: str, sha: str, scope: str, test_type: str, run_id: str | None, error: str,
+    status: str = "failed",
 ) -> None:
-    """Best-effort: find (or accept the given) run record and mark it failed.
+    """Best-effort: find (or accept the given) run record and mark it failed/cancelled.
     Used by run_pipeline's outer timeout/catch-all, which may fire before
     _run_pipeline_inner ever created or fetched a record itself."""
     try:
         record = default_run_store.get(run_id) if run_id else None
         if not record:
             record = default_run_store.find_latest_by_sha(branch=branch, sha=sha, scope=scope, test_type=test_type)
-        if record and record.status not in ("completed", "failed"):
+        if record and record.status not in ("completed", "failed", "cancelled"):
             default_run_store.update(
                 run_id=record.run_id,
-                status="failed",
-                result={"status": "error", "error": error},
+                status=status,
+                result={
+                    "status": "error" if status == "failed" else "cancelled",
+                    "error": error,
+                    "build_log": error,
+                },
                 completed=True,
             )
     except Exception:  # noqa: BLE001
@@ -1045,6 +1208,7 @@ async def _report_boot_failure(
     github_client: GitHubAppClient,
     post_comments: bool,
     secrets: list[str] | None = None,
+    log: str | None = None,
 ) -> None:
     """Record a build/boot failure as a real, reported PR result.
 
@@ -1058,6 +1222,10 @@ async def _report_boot_failure(
     from agent.runner.test_cases import fingerprint
 
     redacted_output = redact_data(safe_error, secrets or [])
+    # The full captured output, not just the exception tail. Bounded so a
+    # pathological build cannot bloat every run row.
+    redacted_log = redact_data(log or safe_error, secrets or [])
+    build_log = redacted_log[-PIPELINE_BUILD_LOG_CHARS:]
     label = {
         "clone": "Repository checkout",
         "dependency_install": "Dependency install",
@@ -1084,7 +1252,7 @@ async def _report_boot_failure(
         ],
         "code_analysis": [],
         "mock_context": [],
-        "evidence": {"build_output": redacted_output[-8000:]},
+        "evidence": {"build_output": build_log},
         "origin": "new",
         "verified_this_commit": True,
         "pr_number": pr_number,
@@ -1119,6 +1287,7 @@ async def _report_boot_failure(
             "status": "error",
             "error": f"{label} failure: {redacted_output}",
             "failure_kind": step,
+            "build_log": build_log,
             "test_cases": [test_case],
             "severity_summary": severity_summary,
             "coverage_gate": "no_journeys",
@@ -1203,8 +1372,14 @@ async def _run_pipeline_inner(
     update_baseline: bool = True,
     forced_routes: list[str] | None = None,
     post_comments: bool = True,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
-    """Execute complete end-to-end verification pipeline."""
+    """Execute complete end-to-end verification pipeline.
+
+    ``deadline`` is an ``asyncio`` loop-clock time by which the run should stop
+    starting new work, so the route sweep can bail out before the outer hard
+    timeout kills the whole thing with no report.
+    """
     intents = intents or []
     github_client = GitHubAppClient()
     artifacts_dir = ARTIFACTS_BASE / f"{_sanitize_path_component(branch)}_{sha[:8]}"
@@ -1256,7 +1431,11 @@ async def _run_pipeline_inner(
             _gc = _GAC()
             github_token = _gc.token
             if not github_token and installation_id:
-                github_token = await asyncio.to_thread(_gc.get_installation_token, installation_id)
+                # get_installation_token is async — awaiting it directly is
+                # required. Wrapping it in asyncio.to_thread handed back an
+                # un-awaited coroutine, so github_token was never a usable
+                # string and the sandbox clone had no credentials.
+                github_token = await _gc.get_installation_token(installation_id)
         except Exception as exc:  # noqa: BLE001
             logger.debug("GitHub token resolution skipped: %s", exc)
 
@@ -1503,6 +1682,7 @@ async def _run_pipeline_inner(
                     route_fallback_root=None if (is_real_github_repo or container_name) else APP_REPO_DIR,
                     scope=effective_scope,
                     change_impact=change_impact,
+                    deadline=deadline,
                 )
         t_end = time.monotonic()
         timing: dict[str, float] = {
@@ -1515,12 +1695,16 @@ async def _run_pipeline_inner(
         # boot, so scrub it from any error text before that text is persisted to
         # the run store or surfaced to the dashboard.
         safe_error = _scrub_token(str(exc), github_token)
+        # The sandbox attaches the untruncated command output; keep it so the
+        # dashboard can show the same build log a developer would see in CI.
+        safe_log = _scrub_token(getattr(exc, "log", "") or str(exc), github_token)
         step = getattr(exc, "step", None) or ("clone" if isinstance(exc, CloneError) else "build")
         logger.error("Pipeline aborted for run %s at %s: %s", record.run_id, step, safe_error)
         clear_usage_accumulator()
         await _report_boot_failure(
             step=step,
             safe_error=safe_error,
+            log=safe_log,
             run_id=record.run_id,
             owner=owner,
             repo=repo,
@@ -1543,6 +1727,36 @@ async def _run_pipeline_inner(
     raw_journeys = journeys["raw_journeys"]
     login_result = journeys["login_result"]
 
+    # A user cancel that lands between journey completion and reporting should
+    # stop here rather than spending more model calls and posting a result the
+    # user asked us to abandon.
+    if is_run_cancelled(record.run_id):
+        logger.info("Run %s cancelled by user; skipping baseline comparison and reporting", record.run_id)
+        default_run_store.update(
+            run_id=record.run_id,
+            status="cancelled",
+            result={
+                "status": "cancelled",
+                "error": "Cancelled by user",
+                "journey_artifacts": journeys["journey_artifacts"],
+            },
+            completed=True,
+        )
+        if check_run_id:
+            try:
+                await github_client.update_check_run(
+                    owner=owner,
+                    repo=repo,
+                    check_run_id=check_run_id,
+                    conclusion="cancelled",
+                    title="Autonomous Verification: Cancelled",
+                    summary="This verification run was cancelled before it completed.",
+                    installation_id=installation_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not mark Check Run %s cancelled: %s", check_run_id, exc)
+        return {"status": "cancelled", "error": "Cancelled by user"}
+
     # 5. Baseline Comparison vs main
     from agent.runner.baseline import default_baseline_store
 
@@ -1561,6 +1775,14 @@ async def _run_pipeline_inner(
         # baseline staying frozen at its seeded defaults forever.
         default_baseline_store.update_baseline_from_run(repo=repo, journeys=raw_journeys)
         logger.info("Updated baseline for repo '%s' from base-branch run (%d journeys)", repo, len(raw_journeys))
+    elif is_run_cancelled(record.run_id) or _deadline_exhausted(
+        deadline, reserve=PIPELINE_BASELINE_MIN_BUDGET_S
+    ):
+        logger.warning(
+            "Skipping first-run baseline refresh for repo '%s': run cancelled or out of time. "
+            "Comparison uses the seeded/stale baseline.",
+            repo,
+        )
     elif not default_baseline_store.has_baseline(repo):
         # No baseline recorded yet for this repo and this run is a PR (not
         # main itself) — refresh it now by running the same journeys against
@@ -1975,6 +2197,30 @@ async def _run_pipeline_inner(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not persist PR insights for run %s: %s", record.run_id, exc)
+
+    # 6b. Notify email watchers. Best-effort and non-fatal: a notification must
+    # never change the outcome of a verification run. Delivery is attempted
+    # inline (off the event loop) so a finished run's mail goes out immediately;
+    # the outbox retries anything that does not.
+    try:
+        from agent.email.notifications import notify_run_completed
+
+        await notify_run_completed(
+            repo_full_name=f"{owner}/{repo}" if owner and repo else repo,
+            run_id=record.run_id,
+            branch=branch,
+            sha=sha,
+            status=overall_status,
+            risk_tag=analysis.risk_tag if analysis else None,
+            journeys_executed=journeys_executed,
+            passed=len(passed_journeys),
+            failed=len(failed_journeys),
+            findings=case_findings,
+            pr_number=pr_number,
+            summary=remediation_prompts[0] if remediation_prompts else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not send run-completed notification for %s: %s", record.run_id, exc)
 
     # 7. Notify GitHub Check Run
     if check_run_id:

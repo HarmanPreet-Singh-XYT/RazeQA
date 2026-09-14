@@ -6,7 +6,15 @@
  * lookup lives here rather than being duplicated.
  *
  * Discovery is read-only. It never creates `projects` rows.
+ *
+ * IMPORTANT: the agent's catalogue is a *union across every installation the
+ * App knows about*, so it is not safe to hand to a user unfiltered. Callers must
+ * pass the installation ids the signed-in user actually owns; the scope argument
+ * is required so a new caller cannot silently reintroduce the cross-tenant leak.
  */
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { filterReposByInstallations } from "@/lib/github/connection";
 
 export interface DiscoveredRepo {
   installation_id: number | null;
@@ -20,10 +28,6 @@ export interface DiscoveredRepo {
   homepage: string;
   description: string;
 }
-
-type SupabaseServerClient = Awaited<
-  ReturnType<typeof import("@/lib/supabase/server").createClient>
->;
 
 function normalizeFromAgent(item: any): DiscoveredRepo {
   return {
@@ -40,7 +44,8 @@ function normalizeFromAgent(item: any): DiscoveredRepo {
 }
 
 export async function discoverRepositories(
-  supabase: SupabaseServerClient
+  client: SupabaseClient,
+  scope: { installationIds: number[] }
 ): Promise<DiscoveredRepo[]> {
   const platformUrl = process.env.PLATFORM_URL || "http://localhost:8000";
   const agentKey = process.env.AGENT_API_KEY;
@@ -58,7 +63,7 @@ export async function discoverRepositories(
       const data = await res.json();
       const list = Array.isArray(data?.repositories) ? data.repositories : [];
       if (list.length > 0) {
-        return list.map(normalizeFromAgent);
+        return filterReposByInstallations(list.map(normalizeFromAgent), scope.installationIds);
       }
     }
   } catch {
@@ -66,8 +71,12 @@ export async function discoverRepositories(
   }
 
   // 2. Fallback: the persisted installations catalogue.
+  //
+  //    This must be the *service-role* client: `installations` is RLS-restricted
+  //    to the service role, so reading it through the request client always
+  //    errored and this fallback silently returned nothing.
   try {
-    const { data: installations, error } = await supabase
+    const { data: installations, error } = await client
       .from("installations")
       .select("*")
       .order("created_at", { ascending: false });
@@ -91,7 +100,7 @@ export async function discoverRepositories(
           });
         }
       }
-      return allRepos;
+      return filterReposByInstallations(allRepos, scope.installationIds);
     }
   } catch (err) {
     console.error("Failed to query fallback installations from Supabase:", err);

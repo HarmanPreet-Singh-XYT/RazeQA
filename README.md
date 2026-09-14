@@ -264,6 +264,59 @@ becomes noise and stops being a signal.
 * `@pr-agent test|check`, `@pr-agent inspect <route>` and `@pr-agent apply`
   comment commands for on-demand work.
 
+### Email notifications (SMTP)
+
+The engine can email a repository's watchers when:
+
+* a verification **finishes** (`run_completed`), with its pass/fail summary;
+* a run produced a **finding at or above the configured severity**
+  (`findings_alert`);
+* a **three-lane review finishes** (`review_completed`);
+* a **verified fix is published** as a branch or pull request (`fix_published`).
+
+The transport lives in `agent/src/agent/email/`, built on the standard library's
+`smtplib` so it works against any relay. Email is **off until `SMTP_HOST` and
+`SMTP_FROM` are both set**; with neither, every notification path is a logged
+no-op rather than an error. See `.env.example` §10 for the full list
+(`SMTP_PORT`, `SMTP_USERNAME`/`SMTP_PASSWORD`, `SMTP_USE_TLS`/`SMTP_STARTTLS`,
+`NOTIFY_EMAIL_TO`, …).
+
+Recipients are resolved per repository as the union of:
+
+1. the project's own `settings.notifications.recipients`;
+2. `team_members` rows for the repository's GitHub organization;
+3. the Supabase user who imported the project;
+4. `NOTIFY_EMAIL_TO` (a shared inbox; `NOTIFY_EMAIL_TO_ONLY=true` makes it the
+   *only* recipient, so staging mail cannot reach real users).
+
+A recipient who has a Supabase account — the project owner, or a team member with
+a `user_id` — can opt out of any event for themselves via **My preferences**;
+explicit and `NOTIFY_EMAIL_TO` addresses are always kept.
+
+Configuration lives at `/dashboard/notifications`, across four scopes:
+
+| Tab | Scope | Stored in |
+| :--- | :--- | :--- |
+| **Repositories** | per-repo override, delivery log, test send | `projects.settings.notifications` |
+| **Global defaults** | workspace policy for repos with no override, plus global recipients | `notification_settings.defaults` |
+| **My preferences** | this user's own subscription | `notification_settings.personal` |
+| **Team** | organization recipients (add/edit/remove) | `team_members` |
+
+The effective policy is workspace defaults with the project's own fields layered
+on top, so a repository that has saved nothing inherits a deliberate policy
+instead of a hardcoded one. SMTP credentials themselves remain environment-only
+(`agent/.env`); the UI never accepts or returns the password.
+
+Delivery is durable: each message is written to `email_messages` first and sent
+from there, so a run is never blocked on an SMTP handshake and a transient relay
+failure is retried with backoff by a background worker. Enable/disable, a test
+send, the delivery log and manual retry are exposed as
+`GET /email/status`, `POST /email/test`, `GET /email/messages`,
+`POST /email/flush` and `POST /email/retry`.
+
+Supabase Auth's own mail (signup confirmation, password reset) is configured in
+the Supabase dashboard and is independent of this subsystem.
+
 ### Context & Secrets
 
 Per repository, `project_context` stores **variables**, **secrets** and **seed
@@ -278,7 +331,11 @@ passed to the planning agent; secret values are never placed in a prompt.
 
 Apply `supabase/migrations/20260913000000_pr_centric_model.sql` (or re-run
 `supabase/schema.sql`) to create `pull_requests`, `test_cases`, `findings`,
-`saved_tests`, `project_context`, `team_members` and `usage_events`. Until it is
+`saved_tests`, `project_context`, `team_members` and `usage_events`, and
+`supabase/migrations/20260914000000_email_notifications.sql` for the
+`email_messages` outbox, and
+`supabase/migrations/20260915000000_notification_settings.sql` for per-user
+notification defaults/preferences and team-recipient uniqueness. Until they are
 applied the new dashboard pages explain the missing-migration state instead of
 erroring.
 

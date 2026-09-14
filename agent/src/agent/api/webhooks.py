@@ -57,6 +57,16 @@ async def github_webhook(
         account_login = account_info.get("login", "")
         account_id = account_info.get("id", 0)
 
+        # The *sender* is the user who triggered the event. On `installation`
+        # `created` that is the person who clicked Install, which is the only
+        # signature-verified statement of ownership GitHub gives us for an
+        # installation. Import is gated on it (see web/lib/github/connection.ts),
+        # so it is recorded here and nowhere else — `GET /app/installations` does
+        # not expose the installer.
+        sender = payload.get("sender") or {}
+        sender_id = sender.get("id")
+        sender_login = sender.get("login")
+
         logger.info(
             "Received GitHub App %s event '%s' for installation %s (%s)",
             x_github_event,
@@ -72,23 +82,32 @@ async def github_webhook(
             try:
                 if x_github_event == "installation" and action in ("created", "unsuspend"):
                     repos = payload.get("repositories", [])
+                    row: dict[str, Any] = {
+                        "installation_id": inst_id,
+                        "account_login": account_login,
+                        "account_id": account_id,
+                        "repositories": [
+                            {
+                                "id": r.get("id"),
+                                "name": r.get("name"),
+                                "full_name": r.get("full_name"),
+                                "private": r.get("private", False),
+                                "default_branch": r.get("default_branch", "main"),
+                                "html_url": r.get("html_url", ""),
+                            }
+                            for r in repos
+                        ],
+                    }
+                    # Only write the installer when GitHub actually sent one.
+                    # PostgREST's merge-duplicates upsert leaves columns absent
+                    # from the payload untouched, so omitting them here preserves
+                    # a previously recorded owner instead of nulling it.
+                    if sender_id is not None:
+                        row["installed_by_github_user_id"] = sender_id
+                        row["installed_by_login"] = sender_login
+
                     supabase.table("installations").upsert(
-                        {
-                            "installation_id": inst_id,
-                            "account_login": account_login,
-                            "account_id": account_id,
-                            "repositories": [
-                                {
-                                    "id": r.get("id"),
-                                    "name": r.get("name"),
-                                    "full_name": r.get("full_name"),
-                                    "private": r.get("private", False),
-                                    "default_branch": r.get("default_branch", "main"),
-                                    "html_url": r.get("html_url", ""),
-                                }
-                                for r in repos
-                            ],
-                        },
+                        row,
                         on_conflict="installation_id",
                     ).execute()
                     # NOTE: intentionally no `projects` insert here. Installing the
@@ -100,6 +119,11 @@ async def github_webhook(
                 elif x_github_event == "installation_repositories" and action in ("added", "removed"):
                     # Re-fetch the authoritative repository set rather than merging the
                     # webhook delta, so the discovery catalogue cannot drift.
+                    #
+                    # `installed_by_*` is deliberately not written here: the sender of
+                    # a repository-access change is not necessarily the installer, and
+                    # re-attributing ownership on every access edit would hand the
+                    # installation to whoever last toggled a repository.
                     repo_data = await github_client.get_installation_repositories(inst_id)
                     repos = repo_data.get("repositories", [])
                     supabase.table("installations").upsert(
@@ -585,6 +609,7 @@ async def github_webhook(
             scope="changed",
             test_type="functional",
             trigger_type="webhook_push",
+            run_id=record.run_id,
         )
 
         logger.info("Queued on-push verification for %s/%s branch=%s sha=%s (run_id=%s, job_id=%s)", owner, repo_name, branch, sha[:8], record.run_id, job.id)

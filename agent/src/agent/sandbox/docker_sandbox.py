@@ -80,15 +80,23 @@ class SandboxBootError(RuntimeError):
     failure, a dependency-install failure and an app that will not start as
     distinct results instead of one opaque string. One of:
     ``clone``, ``dependency_install``, ``build``, ``app_start``, ``provision``.
+
+    ``log`` carries the full captured command output (bounded by the caller)
+    so the dashboard can show build logs instead of only the truncated message.
     """
 
-    def __init__(self, message: str, step: str = "provision") -> None:
+    def __init__(self, message: str, step: str = "provision", log: str = "") -> None:
         super().__init__(message)
         self.step = step
+        self.log = log or message
 
 
 class CloneError(RuntimeError):
     """Raised when the in-container clone of the target repo fails."""
+
+    def __init__(self, message: str, log: str = "") -> None:
+        super().__init__(message)
+        self.log = log or message
 
 
 @dataclass
@@ -128,7 +136,11 @@ def _raise_on_failure(step: str, result: subprocess.CompletedProcess, image_tag:
             "dependency install": "dependency_install",
             "build": "build",
         }.get(step, step)
-        raise SandboxBootError(f"{step} failed for {image_tag}: {output[-4000:]}", step=step_key)
+        raise SandboxBootError(
+            f"{step} failed for {image_tag}: {output[-4000:]}",
+            step=step_key,
+            log=output,
+        )
 
 
 def _validate_repo_inputs(owner: str, repo: str, sha: str, base_ref: str) -> None:
@@ -260,7 +272,8 @@ unset GITHUB_TOKEN
             # Never echo the token back, even on failure.
             err = err.replace(github_token, "***")
         raise CloneError(
-            f"Failed to clone {owner}/{repo}@{sha[:12]} into container {container}: {err[-4000:]}"
+            f"Failed to clone {owner}/{repo}@{sha[:12]} into container {container}: {err[-4000:]}",
+            log=err,
         )
     logger.info("Cloned %s/%s@%s into container %s", owner, repo, sha[:12], container)
 
@@ -479,18 +492,22 @@ def start_sandbox(
             f"nohup sh -c '{start_command}' > /tmp/app.log 2>&1 & echo $! > /tmp/app.pid",
         )
         if launch_result.returncode != 0:
+            launch_output = (launch_result.stdout or "") + (launch_result.stderr or "")
             raise SandboxBootError(
                 f"failed to launch app process for {image_tag}: {(launch_result.stderr or '')[-4000:]}",
                 step="app_start",
+                log=launch_output,
             )
 
         try:
             _wait_until_ready(base_url, timeout_s=ready_timeout_s)
         except SandboxBootError:
-            log_tail = _exec(name, "cat /tmp/app.log 2>/dev/null | tail -c 4000")
+            log_tail = _exec(name, "cat /tmp/app.log 2>/dev/null | tail -c 20000")
+            app_log = log_tail.stdout or ""
             raise SandboxBootError(
-                f"Sandbox app failed to become ready for {image_tag}. App log tail:\n{log_tail.stdout}",
+                f"Sandbox app failed to become ready for {image_tag}. App log tail:\n{app_log[-4000:]}",
                 step="app_start",
+                log=app_log,
             ) from None
 
         return SandboxHandle(container_name=name, port=host_port, base_url=base_url)

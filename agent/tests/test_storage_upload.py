@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agent.db.storage import SupabaseArtifactStorage
+from agent.db.storage import (
+    SupabaseArtifactStorage,
+    _parse_size,
+    max_upload_bytes,
+)
 from agent.db.supabase import SupabaseRunStore
 from agent.runner.pipeline import _artifact_url_for_file
 
@@ -87,6 +91,49 @@ def test_artifact_url_for_file_fallback(tmp_path: Path) -> None:
         url = _artifact_url_for_file(test_file, run_id="run_999", category="video")
         assert url == "/artifacts/runs/main_123/video/page@123.webm"
         mock_to_url.assert_called_once_with(test_file)
+
+
+def test_parse_size_accepts_suffixes() -> None:
+    assert _parse_size("50MB") == 50 * 1024 * 1024
+    assert _parse_size("1gb") == 1024 * 1024 * 1024
+    assert _parse_size("1048576") == 1048576
+    assert _parse_size("nonsense") == 50 * 1024 * 1024
+
+
+def test_upload_skips_oversized_file_without_calling_storage(tmp_path: Path, monkeypatch) -> None:
+    test_file = tmp_path / "home-trace.zip"
+    test_file.write_bytes(b"x" * 2048)
+
+    monkeypatch.setenv("MAX_ARTIFACT_UPLOAD_BYTES", "1024")
+    assert max_upload_bytes() == 1024
+
+    mock_client = MagicMock()
+    storage = SupabaseArtifactStorage(client=mock_client)
+    url = storage.upload_artifact(test_file, "runs/run_1/traces/home-trace.zip")
+
+    assert url is None
+    mock_client.storage.from_.assert_not_called()
+
+
+def test_upload_413_is_reported_as_size_skip(tmp_path: Path, monkeypatch) -> None:
+    test_file = tmp_path / "docs-trace.zip"
+    test_file.write_bytes(b"content")
+
+    monkeypatch.setenv("MAX_ARTIFACT_UPLOAD_BYTES", "10MB")
+    mock_client = MagicMock()
+    mock_bucket = MagicMock()
+    mock_bucket.upload.side_effect = Exception(
+        "{'statusCode': 413, 'error': 'Payload too large', "
+        "'message': 'The object exceeded the maximum allowed size'}"
+    )
+    mock_client.storage.from_.return_value = mock_bucket
+
+    storage = SupabaseArtifactStorage(client=mock_client)
+    url = storage.upload_artifact(test_file, "runs/run_1/traces/docs-trace.zip")
+    assert url is None
+    # It tried exactly once and did not crash; no signed URL is issued.
+    mock_bucket.upload.assert_called_once()
+    mock_bucket.create_signed_url.assert_not_called()
 
 
 def test_supabase_run_store_update_includes_urls() -> None:

@@ -48,6 +48,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useDashboard, ProjectInfo } from "@/components/dashboard-context";
 import { RepositorySwitcher, RepoOptions, type RepoSwitcherModel } from "@/components/repository-switcher";
+import { PageSkeleton } from "@/components/loading-state";
 import { ExternalProjectSettings } from "./external-project-settings";
 
 function GithubIcon({ className = "h-4 w-4" }: { className?: string }) {
@@ -242,6 +243,10 @@ export default function ProjectsClient() {
   };
 
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+  // Initial load of the project list. Without this the page rendered its
+  // "no projects in this workspace" empty state while the request was still in
+  // flight, which reads as an empty workspace rather than a pending one.
+  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   // Ownerless (agent/webhook-created) projects hidden by strict tenant scoping.
   const [hiddenUnownedProjects, setHiddenUnownedProjects] = useState(0);
   const [selectedRepo, setSelectedRepo] = useState(dashboardActiveRepo || "");
@@ -346,6 +351,7 @@ export default function ProjectsClient() {
   // settings immediately, without waiting on React state to settle.
   const loadProjects = useCallback(
     async (repoOverride?: string): Promise<ProjectItem[]> => {
+      setIsLoadingProjects(true);
       try {
         const res = await fetch("/api/projects");
         if (!res.ok) return [];
@@ -371,6 +377,8 @@ export default function ProjectsClient() {
       } catch (err) {
         console.error("Failed to load projects", err);
         return [];
+      } finally {
+        setIsLoadingProjects(false);
       }
     },
     [dashboardActiveRepo]
@@ -783,10 +791,17 @@ export default function ProjectsClient() {
 
   return (
     <div className="max-w-7xl mx-auto w-full p-4 sm:p-6 lg:p-8 space-y-6 text-slate-900 animate-in fade-in-50 duration-200">
+      {/* Still fetching the first page of projects: show structure rather than
+          the "no projects" empty state below. */}
+      {isLoadingProjects && projects.length === 0 && (
+        <PageSkeleton label="Loading repository settings…" />
+      )}
+
       {/* Nothing to configure. This happens after deleting the last project in
-          another tab (or with the list still loading out of an empty database);
-          settings for a project that does not exist are not a useful screen. */}
-      {!selectedRepo && projects.length === 0 && (
+          another tab; settings for a project that does not exist are not a
+          useful screen. Gated on the load finishing so a pending fetch is never
+          mistaken for an empty workspace. */}
+      {!selectedRepo && projects.length === 0 && !isLoadingProjects && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center space-y-3">
           <FolderGit2 className="h-8 w-8 text-slate-400 mx-auto" />
           <div>

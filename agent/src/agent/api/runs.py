@@ -460,6 +460,58 @@ async def trigger_external_run(
     }
 
 
+@router.post("/{run_id}/cancel")
+async def cancel_run(run_id: str) -> dict[str, Any]:
+    """Cancel a queued or running test run.
+
+    Works for queue-backed jobs (PR / push / bot triggers) and for on-demand
+    runs dispatched through FastAPI BackgroundTasks: both register a cancel
+    token with the pipeline. The engine stops the sandbox container, aborts the
+    browser sweep between actions, and marks the run ``cancelled`` so the
+    dashboard does not wait on a run nobody wants anymore.
+    """
+    store = _active_store()
+    record = store.get(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    if record.status in ("completed", "failed", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {run_id} is already {record.status} and cannot be cancelled.",
+        )
+
+    from agent.runner.pipeline import request_run_cancel
+    from agent.runner.queue import default_job_queue
+
+    # Cancel at both layers: the queue job (covers a pending job that has not
+    # started the pipeline yet) and the pipeline task/cooperative flag (covers
+    # a running one). Either may legitimately be a no-op.
+    job_cancelled = default_job_queue.cancel_job_by_run(run_id, reason="Cancelled by user")
+    run_cancelled = request_run_cancel(run_id, reason="Cancelled by user")
+
+    updated = store.update(
+        run_id=run_id,
+        status="cancelled",
+        result={"status": "cancelled", "error": "Cancelled by user"},
+        completed=True,
+    )
+
+    logger.info(
+        "Cancel requested for run %s (job=%s, live_pipeline=%s)", run_id, job_cancelled, run_cancelled
+    )
+    return {
+        "status": "cancelled",
+        "run_id": run_id,
+        "job_cancelled": job_cancelled,
+        "pipeline_signalled": run_cancelled,
+        "message": "Run cancellation requested." if (job_cancelled or run_cancelled) else (
+            "Run marked cancelled; no live worker was found for it."
+        ),
+        "run": updated.model_dump() if updated else None,
+    }
+
+
 @router.get("/{run_id}")
 async def get_run(run_id: str) -> dict[str, Any]:
     store = _active_store()

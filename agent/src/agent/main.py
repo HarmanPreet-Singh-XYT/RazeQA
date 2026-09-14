@@ -19,6 +19,7 @@ from agent.api.auth import BearerAuthMiddleware
 from agent.api.bridge import router as bridge_router
 from agent.api.copilot import router as copilot_router
 from agent.api.dashboard import router as dashboard_router
+from agent.api.email import router as email_router
 from agent.api.github import router as github_router
 from agent.api.review import router as review_router
 from agent.api.runs import router as runs_router
@@ -87,18 +88,25 @@ async def _retention_loop() -> None:
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     task: asyncio.Task[None] | None = None
-    # Never start the background loop under pytest: the suite constructs many
-    # app instances, and an always-on sleeping task would add noise and
+    email_task: asyncio.Task[None] | None = None
+    # Never start the background loops under pytest: the suite constructs many
+    # app instances, and always-on sleeping tasks would add noise and
     # cross-test filesystem writes.
     if "pytest" not in sys.modules:
         task = asyncio.create_task(_retention_loop())
+        # Retries undelivered notification email. The fast path sends inline, so
+        # this only ever handles what an SMTP outage or shutdown left behind.
+        from agent.email.worker import run_outbox_loop
+
+        email_task = asyncio.create_task(run_outbox_loop())
     try:
         yield
     finally:
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        for background in (task, email_task):
+            if background is not None:
+                background.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await background
 
 
 app = FastAPI(title="Autonomous PR Testing Engine", lifespan=lifespan)
@@ -127,6 +135,7 @@ app.include_router(analytics_router)
 app.include_router(github_router)
 app.include_router(copilot_router)
 app.include_router(review_router)
+app.include_router(email_router)
 
 
 

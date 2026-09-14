@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { OfflineIndicator } from "@/components/offline-indicator";
+import { NetworkActivityBar } from "@/components/network-activity";
 import { CookieConsent } from "@/components/cookie-consent";
 import "./globals.css";
 
@@ -85,6 +86,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="min-h-full flex flex-col font-sans">
+        <NetworkActivityBar />
         <OfflineIndicator />
         <TooltipProvider>
           {children}

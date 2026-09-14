@@ -75,6 +75,20 @@ READ_ONLY_TOOLS = frozenset(
         "list_recent_commits",
         "list_saved_tests",
         "get_quality_analytics",
+        # Workspace reads. Listed here so read-only mode does not block them —
+        # they are the *only* reads available in a workspace session.
+        "list_projects",
+        "get_workspace_overview",
+    }
+)
+
+#: Reads that only mean something when no single project is selected. They are
+#: built into the toolset only for a workspace turn (a project session has no
+#: use for them), but they are ordinary read-only tools for authorization.
+WORKSPACE_TOOLS = frozenset(
+    {
+        "list_projects",
+        "get_workspace_overview",
     }
 )
 
@@ -97,7 +111,7 @@ APPROVAL_REQUIRED_TOOLS = frozenset(
     }
 )
 
-ALL_TOOLS = READ_ONLY_TOOLS | REVERSIBLE_TOOLS | APPROVAL_REQUIRED_TOOLS
+ALL_TOOLS = READ_ONLY_TOOLS | REVERSIBLE_TOOLS | APPROVAL_REQUIRED_TOOLS | WORKSPACE_TOOLS
 
 
 def action_signature(name: str, args: dict[str, Any]) -> str:
@@ -138,6 +152,23 @@ class ProjectContext(BaseModel):
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkspaceContext(BaseModel):
+    """The repositories this turn may read when no single project is selected.
+
+    The web layer resolves this from the caller's tenant scope. It exists so a
+    fleet-wide question can be answered across *their* projects without the
+    copilot ever being able to name a repository itself: every workspace tool
+    validates against this allowlist, and an unknown repo is refused rather
+    than looked up.
+    """
+
+    label: str = "Workspace"
+    repos: list[ProjectContext] = Field(default_factory=list)
+
+    def allowlist(self) -> set[str]:
+        return {r.repo_full_name for r in self.repos if r.repo_full_name}
+
+
 class RunContext(BaseModel):
     run_id: str = ""
     branch: str = ""
@@ -154,6 +185,10 @@ class CopilotChatRequest(BaseModel):
     message: str
     history: list[ChatTurn] = Field(default_factory=list)
     project: ProjectContext | None = None
+    #: Set *instead of* ``project`` when the question is about the whole
+    #: workspace rather than one project. Mutually exclusive by construction:
+    #: the web layer sends one or the other.
+    workspace: WorkspaceContext | None = None
     runs: list[RunContext] = Field(default_factory=list)
     #: Whether the caller permits this turn to dispatch a real test run.
     allow_trigger: bool = True
@@ -469,6 +504,28 @@ def _summarize_result(result: Any) -> str:
     return " ".join(bits)[:700]
 
 
+def _record_repo(data: dict[str, Any]) -> str:
+    """The repository a run record really belongs to.
+
+    Every engine record is stamped ``repo: "default"`` and keeps the real
+    repository in ``result.owner`` / ``result.repo``. Comparing against
+    "default" denied every run, so resolve it before any ownership check.
+    """
+    direct = str(data.get("repo_full_name") or data.get("repo") or "")
+    if direct and direct != "default":
+        return direct
+    result = data.get("result")
+    if isinstance(result, dict):
+        name = str(result.get("repo_full_name") or result.get("repo") or "")
+        if name:
+            if "/" in name:
+                return name
+            owner = str(result.get("owner") or data.get("owner") or "")
+            if owner:
+                return f"{owner}/{name}"
+    return direct
+
+
 def _run_row(record: Any) -> dict[str, Any]:
     """Normalise an in-memory or Supabase RunRecord into a compact row."""
     if hasattr(record, "model_dump"):
@@ -486,7 +543,7 @@ def _run_row(record: Any) -> dict[str, Any]:
         "sha": sha[:12],
         "scope": data.get("scope") or "",
         "test_type": data.get("test_type") or "",
-        "repo": data.get("repo") or "",
+        "repo": _record_repo(data),
         "created_at": data.get("created_at") or "",
         "completed_at": data.get("completed_at"),
         "summary": _summarize_result(data.get("result")),
@@ -517,6 +574,42 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
     owner, repo_name = _split_repo(repo)
     installation_id = _installation_id(request)
 
+    # Workspace mode: no single project, an allowlist of repos instead. The
+    # model may choose *among* these and nothing else — the allowlist is the
+    # only thing standing between a fleet-wide question and another tenant.
+    workspace = request.workspace
+    workspace_repos: dict[str, ProjectContext] = (
+        {r.repo_full_name: r for r in workspace.repos if r.repo_full_name}
+        if workspace
+        else {}
+    )
+    is_workspace = bool(workspace_repos) and not repo
+
+    def target_repo(target: str = "") -> tuple[str, dict[str, Any] | None]:
+        """Resolve a model-supplied repo to what this turn may actually read.
+
+        A project turn may only touch its own repo; a workspace turn may touch
+        any repo the web layer allowlisted, and an empty value means "all of
+        them" — never "whatever the model happened to name".
+        """
+        wanted = (target or "").strip()
+        if is_workspace:
+            if not wanted:
+                return "", None
+            if wanted not in workspace_repos:
+                return "", {"error": f"'{wanted}' is not one of this workspace's projects."}
+            return wanted, None
+        if wanted and wanted != repo:
+            return "", {"error": f"'{wanted}' is not the active project."}
+        return repo, None
+
+    def repo_may_read(candidate: str) -> bool:
+        """True when this turn is allowed to read the given repository."""
+        name = (candidate or "").strip()
+        if not name:
+            return False
+        return name in workspace_repos if is_workspace else name == repo
+
     def denied(name: str, args: dict[str, Any], summary: str, risk: Literal["write", "external"] = "write") -> dict[str, Any] | None:
         return _authorize(state, trace, name, args, summary, risk)
 
@@ -538,35 +631,54 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
     # -- reads --------------------------------------------------------------
 
     @tool
-    def get_project_overview() -> dict[str, Any]:
-        """Get the active project's identity, configuration, and recorded totals.
+    def get_project_overview(target: str = "") -> dict[str, Any]:
+        """Get one project's identity, configuration, and recorded totals.
 
-        Use this first for "what is this project?" / "how is it configured?"
-        questions, or to find the framework, default branch, and live URL.
+        Use this for "what is this project?" / "how is it configured?" questions,
+        or to find the framework, default branch, and live URL.
+
+        #Args:
+            target: The project's `repo_full_name`. Only needed in a workspace
+                session; a project session always means its own project.
 
         #Returns:
             A JSON object with the project row, its non-secret settings, and how
             many runs and findings are recorded for it.
         """
-        args: dict[str, Any] = {}
+        args: dict[str, Any] = {"target": (target or "").strip()}
         if refusal := denied("get_project_overview", args, "Read project overview"):
             return refusal
-        if not repo:
-            _record(trace, "get_project_overview", args, "error", "No active project")
-            return _text_result({"error": "No active project is selected."}, status="error")
 
+        chosen, err = target_repo(target)
+        if err:
+            _record(trace, "get_project_overview", args, "denied", err["error"])
+            return _text_result(err, status="error")
+        if not chosen:
+            _record(trace, "get_project_overview", args, "error", "No project selected")
+            return _text_result(
+                {
+                    "error": (
+                        "No single project is selected. Pass `target` (the repo_full_name "
+                        "from list_projects), or call get_workspace_overview for the whole "
+                        "workspace."
+                    )
+                },
+                status="error",
+            )
+
+        ctx = workspace_repos.get(chosen) if is_workspace else project
         overview: dict[str, Any] = {
-            "repo_full_name": repo,
-            "name": (project.name if project else "") or repo_name,
-            "kind": (project.type if project else "git"),
-            "default_branch": (project.default_branch if project else "") or "main",
-            "framework": (project.framework if project else "") or "",
-            "target_url": (project.target_url if project else "") or "",
-            "settings": _safe_settings(project.settings if project else {}),
+            "repo_full_name": chosen,
+            "name": (ctx.name if ctx else "") or chosen.split("/")[-1],
+            "kind": (ctx.type if ctx else "git"),
+            "default_branch": (ctx.default_branch if ctx else "") or "main",
+            "framework": (ctx.framework if ctx else "") or "",
+            "target_url": (ctx.target_url if ctx else "") or "",
+            "settings": _safe_settings(ctx.settings if ctx else {}),
         }
 
         try:
-            runs = get_run_store().list_all(repo=repo, limit=200)
+            runs = get_run_store().list_all(repo=chosen, limit=200)
             overview["run_count"] = len(runs)
             last = runs[0] if runs else None
             if last is not None:
@@ -577,7 +689,7 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
         try:
             from agent.db.pr_insights import PRInsightStore
 
-            findings = PRInsightStore().list_findings(repo)
+            findings = PRInsightStore().list_findings(chosen)
             by_status: dict[str, int] = {}
             for row in findings or []:
                 key = str((row or {}).get("status") or "unknown")
@@ -586,12 +698,11 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
         except Exception as exc:  # noqa: BLE001
             logger.debug("Copilot tool get_project_overview: findings unavailable: %s", exc)
 
-        _record(trace, "get_project_overview", args, "ok", f"overview for {repo}")
+        _record(trace, "get_project_overview", args, "ok", f"overview for {chosen}")
         return _text_result(overview)
-
     @tool
-    def list_recent_runs(limit: int = 10) -> dict[str, Any]:
-        """List the most recent test runs for the active project, newest first.
+    def list_recent_runs(limit: int = 10, target: str = "") -> dict[str, Any]:
+        """List the most recent test runs, newest first.
 
         Use this when the run history already in the prompt is not enough: to
         look further back, to count how often something failed, or to find the
@@ -599,36 +710,52 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
 
         #Args:
             limit: How many runs to return, from 1 to 25 (default: 10).
+            target: A `repo_full_name` to narrow to. In a workspace session an
+                empty value covers every project; in a project session this is
+                always its own project.
 
         #Returns:
-            A JSON object with the project, the row count, and one compact row
-            per run (run_id, status, branch, sha, scope, timestamps, summary).
+            A JSON object with the scope covered, the row count, and one compact
+            row per run (repo, run_id, status, branch, sha, timestamps, summary).
         """
         count = max(1, min(int(limit or 10), MAX_TOOL_ROWS))
-        args = {"limit": count}
+        args = {"limit": count, "target": (target or "").strip()}
 
         if refusal := denied("list_recent_runs", args, "Read recent runs"):
             return refusal
-        if not repo:
+        chosen, err = target_repo(target)
+        if err:
+            _record(trace, "list_recent_runs", args, "denied", err["error"])
+            return _text_result(err, status="error")
+        if not chosen and not is_workspace:
             _record(trace, "list_recent_runs", args, "error", "No active project")
             return _text_result(
                 {"error": "No active project is selected, so there are no runs to list."},
                 status="error",
             )
 
+        names = [chosen] if chosen else sorted(workspace_repos)
+
         try:
             from agent.api.runs import get_run_store
 
-            records = get_run_store().list_all(repo=repo, limit=count)
+            store = get_run_store()
+            rows: list[dict[str, Any]] = []
+            for name in names:
+                for record in (store.list_all(repo=name, limit=count) or [])[:count]:
+                    row = _run_row(record)
+                    row["repo"] = row.get("repo") or name
+                    rows.append(row)
         except Exception as exc:  # noqa: BLE001 - a tool failure must not 500 the turn
             logger.warning("Copilot tool list_recent_runs failed: %s", exc)
             _record(trace, "list_recent_runs", args, "error", str(exc))
             return _text_result({"error": f"Could not read runs: {exc}"}, status="error")
 
-        rows = [_run_row(record) for record in (records or [])[:count]]
-        _record(trace, "list_recent_runs", args, "ok", f"{len(rows)} run(s) returned")
-        return _text_result({"repo": repo, "count": len(rows), "runs": rows})
-
+        rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        rows = rows[:count]
+        scope = chosen or ("workspace" if is_workspace else repo)
+        _record(trace, "list_recent_runs", args, "ok", f"{len(rows)} run(s) from {scope}")
+        return _text_result({"scope": scope, "count": len(rows), "runs": rows})
     @tool
     def get_run_details(run_id: str) -> dict[str, Any]:
         """Fetch one run by id, with its recorded result and per-test-case rows.
@@ -670,10 +797,17 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
         # A run fetched by id must still belong to the project this turn is
         # scoped to; otherwise the model could read across projects.
         record_repo = str(row.get("repo") or "")
-        if repo and record_repo and record_repo != repo:
+        # A workspace turn must prove the run belongs to an allowlisted repo.
+        # A project turn is already confined to its own repo; a record whose
+        # repo could not be resolved (legacy in-memory rows) is still its own.
+        if is_workspace:
+            allowed = repo_may_read(record_repo)
+        else:
+            allowed = not record_repo or record_repo == "default" or record_repo == repo
+        if not allowed:
             _record(trace, "get_run_details", args, "denied", "Run belongs to another project")
             return _text_result(
-                {"error": f"Run {rid} does not belong to the active project."},
+                {"error": f"Run {rid} does not belong to the projects in scope."},
                 status="error",
             )
 
@@ -688,8 +822,8 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
         return _text_result({"run": row, "test_cases": cases})
 
     @tool
-    def list_findings(status: str = "open", limit: int = 15) -> dict[str, Any]:
-        """List recorded findings (defects) for the active project.
+    def list_findings(status: str = "open", limit: int = 15, target: str = "") -> dict[str, Any]:
+        """List recorded findings (defects).
 
         Use this for "what is broken", "what is still open", or "what keeps
         regressing" — it is the deduplicated view, unlike raw per-run payloads.
@@ -697,35 +831,46 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
         #Args:
             status: "open" (default), "dismissed", or "all".
             limit: How many findings to return, from 1 to 25 (default: 15).
+            target: A `repo_full_name` to narrow to. In a workspace session an
+                empty value covers every project.
 
         #Returns:
-            A JSON object with one row per finding: id, title, severity, category,
-            status, how many runs it appeared in, and the run it was last seen in.
+            A JSON object with one row per finding: repo, id, title, severity,
+            category, status, how many runs it appeared in, and last seen run.
         """
         wanted = (status or "open").strip().lower()
         count = max(1, min(int(limit or 15), MAX_TOOL_ROWS))
-        args = {"status": wanted or "open", "limit": count}
+        args = {"status": wanted or "open", "limit": count, "target": (target or "").strip()}
 
         if refusal := denied("list_findings", args, "Read findings"):
             return refusal
-        if not repo:
+        chosen, err = target_repo(target)
+        if err:
+            _record(trace, "list_findings", args, "denied", err["error"])
+            return _text_result(err, status="error")
+        if not chosen and not is_workspace:
             _record(trace, "list_findings", args, "error", "No active project")
             return _text_result(
                 {"error": "No active project is selected, so there are no findings to list."},
                 status="error",
             )
 
-        rows, error = _load_findings(repo, None if wanted in ("all", "") else wanted)
-        if error:
-            _record(trace, "list_findings", args, "error", error)
-            return _text_result({"error": error}, status="error")
+        names = [chosen] if chosen else sorted(workspace_repos)
+        findings: list[dict[str, Any]] = []
+        for name in names:
+            rows, error = _load_findings(name, None if wanted in ("all", "") else wanted)
+            if error:
+                _record(trace, "list_findings", args, "error", error)
+                return _text_result({"error": error}, status="error")
+            for row in rows:
+                findings.append({**_finding_row(row), "repo_full_name": name})
 
-        findings = [_finding_row(row) for row in rows[:count]]
-        _record(trace, "list_findings", args, "ok", f"{len(findings)} finding(s) returned")
+        findings = findings[:count]
+        scope = chosen or ("workspace" if is_workspace else repo)
+        _record(trace, "list_findings", args, "ok", f"{len(findings)} finding(s) from {scope}")
         return _text_result(
-            {"repo": repo, "status": args["status"], "count": len(findings), "findings": findings}
+            {"scope": scope, "status": args["status"], "count": len(findings), "findings": findings}
         )
-
     @tool
     def search_findings(query: str, limit: int = 10) -> dict[str, Any]:
         """Search the active project's findings by text, across every status.
@@ -1346,7 +1491,133 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
         _record(trace, "comment_on_pull_request", args, "ok", f"commented on PR #{number}")
         return _text_result({"pr_number": number, "comment_url": url})
 
-    return [
+    # -- workspace reads ------------------------------------------------------
+    # Only meaningful when no single project is selected. They exist so the
+    # model can answer fleet-wide questions without ever naming a repository
+    # that the caller's tenant scope did not put in the allowlist.
+
+    @tool
+    def list_projects() -> dict[str, Any]:
+        """List every project in this workspace.
+
+        Only available in a workspace session. Use it to find what repositories
+        exist, and to get the exact `repo_full_name` to pass as `target` to the
+        other tools.
+
+        #Returns:
+            A JSON object with one row per project: repo_full_name, name, kind,
+            default_branch, and live url.
+        """
+        args: dict[str, Any] = {}
+        if refusal := denied("list_projects", args, "Read workspace projects"):
+            return refusal
+        if not is_workspace:
+            _record(trace, "list_projects", args, "error", "Not a workspace session")
+            return _text_result(
+                {"error": "This session is scoped to a single project, not a workspace."},
+                status="error",
+            )
+
+        rows = [
+            {
+                "repo_full_name": name,
+                "name": ctx.name or name,
+                "kind": ctx.type or "git",
+                "default_branch": ctx.default_branch or "main",
+                "target_url": ctx.target_url or "",
+            }
+            for name, ctx in sorted(workspace_repos.items())
+        ]
+        _record(trace, "list_projects", args, "ok", f"{len(rows)} project(s)")
+        return _text_result(
+            {
+                "workspace": workspace.label if workspace else "Workspace",
+                "count": len(rows),
+                "projects": rows,
+            }
+        )
+
+    @tool
+    def get_workspace_overview(limit: int = 5) -> dict[str, Any]:
+        """Summarise the health of every project in this workspace.
+
+        Only available in a workspace session. Use it for "how are my projects
+        doing?", "what is failing across the workspace?", or "which project needs
+        attention?" before drilling in with a `target`.
+
+        #Args:
+            limit: Recent runs to inspect per project, from 1 to 25 (default: 5).
+
+        #Returns:
+            A JSON object with per-project run counts and latest run, workspace
+            totals, and the most recent failures attributed to their project.
+        """
+        per_project = max(1, min(int(limit or 5), MAX_TOOL_ROWS))
+        args = {"limit": per_project}
+        if refusal := denied("get_workspace_overview", args, "Read workspace overview"):
+            return refusal
+        if not is_workspace:
+            _record(trace, "get_workspace_overview", args, "error", "Not a workspace session")
+            return _text_result(
+                {"error": "This session is scoped to a single project, not a workspace."},
+                status="error",
+            )
+
+        try:
+            from agent.api.runs import get_run_store
+
+            store = get_run_store()
+        except Exception as exc:  # noqa: BLE001
+            _record(trace, "get_workspace_overview", args, "error", str(exc))
+            return _text_result({"error": f"Could not read runs: {exc}"}, status="error")
+
+        projects: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        inspected = 0
+        for name, ctx in sorted(workspace_repos.items()):
+            entry: dict[str, Any] = {
+                "repo_full_name": name,
+                "name": ctx.name or name,
+                "kind": ctx.type or "git",
+            }
+            try:
+                records = store.list_all(repo=name, limit=per_project) or []
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("workspace overview: runs unavailable for %s: %s", name, exc)
+                entry["error"] = f"runs unavailable: {exc}"
+                projects.append(entry)
+                continue
+
+            runs = [_run_row(r) for r in records]
+            inspected += len(runs)
+            entry["run_count"] = len(runs)
+            entry["failing_runs"] = sum(1 for r in runs if _is_failure(r.get("status")))
+            if runs:
+                entry["latest_run"] = runs[0]
+            projects.append(entry)
+            for r in runs:
+                if _is_failure(r.get("status")):
+                    failures.append({**r, "repo_full_name": name})
+
+        failures.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        _record(
+            trace,
+            "get_workspace_overview",
+            args,
+            "ok",
+            f"{len(projects)} project(s), {len(failures)} failure(s) in window",
+        )
+        return _text_result(
+            {
+                "workspace": workspace.label if workspace else "Workspace",
+                "project_count": len(projects),
+                "runs_inspected": inspected,
+                "projects": projects,
+                "recent_failures": failures[:MAX_TOOL_ROWS],
+            }
+        )
+
+    tools: list[Any] = [
         get_project_overview,
         list_recent_runs,
         get_run_details,
@@ -1364,6 +1635,13 @@ def build_copilot_tools(state: _TurnState, trace: list[ToolCallTrace]) -> list[A
         apply_run_fix,
         comment_on_pull_request,
     ]
+
+    # Workspace reads exist only where they mean something. Handing them to a
+    # project session would just be two more tools that always refuse.
+    if is_workspace:
+        tools.extend([list_projects, get_workspace_overview])
+
+    return tools
 
 
 def _run_async(coro: Any) -> Any:
@@ -1525,7 +1803,27 @@ def build_context_block(request: CopilotChatRequest) -> str:
     project = request.project
     parts: list[str] = []
 
-    if project and project.repo_full_name:
+    if request.workspace and request.workspace.repos and not (project and project.repo_full_name):
+        ws = request.workspace
+        lines = [
+            "ACTIVE WORKSPACE (no single project selected)",
+            f"  label: {ws.label or 'Workspace'}",
+            f"  projects: {len(ws.repos)}",
+        ]
+        for ctx in ws.repos[:MAX_CONTEXT_RUNS]:
+            kind = "external website" if ctx.type == "external" else "repo"
+            lines.append(
+                f"  - {ctx.repo_full_name} ({ctx.name or ctx.repo_full_name}, {kind}"
+                + (f", {ctx.target_url}" if ctx.target_url else "")
+                + ")"
+            )
+        lines.append(
+            "This is a read-only workspace session: no single project is selected, so "
+            "state-changing tools are unavailable. Pass a `target` to the read tools "
+            "to look at one project."
+        )
+        parts.append("\n".join(lines))
+    elif project and project.repo_full_name:
         kind = "external website" if project.type == "external" else "GitHub repository"
         parts.append(
             "ACTIVE PROJECT\n"
@@ -1594,6 +1892,14 @@ You have tools. Use them.
    permissive mode. Never claim a gated action succeeded.
 7. If a tool result says the tool budget is exhausted, stop calling tools and
    answer with what you already have.
+
+If the context block says ACTIVE WORKSPACE, no single project is selected. Use
+`list_projects` and `get_workspace_overview` for fleet-wide questions, and pass a
+`target` to `list_recent_runs`, `list_findings`, or `get_project_overview` to
+drill into one project. State-changing tools are unavailable until the user picks
+a project — say so instead of trying one. Attribute every run, finding, and
+failure to its `repo_full_name`: never present one project's number as the
+workspace's, or another project's.
 
 Formatting: markdown is rendered. Use `code` for identifiers, commands, and
 paths. Keep answers under roughly 200 words unless asked to go deeper."""

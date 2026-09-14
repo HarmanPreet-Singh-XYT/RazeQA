@@ -12,6 +12,7 @@ import logging
 import random
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from agent.journeys.cursor_overlay import (
     wheel_human,
 )
 from agent.journeys.element_vision import inspect_element_visually
+from agent.journeys.trace_config import start_trace
 from agent.journeys.visual_heuristics import check_visual_heuristics
 from agent.journeys.web_vitals import (
     WEB_VITALS_INIT_SCRIPT,
@@ -1047,6 +1049,7 @@ def exercise_discovered_controls(
     time_budget_seconds: float = CONTROL_TIME_BUDGET_SECONDS,
     priority: list[str] | None = None,
     covered: set[str] | list[str] | None = None,
+    should_abort: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Operate every discovered control on this route exactly once.
 
@@ -1114,6 +1117,11 @@ def exercise_discovered_controls(
         return None
 
     for candidate in ordered:
+        # A user cancel must stop a long sweep promptly: this loop is where the
+        # run spends most of its wall-clock time.
+        if should_abort is not None and should_abort():
+            logger.info("Aborting control coverage on %s: run cancelled", route)
+            break
         if len(exercised) >= budget:
             break
         if time.monotonic() - started_at > time_budget_seconds:
@@ -1242,6 +1250,7 @@ def run_exploratory_journey(
     covered_keys: set[str] | None = None,
     max_controls: int = MAX_CONTROLS_PER_ROUTE,
     control_time_budget_seconds: float = CONTROL_TIME_BUDGET_SECONDS,
+    should_abort: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Execute dynamic exploratory journey on an affected route or external URL."""
     if route.startswith(("http://", "https://")):
@@ -1383,9 +1392,22 @@ def run_exploratory_journey(
         time_budget_seconds=control_time_budget_seconds,
         priority=priority,
         covered=covered_keys,
+        should_abort=should_abort,
     )
     _meter_action(_t0)
     navigation_checks = coverage["navigation_checks"]
+
+    # A cancelled sweep produces partial coverage; report it as such instead of
+    # continuing into the (expensive) vitals/restore/reporting tail.
+    if should_abort is not None and should_abort():
+        return {
+            "passed": False,
+            "route": route,
+            "cancelled": True,
+            "error": "Run cancelled by user",
+            "action_timings_ms": list(action_timings_ms),
+            "coverage": coverage,
+        }
 
     # Measure Web Vitals *before* the restore reloads the page. The reload
     # creates a new document, and the new document has no paint timing yet, so
@@ -1461,6 +1483,7 @@ def run_route_journey(
     covered_keys: set[str] | None = None,
     max_controls: int = MAX_CONTROLS_PER_ROUTE,
     control_time_budget_seconds: float = CONTROL_TIME_BUDGET_SECONDS,
+    should_abort: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Autonomous standalone browser journey for an affected route with full CDP trace,
     screencast video, element-targeted scroll, and Gemini visual check. Reuses authenticated
@@ -1497,7 +1520,7 @@ def run_route_journey(
         try:
             browser = p.chromium.launch()
             context = browser.new_context(**context_kwargs)
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            start_trace(context.tracing)
             page = context.new_page()
             # Install the Web Vitals collector BEFORE any navigation so
             # PerformanceObserver sees the entire page lifecycle (FCP/LCP are
@@ -1568,6 +1591,7 @@ def run_route_journey(
                 covered_keys=covered_keys,
                 max_controls=max_controls,
                 control_time_budget_seconds=control_time_budget_seconds,
+                should_abort=should_abort,
             )
 
             # Capture live DOM snapshot and runtime forensic data
@@ -1579,8 +1603,11 @@ def run_route_journey(
             res["console_errors"] = captured_console_errors
             res["response_headers"] = captured_response_headers
 
-            # Visual check using Gemini through Strands SDK
-            if "visual" in test_type and res.get("passed"):
+            # A cancelled run stops here: no visual model call, no screenshots —
+            # those are the expensive tail and the user asked for it to stop.
+            if res.get("cancelled"):
+                res["error"] = "Run cancelled by user"
+            elif "visual" in test_type and res.get("passed"):
                 try:
                     settle_page_for_capture(page)
                     page.screenshot(path=str(screenshot_path), full_page=True)
@@ -1602,7 +1629,11 @@ def run_route_journey(
                     logger.warning("Visual screenshot or Gemini analysis failed: %s", exc)
 
             # If there was a failure or visual defect and no screenshot yet, capture one
-            if not screenshot_path.exists() and (not res.get("passed") or res.get("visual_findings")):
+            if (
+                not res.get("cancelled")
+                and not screenshot_path.exists()
+                and (not res.get("passed") or res.get("visual_findings"))
+            ):
                 try:
                     settle_page_for_capture(page)
                     page.screenshot(path=str(screenshot_path), full_page=True)
@@ -1812,6 +1843,7 @@ def run_agentic_session(
     storage_state: Path | str | None = None,
     risk_tag: str = "",
     max_steps: int | None = None,
+    should_abort: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Explore the site as one continuous, human-looking agent session.
 
@@ -1851,7 +1883,7 @@ def run_agentic_session(
         with sync_playwright() as p:
             browser = p.chromium.launch()
             context = browser.new_context(**context_kwargs)
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            start_trace(context.tracing)
             page = context.new_page()
             page.add_init_script(WEB_VITALS_INIT_SCRIPT)
             install_cursor_overlay(page)
@@ -1891,6 +1923,10 @@ def run_agentic_session(
             steps = 0
             while steps < budget:
                 steps += 1
+                if should_abort is not None and should_abort():
+                    result["stop_reason"] = "cancelled"
+                    logger.info("Agentic session aborted: run cancelled")
+                    break
                 try:
                     obs = observe_page(page, run_visual_heuristics=False, risk_tag=risk_tag)
                 except Exception as exc:  # noqa: BLE001

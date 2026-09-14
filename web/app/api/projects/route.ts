@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { showUnownedProjects } from "@/lib/tenant";
+import { authorizeRepoImport } from "@/lib/github/connection";
 import type { User } from "@supabase/supabase-js";
 
 /**
@@ -51,38 +52,6 @@ async function getAuthenticatedUser(supabase: SupabaseServerClient): Promise<Use
     data: { user },
   } = await supabase.auth.getUser();
   return user ?? null;
-}
-
-/**
- * A repo may only be imported when it is reachable through one of the
- * installations this deployment knows about. If no installations are recorded
- * at all (GitHub App not configured, or a manually-entered repo), we allow the
- * import — otherwise the platform would be unusable without the App.
- */
-async function isRepoReachableByInstallations(
-  supabase: SupabaseServerClient,
-  repoFullName: string
-): Promise<{ allowed: boolean; installationId: number | null }> {
-  const { data: installations, error } = await supabase
-    .from("installations")
-    .select("installation_id, repositories");
-
-  if (error || !installations || installations.length === 0) {
-    return { allowed: true, installationId: null };
-  }
-
-  const needle = repoFullName.toLowerCase();
-  for (const inst of installations) {
-    const repos = Array.isArray(inst.repositories) ? inst.repositories : [];
-    for (const r of repos) {
-      const full = String(r?.full_name || r?.name || "").toLowerCase();
-      if (full === needle) {
-        return { allowed: true, installationId: inst.installation_id ?? null };
-      }
-    }
-  }
-
-  return { allowed: false, installationId: null };
 }
 
 export async function GET() {
@@ -301,14 +270,32 @@ export async function POST(request: Request) {
         ? body.default_branch.trim()
         : undefined;
 
-    // 2. Only repos this deployment can actually reach may be imported.
-    const access = await isRepoReachableByInstallations(supabase, repoFullName);
+    // 2. Import is gated on the GitHub App connection. Two conditions must
+    //    hold when the App is configured: the user has an installation of their
+    //    own (otherwise they are sent to connect first), and the repository is
+    //    granted to one of *their* installations (otherwise the manual "type
+    //    owner/repo" field would be a way around the gate).
+    //
+    //    `installations` is service-role-only under RLS, so this must not run on
+    //    the request client: doing so errored and silently fell through to
+    //    "allow everything".
+    let admin: ReturnType<typeof createAdminClient>;
+    try {
+      admin = createAdminClient();
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Supabase admin client unavailable.";
+      return NextResponse.json({ error: message }, { status: 503 });
+    }
+
+    const access = await authorizeRepoImport(admin, user, repoFullName);
     if (!access.allowed) {
       return NextResponse.json(
         {
-          error:
-            `Repository '${repoFullName}' is not available to this account. ` +
-            "Install the AutoQA GitHub App on it, or grant it access in GitHub, then retry.",
+          error: access.error || `Repository '${repoFullName}' is not available to this account.`,
+          code: access.connection.connected ? "repo_not_granted" : "github_app_required",
+          connect_url: access.connection.connectUrl,
+          github_app_connected: access.connection.connected,
         },
         { status: 403 }
       );
@@ -334,11 +321,11 @@ export async function POST(request: Request) {
       }
     }
 
-    // 4. Writes go through the elevated client. The projects table is protected
-    //    by RLS, which only admits the service role (or the row's own owner via
-    //    the policies in supabase/migrations). Using the request's publishable
-    //    key here is what produced `new row violates row-level security policy`.
-    const admin = createAdminClient();
+    // 4. Writes go through the elevated client (`admin`, resolved in step 2).
+    //    The projects table is protected by RLS, which only admits the service
+    //    role (or the row's own owner via the policies in supabase/migrations).
+    //    Using the request's publishable key here is what produced
+    //    `new row violates row-level security policy`.
 
     // 5. Credential-clobbering protection (Fix Finding #2) and ownership check.
     // `repo_full_name` is globally unique, so an upsert keyed on it would let any

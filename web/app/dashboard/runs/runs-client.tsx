@@ -30,6 +30,8 @@ import {
   BarChart3,
   Activity,
   FolderGit2,
+  Ban,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDashboard } from "@/components/dashboard-context";
@@ -41,20 +43,23 @@ import type { RunDispatchRecord } from "@/lib/first-run";
 
 export type TestRunRecord = {
   id: string;
-  commitMsg: string;
-  status: "Passed" | "Failed" | "Running" | "Cached" | "Queued";
-  duration: string;
-  hash: string;
+  /** Real engine rationale / commit message, or null when none was recorded. */
+  commitMsg: string | null;
+  status: "Passed" | "Failed" | "Running" | "Cached" | "Queued" | "Cancelled";
+  duration: string | null;
+  hash: string | null;
   branch: string;
   prNumber?: number;
   prUrl?: string;
-  date: string;
-  author: string;
+  date: string | null;
+  author: string | null;
   targetUrl: string;
   scope: "changed" | "full";
   testType: string;
   passedCount: number;
   failedCount: number;
+  /** Present only when the engine actually produced a quality report. */
+  qualityAudit: { dimensions: number; healthIndex: number | null } | null;
   hasTrace?: boolean;
   hasVideo?: boolean;
   videoUrl?: string;
@@ -78,6 +83,7 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
   const [isRunDialogOpen, setIsRunDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"All" | "Passed" | "Failed" | "main" | "pr">("All");
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   // Keep project filter in sync if urlRepo changes
   useEffect(() => {
@@ -103,43 +109,70 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
           const isFailed = r.status === "failed" || result.status === "failure";
           const isRunning = r.status === "running";
           const isQueued = r.status === "queued";
+          // A cancelled run is neither a pass nor a failure; without this it
+          // fell through to "Passed" and a stopped run looked green.
+          const isCancelled =
+            r.status === "cancelled" ||
+            r.status === "superseded" ||
+            result.status === "cancelled";
           const status: TestRunRecord["status"] = isRunning
             ? "Running"
             : isQueued
             ? "Queued"
+            : isCancelled
+            ? "Cancelled"
             : isFailed
             ? "Failed"
             : "Passed";
 
+          // Unknown stays unknown. A "0s" / "Recent" / "HEAD" placeholder is
+          // indistinguishable from a measured value and silently fabricates one.
           const durationText = result.duration_s
             ? `${Number(result.duration_s).toFixed(1)}s`
-            : r.duration || "0s";
+            : r.duration || null;
 
           const dateStr = r.created_at
             ? new Date(r.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })
-            : "Recent";
+            : null;
 
           const runRepo =
             r.repo ||
             r.repo_full_name ||
             (r.target_url ? new URL(r.target_url).hostname : targetRepo || activeRepo || projects[0]?.repo_full_name || "Workspace");
 
+          // The audit pill must be earned by a real quality report, not worn by
+          // every row. `dimensions` is the engine's own measured dimension map.
+          const quality = result.quality_dimensions;
+          const dimensionCount =
+            quality && typeof quality === "object" && quality.dimensions && typeof quality.dimensions === "object"
+              ? Object.keys(quality.dimensions).length
+              : 0;
+          const healthIndex =
+            quality && typeof quality === "object" && typeof quality.composite_health_index === "number"
+              ? quality.composite_health_index
+              : null;
+
           return {
             id: r.id || r.run_id || `run-${Date.now()}`,
-            commitMsg: r.commitMsg || r.message || result.summary || `Autonomous verification for ${r.branch || "main"}`,
+            // Real prose only: the engine's summary, the commit message, or its
+            // own analysis rationale. Never an invented sentence.
+            commitMsg: r.commitMsg || r.message || result.summary || result.rationale || null,
             status,
             duration: durationText,
-            hash: (r.sha || "HEAD").slice(0, 7),
+            hash: r.sha ? r.sha.slice(0, 7) : null,
             branch: r.branch || "main",
             prNumber: r.prNumber || (r.pr_number ? parseInt(r.pr_number, 10) : undefined),
             prUrl: r.prUrl || r.pr_url,
             date: dateStr,
-            author: r.triggeringUser || r.author || (r.scope === "external" ? "External Site Tester" : "AutoQA Agent"),
+            author: r.triggeringUser || r.author || null,
             targetUrl: r.target_url || result.target_url || "",
             scope: r.scope || "changed",
             testType: r.testType || r.test_type || "functional",
             passedCount: result.passed_journeys?.length ?? r.bucketCounts?.passed ?? 0,
             failedCount: result.failed_journeys?.length ?? r.bucketCounts?.failed ?? 0,
+            qualityAudit: quality && typeof quality === "object"
+              ? { dimensions: dimensionCount, healthIndex }
+              : null,
             hasTrace: !!(r.trace_url || r.artifacts?.traceUrl || result.trace_url),
             hasVideo: !!(r.video_url || r.artifacts?.videoUrl || result.video_url),
             videoUrl: r.video_url || r.artifacts?.videoUrl || result.video_url,
@@ -182,6 +215,24 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
     loadRuns();
   };
 
+  const handleCancelRun = async (runId: string) => {
+    setCancellingId(runId);
+    try {
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        console.error("Failed to cancel run", body?.error || res.status);
+      }
+      await loadRuns();
+    } catch (err) {
+      console.error("Failed to cancel run", err);
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
   const filteredRuns = runs.filter((r) => {
     if (projectFilter !== "all" && r.repo) {
       const cleanProjectFilter = projectFilter.toLowerCase();
@@ -192,9 +243,9 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
     }
 
     const matchesQuery =
-      r.commitMsg.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.commitMsg || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
       r.branch.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.hash.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.hash || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
       (r.repo && r.repo.toLowerCase().includes(searchQuery.toLowerCase()));
 
     if (!matchesQuery) return false;
@@ -267,7 +318,7 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
         <div className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-2xs">
           <div className="text-[11px] text-slate-500 font-medium">Projects Monitored</div>
           <div className="text-lg font-bold text-slate-900 mt-1 font-mono">
-            {projects.length || 1}
+            {projects.length}
           </div>
         </div>
       </div>
@@ -357,11 +408,12 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
             {filteredRuns.map((run) => {
               const isPassed = run.status === "Passed";
               const isFailed = run.status === "Failed";
+              const isCancelled = run.status === "Cancelled";
 
               return (
                 <div
                   key={run.id}
-                  onClick={() => router.push(`/dashboard/runs/${encodeURIComponent(run.id)}/analytics`)}
+                  onClick={() => router.push(`/dashboard/runs/${encodeURIComponent(run.id)}`)}
                   className="p-4 hover:bg-slate-50/90 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 group cursor-pointer border-l-4 border-l-transparent hover:border-l-indigo-600"
                 >
                   {/* Run Information */}
@@ -382,12 +434,20 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
                             ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                             : isFailed
                             ? "bg-rose-50 text-rose-700 border-rose-200"
+                            : isCancelled
+                            ? "bg-slate-100 text-slate-600 border-slate-200"
                             : "bg-sky-50 text-sky-700 border-sky-200"
                         }`}
                       >
                         <span
                           className={`h-1.5 w-1.5 rounded-full ${
-                            isPassed ? "bg-emerald-600" : isFailed ? "bg-rose-600" : "bg-sky-500 animate-pulse"
+                            isPassed
+                              ? "bg-emerald-600"
+                              : isFailed
+                              ? "bg-rose-600"
+                              : isCancelled
+                              ? "bg-slate-400"
+                              : "bg-sky-500 animate-pulse"
                           }`}
                         />
                         <span>
@@ -401,14 +461,38 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
 
                       {/* Commit Message */}
                       <span className="font-semibold text-xs text-slate-900 group-hover:text-indigo-600 transition-colors truncate max-w-md">
-                        {run.commitMsg}
+                        {run.commitMsg || (
+                          <span className="font-normal italic text-slate-400">
+                            No run summary recorded
+                          </span>
+                        )}
                       </span>
 
-                      {/* 30-Dimension Audit Pill */}
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono bg-indigo-50 border border-indigo-200 text-indigo-700 font-semibold">
-                        <Activity className="h-2.5 w-2.5 text-indigo-600" />
-                        <span>30-Dimension Audit</span>
-                      </span>
+                      {/* Quality-audit pill — rendered only when the engine
+                          actually produced a report for this run, and labelled
+                          with the dimension count it really measured. */}
+                      {run.qualityAudit && (
+                        <span
+                          className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono bg-indigo-50 border border-indigo-200 text-indigo-700 font-semibold"
+                          title={
+                            run.qualityAudit.healthIndex !== null
+                              ? `Composite quality health index ${run.qualityAudit.healthIndex}/100`
+                              : "Quality report recorded for this run"
+                          }
+                        >
+                          <Activity className="h-2.5 w-2.5 text-indigo-600" />
+                          <span>
+                            {run.qualityAudit.dimensions > 0
+                              ? `${run.qualityAudit.dimensions}-Dimension Audit`
+                              : "Quality Audit"}
+                          </span>
+                          {run.qualityAudit.healthIndex !== null && (
+                            <span className="text-indigo-500">
+                              {run.qualityAudit.healthIndex}/100
+                            </span>
+                          )}
+                        </span>
+                      )}
 
                       {/* Pull Request Badge */}
                       {run.prNumber && (
@@ -432,18 +516,20 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
                         {run.branch}
                       </span>
                       <span>·</span>
-                      <span className="text-slate-600 font-semibold">{run.hash}</span>
+                      <span className="text-slate-600 font-semibold">{run.hash || "—"}</span>
                       <span>·</span>
                       <span className="text-slate-500 font-sans">{run.scope} scope</span>
                       <span>·</span>
                       <span className="text-slate-500 font-sans">{run.testType}</span>
                       <span>·</span>
-                      <span>{run.duration}</span>
+                      <span>{run.duration || "—"}</span>
                       <span>·</span>
-                      <span>{run.date} by {run.author}</span>
+                      <span>
+                        {run.date || "—"} by {run.author || "unknown"}
+                      </span>
                       <span>·</span>
                       <span className="text-indigo-600 font-sans font-medium flex items-center gap-0.5 group-hover:underline">
-                        <span>Open Analytics Page</span>
+                        <span>Open Run Detail</span>
                         <ArrowUpRight className="h-3 w-3" />
                       </span>
                     </div>
@@ -451,6 +537,24 @@ export function RunsClient({ userEmail }: { userEmail: string }) {
 
                   {/* Right Actions */}
                   <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    {(run.status === "Running" || run.status === "Queued") && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCancelRun(run.id);
+                        }}
+                        disabled={cancellingId === run.id}
+                        title="Stop this run and tear down its sandbox"
+                        className="flex items-center gap-1.5 bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors shadow-2xs cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {cancellingId === run.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Ban className="h-3.5 w-3.5" />
+                        )}
+                        <span>{cancellingId === run.id ? "Cancelling…" : "Cancel"}</span>
+                      </button>
+                    )}
                     <Link
                       href={`/dashboard/runs/${encodeURIComponent(run.id)}/analytics`}
                       className="flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors shadow-2xs cursor-pointer"

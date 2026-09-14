@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { discoverRepositories } from "@/lib/github/discovery";
+import { resolveGitHubConnection, type GitHubConnection } from "@/lib/github/connection";
 
 /**
  * Resolve the live URL for an imported repository.
@@ -140,7 +142,27 @@ export async function POST(request: Request) {
 
   // Only resolve repos this deployment can actually reach, and take the
   // homepage from discovery rather than trusting the request body.
-  const discovered = await discoverRepositories(supabase);
+  //
+  // Discovery must be scoped to the caller's own installations: the agent's
+  // catalogue is a union across every tenant, and the unscoped version let any
+  // signed-in user read the homepage / deployment URL of any repository.
+  let admin: ReturnType<typeof createAdminClient>;
+  let connection: GitHubConnection;
+  try {
+    admin = createAdminClient();
+    connection = await resolveGitHubConnection(admin, user);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Supabase admin client unavailable.";
+    return NextResponse.json({ error: message }, { status: 503 });
+  }
+
+  if (!connection.connected) {
+    return NextResponse.json({ results: [] });
+  }
+
+  const discovered = await discoverRepositories(admin, {
+    installationIds: connection.installationIds,
+  });
   const byName = new Map(discovered.map((r) => [r.repo_full_name.toLowerCase(), r]));
 
   const results: RepoUrlResult[] = await Promise.all(

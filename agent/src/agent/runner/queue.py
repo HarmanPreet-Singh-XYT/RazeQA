@@ -64,6 +64,7 @@ class JobQueue:
         self._branch_active_job: dict[str, str] = {}  # "owner/repo:branch" -> job_id
         self._successful_runs_cache: dict[str, dict[str, Any]] = {}  # sha_hash -> result
         self._job_containers: dict[str, str] = {}  # job_id -> docker container_name
+        self._job_run_ids: dict[str, str] = {}  # run_id -> job_id (push runs differ)
 
     def register_container(self, job_id: str, container_name: str) -> None:
         """Associate a running Docker container name with a job for immediate termination on cancel."""
@@ -73,10 +74,62 @@ class JobQueue:
         """Disassociate a Docker container name when the container is shut down cleanly."""
         self._job_containers.pop(job_id, None)
 
+    def _stop_job_container(self, job_id: str) -> None:
+        """Stop the Docker container a job is using, if one is registered."""
+        container = self._job_containers.pop(job_id, None)
+        if not container:
+            return
+        import subprocess
+
+        try:
+            subprocess.run(["docker", "stop", container], capture_output=True, timeout=10)
+            logger.info("Terminated Docker container %s for job %s", container, job_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to stop container %s for job %s: %s", container, job_id, exc)
+
     def is_job_cancelled(self, job_id: str) -> bool:
         """Check if a job has been superseded or cancelled."""
         job = self._jobs.get(job_id)
         return job is not None and job.status in ("superseded", "cancelled")
+
+    def get_job(self, job_id: str) -> QueuedJob | None:
+        """Lookup job state by ID."""
+        return self._jobs.get(job_id)
+
+    def find_job_for_run(self, run_id: str) -> QueuedJob | None:
+        """Resolve the job that produced a run id.
+
+        PR/bot jobs use ``job.id`` as the run id, but push-triggered jobs create a
+        separate run record up front, so the id alone is not enough.
+        """
+        return self._jobs.get(run_id) or self._jobs.get(self._job_run_ids.get(run_id, ""))
+
+    def list_jobs(self) -> list[QueuedJob]:
+        """Snapshot of tracked jobs, newest first (bounded by ``_MAX_TRACKED_JOBS``)."""
+        return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+
+    def cancel_job(self, job_id: str, reason: str = "Cancelled by user") -> bool:
+        """Cancel a pending or running job, stopping its container immediately.
+
+        Returns True when a live job was cancelled; False for an unknown or
+        already-settled job (so callers can report an honest 404/409).
+        """
+        job = self._jobs.get(job_id)
+        if job is None or job.status not in ("pending", "running"):
+            return False
+        logger.info("Cancelling job %s: %s", job_id, reason)
+        job.status = "cancelled"
+        job.error = reason
+        task = self._running_tasks.get(job_id)
+        if task and not task.done():
+            task.cancel()
+        self._stop_job_container(job_id)
+        return True
+
+    def cancel_job_by_run(self, run_id: str, reason: str = "Cancelled by user") -> bool:
+        """Cancel the job associated with a run id (push runs included)."""
+        job = self.find_job_for_run(run_id)
+        return self.cancel_job(job.id, reason) if job is not None else False
 
     @staticmethod
     def _evict_oldest_if_over_cap(d: dict[Any, Any], cap: int) -> None:
@@ -112,14 +165,7 @@ class JobQueue:
                     task.cancel()
                     cancelled_count += 1
                 # Terminate any active Docker container running in a worker thread immediately
-                container = self._job_containers.pop(old_job_id, None)
-                if container:
-                    import subprocess
-                    try:
-                        subprocess.run(["docker", "stop", container], capture_output=True, timeout=10)
-                        logger.info("Terminated Docker container %s for superseded job %s", container, old_job_id)
-                    except Exception as e:
-                        logger.warning("Failed to stop container %s for superseded job %s: %s", container, old_job_id, e)
+                self._stop_job_container(old_job_id)
         return cancelled_count
 
     async def submit_job(
@@ -131,8 +177,14 @@ class JobQueue:
         scope: str = "changed",
         test_type: str = "functional",
         trigger_type: str = "webhook_pr",
+        run_id: str | None = None,
     ) -> QueuedJob:
-        """Submit a job, superseding older runs on the same branch and throttling concurrency."""
+        """Submit a job, superseding older runs on the same branch and throttling concurrency.
+
+        ``run_id`` links the job to a run record whose id differs from ``job.id``
+        (push-triggered runs create their record before the job), so a later
+        cancel-by-run-id can find it.
+        """
         # 1. Supersede any older in-flight runs on this branch (debounce rapid pushes)
         self.cancel_branch_jobs(repo, branch)
 
@@ -151,27 +203,41 @@ class JobQueue:
         branch_key = f"{repo}:{branch}"
         self._branch_active_job[branch_key] = job.id
         self._evict_oldest_if_over_cap(self._branch_active_job, _MAX_TRACKED_JOBS)
+        if run_id:
+            self._job_run_ids[run_id] = job.id
+            self._evict_oldest_if_over_cap(self._job_run_ids, _MAX_TRACKED_JOBS)
 
         # 3. Spawn background worker wrapper
         async def _worker() -> None:
             async with self._semaphore:
-                if job.status == "superseded":
-                    logger.info("Job %s was superseded before worker acquisition; skipping.", job.id)
+                if job.status in ("superseded", "cancelled"):
+                    logger.info("Job %s was %s before worker acquisition; skipping.", job.id, job.status)
                     return
 
                 job.status = "running"
                 logger.info("Job %s acquired execution slot for %s on %s (SHA %s)", job.id, repo, branch, sha[:8])
                 try:
                     res = await pipeline_coro_fn(job)
-                    job.status = "succeeded" if res.get("status") == "success" else "failed"
+                    outcome = res.get("status")
+                    if outcome == "success":
+                        job.status = "succeeded"
+                    elif outcome == "cancelled":
+                        job.status = "cancelled"
+                        job.error = job.error or res.get("error") or "Cancelled"
+                    else:
+                        job.status = "failed"
                     if job.status == "succeeded":
                         hash_key = self.compute_job_hash(repo, sha, scope, test_type)
                         self._successful_runs_cache[hash_key] = res
                         self._evict_oldest_if_over_cap(self._successful_runs_cache, _MAX_CACHED_RESULTS)
                 except asyncio.CancelledError:
-                    job.status = "superseded"
-                    job.error = "Cancelled due to branch update"
-                    logger.info("Job %s was cancelled during execution.", job.id)
+                    # cancel_job/cancel_branch_jobs set the precise status before
+                    # cancelling the task; keep it, and only fall back when the
+                    # cancellation came from somewhere else.
+                    if job.status not in ("superseded", "cancelled"):
+                        job.status = "cancelled"
+                        job.error = job.error or "Cancelled during execution"
+                    logger.info("Job %s was cancelled during execution (%s).", job.id, job.status)
                     raise
                 except Exception as exc:
                     job.status = "failed"
@@ -179,14 +245,11 @@ class JobQueue:
                     logger.error("Job %s failed with error: %s", job.id, exc, exc_info=True)
                 finally:
                     self._running_tasks.pop(job.id, None)
+                    self._stop_job_container(job.id)
 
         task = asyncio.create_task(_worker())
         self._running_tasks[job.id] = task
         return job
-
-    def get_job(self, job_id: str) -> QueuedJob | None:
-        """Lookup job state by ID."""
-        return self._jobs.get(job_id)
 
 
 # Default global queue instance

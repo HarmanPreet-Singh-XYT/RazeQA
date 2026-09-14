@@ -132,6 +132,16 @@
     }
   }
 
+  /* Indeterminate top bar used by the global network activity indicator. */
+  @keyframes loading-bar {
+    0% {
+      transform: translateX(-150%);
+    }
+    100% {
+      transform: translateX(450%);
+    }
+  }
+
   @keyframes collapsible-down {
     from {
       height: 0;

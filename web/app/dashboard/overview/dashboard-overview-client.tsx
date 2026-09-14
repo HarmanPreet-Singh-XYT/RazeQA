@@ -28,6 +28,7 @@ import {
   RefreshCw,
   FolderGit2,
   Radio,
+  Play,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useDashboard, ProjectInfo } from "@/components/dashboard-context";
@@ -172,6 +173,19 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
     }
     return map;
   }, [runs]);
+
+  // The latest run for a project card. External sites are keyed by host in the
+  // map above, so a lookup by repo_full_name alone missed them entirely.
+  const latestRunForProject = (project: ProjectInfo) => {
+    const direct = latestRunByRepo[project.repo_full_name];
+    if (direct) return direct;
+    const raw = project.domain || project.target_url || "";
+    const host = raw.replace(/^https?:\/\//, "").split("/")[0];
+    return host ? latestRunByRepo[`external:${host}`] : undefined;
+  };
+
+  const runDetailHref = (run: any) =>
+    `/dashboard/runs/${encodeURIComponent(run.id || run.run_id)}`;
 
   // Real stats calculation
   const gitProjectsCount = projects.filter((p) => p.type !== "external").length;
@@ -459,7 +473,7 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                       key={r.id || r.run_id}
                       onClick={() => {
                         const targetRunId = r.id || r.run_id;
-                        router.push(`/dashboard/runs/${encodeURIComponent(targetRunId)}/analytics`);
+                        router.push(`/dashboard/runs/${encodeURIComponent(targetRunId)}`);
                       }}
                       className="p-2.5 rounded-lg hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-200 cursor-pointer space-y-1.5 group"
                     >
@@ -481,7 +495,7 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                           {sha}
                         </span>
                         <span className="text-slate-400 ml-auto font-mono">
-                          {r.created_at ? new Date(r.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Active"}
+                          {r.created_at ? new Date(r.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
                         </span>
                       </div>
                     </div>
@@ -520,11 +534,17 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                 const isStarred = Boolean(starredMap[p.repo_full_name]);
                 const projectName = p.name || p.repo_full_name.split("/")[1] || p.repo_full_name;
                 const isExternal = p.type === "external";
-                const latestRun = latestRunByRepo[p.repo_full_name];
-                const commitMsg = latestRun?.result?.summary || latestRun?.commit_message || p.last_commit?.message || (isExternal ? "External website verification active" : "Autonomous QA check active");
+                const latestRun = latestRunForProject(p);
+                const commitMsg =
+                  latestRun?.result?.summary ||
+                  latestRun?.commit_message ||
+                  p.last_commit?.message ||
+                  latestRun?.result?.rationale ||
+                  null;
                 const commitDate = latestRun?.created_at
                   ? new Date(latestRun.created_at).toLocaleDateString()
-                  : p.last_commit?.date || (p.updated_at ? new Date(p.updated_at).toLocaleDateString() : "Active");
+                  : p.last_commit?.date ||
+                    (p.updated_at ? new Date(p.updated_at).toLocaleDateString() : null);
                 const domain = p.domain || (p.type === "external" ? p.target_url : null);
                 const urlBadge = isExternal
                   ? "external"
@@ -657,13 +677,19 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                         ) : (
                           <GitCommit className="h-3.5 w-3.5 text-slate-400 shrink-0" />
                         )}
-                        <span className="truncate font-medium text-[11px]">{commitMsg}</span>
+                        <span className="truncate font-medium text-[11px]">
+                          {commitMsg || (
+                            <span className="font-normal italic text-slate-400">
+                              No run summary recorded
+                            </span>
+                          )}
+                        </span>
                       </div>
                     </div>
 
                     {/* Bottom Row: Source identifier & Date */}
-                    <div className="border-t border-slate-100 pt-3 mt-4 flex items-center justify-between text-[11px] text-slate-500">
-                      <div className="flex items-center gap-1.5 truncate max-w-[240px]">
+                    <div className="border-t border-slate-100 pt-3 mt-4 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <div className="flex items-center gap-1.5 truncate min-w-0">
                         {isExternal ? (
                           <>
                             <Globe className="h-3.5 w-3.5 text-sky-600 shrink-0" />
@@ -676,7 +702,22 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                           </>
                         )}
                       </div>
-                      <span className="shrink-0 font-mono text-[10px] text-slate-400">· {commitDate}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {latestRun && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              router.push(runDetailHref(latestRun));
+                            }}
+                            title="Open the detail view for this project's most recent run"
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-700 hover:border-slate-900 hover:bg-slate-950 hover:text-white transition-colors cursor-pointer"
+                          >
+                            <Play className="h-3 w-3" />
+                            Check last run
+                          </button>
+                        )}
+                        <span className="font-mono text-[10px] text-slate-400">· {commitDate || "—"}</span>
+                      </div>
                     </div>
                   </div>
                 );
@@ -694,6 +735,7 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                     <th className="py-2.5 px-4">Type</th>
                     <th className="py-2.5 px-4">Live URL</th>
                     <th className="py-2.5 px-4">Status &amp; Verification</th>
+                    <th className="py-2.5 px-4">Last run</th>
                     <th className="py-2.5 px-4 text-right">Updated</th>
                   </tr>
                 </thead>
@@ -703,11 +745,17 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                     const projectName = p.name || p.repo_full_name.split("/")[1] || p.repo_full_name;
                     const isExternal = p.type === "external";
                     const domain = p.domain || p.target_url;
-                    const latestRun = latestRunByRepo[p.repo_full_name];
-                    const commitMsg = latestRun?.result?.summary || latestRun?.commit_message || p.last_commit?.message || "Active";
+                    const latestRun = latestRunForProject(p);
+                    const commitMsg =
+                      latestRun?.result?.summary ||
+                      latestRun?.commit_message ||
+                      p.last_commit?.message ||
+                      latestRun?.result?.rationale ||
+                      null;
                     const commitDate = latestRun?.created_at
                       ? new Date(latestRun.created_at).toLocaleDateString()
-                      : p.last_commit?.date || (p.updated_at ? new Date(p.updated_at).toLocaleDateString() : "Active");
+                      : p.last_commit?.date ||
+                        (p.updated_at ? new Date(p.updated_at).toLocaleDateString() : null);
                     const isPassed = latestRun?.status === "passed" || latestRun?.result?.status === "success";
 
                     return (
@@ -761,10 +809,28 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
                           )}
                         </td>
                         <td className="py-3 px-4 text-slate-700 truncate max-w-[200px]">
-                          {commitMsg}
+                          {commitMsg || (
+                            <span className="italic text-slate-400">No run summary recorded</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          {latestRun ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                router.push(runDetailHref(latestRun));
+                              }}
+                              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-700 hover:border-slate-900 hover:bg-slate-950 hover:text-white transition-colors cursor-pointer"
+                            >
+                              <Play className="h-3 w-3" />
+                              Check last run
+                            </button>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 italic">No runs</span>
+                          )}
                         </td>
                         <td className="py-3 px-4 text-right font-mono text-[11px] text-slate-400">
-                          {commitDate}
+                          {commitDate || "—"}
                         </td>
                       </tr>
                     );

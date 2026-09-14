@@ -412,6 +412,9 @@ def test_raise_on_failure_tags_the_failed_phase():
     with pytest.raises(SandboxBootError) as build_err:
         _raise_on_failure("build", failed, "img:1")
     assert build_err.value.step == "build"
+    # The untruncated output travels with the exception so the dashboard can
+    # show a real build log, not just the exception message tail.
+    assert build_err.value.log == "TS2307"
 
     with pytest.raises(SandboxBootError) as install_err:
         _raise_on_failure("dependency install", failed, "img:1")
@@ -488,6 +491,65 @@ async def test_build_failure_is_reported_as_a_critical_case(monkeypatch):
     assert "TS2307" in captured["comment"]["body"]
     # The PR-centric projection is written too.
     assert captured["insights"]["test_cases"][0]["category"] == "build"
+
+
+@pytest.mark.asyncio
+async def test_boot_failure_persists_full_redacted_build_log(monkeypatch):
+    """The dashboard's log view needs the full captured output, redacted.
+
+    ``safe_error`` is only the truncated message; ``log`` carries the complete
+    command output, which must survive redaction and land in ``build_log`` and
+    the build test case's evidence.
+    """
+    import agent.db.pr_insights as insights_mod
+    from agent.runner import pipeline as pipeline_mod
+
+    captured: dict = {}
+
+    class FakeRunStore:
+        def update(self, **kwargs):
+            captured["run_update"] = kwargs
+
+    class FakeInsights:
+        def record_run_result(self, **kwargs):
+            captured["insights"] = kwargs
+
+    class FakeGitHub:
+        async def update_check_run(self, **kwargs):
+            return {}
+
+        async def post_pr_comment(self, **kwargs):
+            return {}
+
+    monkeypatch.setattr(pipeline_mod, "default_run_store", FakeRunStore())
+    monkeypatch.setattr(insights_mod, "default_pr_insight_store", FakeInsights())
+
+    full_log = "line-1\nnpm ERR! secret=super-secret-value\n" + ("x" * 12000)
+
+    await pipeline_mod._report_boot_failure(
+        step="build",
+        safe_error="build failed for img:1: TS2307",
+        log=full_log,
+        run_id="run_log",
+        owner="acme",
+        repo="web",
+        branch="feat/x",
+        sha="c" * 40,
+        base_branch="main",
+        pr_number=9,
+        check_run_id=101,
+        installation_id=1,
+        github_client=FakeGitHub(),
+        post_comments=True,
+        secrets=["super-secret-value"],
+    )
+
+    result = captured["run_update"]["result"]
+    assert "super-secret-value" not in result["build_log"]
+    assert "line-1" in result["build_log"]
+    # The full log is retained, not just the 4000-char exception message tail.
+    assert len(result["build_log"]) > 10000
+    assert result["test_cases"][0]["evidence"]["build_output"] == result["build_log"]
 
 
 @pytest.mark.asyncio

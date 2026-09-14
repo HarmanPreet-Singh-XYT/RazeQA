@@ -28,6 +28,28 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getSessionUser } from "@/lib/auth";
 import { canAccessRepo, resolveTenantScope, type TenantScope } from "@/lib/tenant";
 
+/**
+ * The engine labels every record `repo: "default"` and keeps the real
+ * repository in `result.owner` / `result.repo`. Without resolving it, the tenant
+ * filter below compares "default" against the caller's repositories, matches
+ * nothing, and every unscoped runs feed (the workspace overview's "Recent
+ * Previews & Runs" and its per-project "Check last run" button) renders empty.
+ */
+function resolveRunRepo(run: any): string | null {
+  const direct = run?.repo_full_name || run?.repo;
+  if (typeof direct === "string" && direct && direct !== "default") return direct;
+
+  const result = run?.result || {};
+  const name = result.repo_full_name || result.repo;
+  if (typeof name === "string" && name) {
+    if (name.includes("/")) return name;
+    const owner = result.owner || run?.owner;
+    if (typeof owner === "string" && owner) return `${owner}/${name}`;
+  }
+
+  return typeof direct === "string" && direct ? direct : null;
+}
+
 export async function GET(request: Request) {
   const git = getGitInfo();
   const { searchParams } = new URL(request.url);
@@ -92,7 +114,15 @@ export async function GET(request: Request) {
     if (res.ok) {
       const payload = await res.json();
       const allRuns = Array.isArray(payload) ? payload : [];
-      const runs = allRuns.filter((r: any) => canAccessRepo(scope, r?.repo ?? r?.repo_full_name));
+      const runs = allRuns
+        .map((r: any) => {
+          const repo = resolveRunRepo(r);
+          if (!repo || repo === r.repo) return r;
+          // Surface the real repository so the dashboard can label and group the
+          // run instead of keying it under "default".
+          return { ...r, repo, repo_full_name: r.repo_full_name || repo };
+        })
+        .filter((r: any) => canAccessRepo(scope, r?.repo ?? r?.repo_full_name));
       return NextResponse.json({
         runs,
         engineConnected: true,
