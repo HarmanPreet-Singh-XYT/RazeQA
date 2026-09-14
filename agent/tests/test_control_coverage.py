@@ -21,7 +21,7 @@ import http.server
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from playwright.sync_api import sync_playwright
@@ -354,6 +354,79 @@ def test_loop_returns_to_the_route_after_a_control_navigates() -> None:
 
     assert result["exercised"][0]["navigated"] is True
     assert page.goto_calls == ["http://localhost:3000/"], "did not return to the route"
+
+
+def test_extra_pages_opened_by_a_control_are_closed() -> None:
+    """`target="_blank"` links open tabs the sweep never inspects. Left open
+    they keep loading, and because the context records a video per page they
+    also leave stray recordings beside the run's real evidence."""
+    page = _CovPage()
+    popup = MagicMock()
+    popup.video = MagicMock()
+    page.context = SimpleNamespace(pages=[page, popup])
+
+    assert ba._close_extra_pages(page) == 1
+    popup.close.assert_called_once()
+    popup.video.delete.assert_called_once()
+
+
+def test_closing_extra_pages_survives_a_closed_context() -> None:
+    page = _CovPage()
+    page.context = SimpleNamespace(pages=None)
+    assert ba._close_extra_pages(page) == 0
+
+
+def test_click_scrolls_the_target_into_view_before_aiming(control_server: str) -> None:
+    """The reported bug: after the sweep returns to the top of the page, a
+    control that lives mid-page was aimed at *without scrolling back*, so the
+    cursor slid down off the bottom of the screen and nothing was visible."""
+    from agent.journeys.cursor_overlay import click_with_cursor, install_cursor_overlay
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_context(viewport={"width": 1280, "height": 720}).new_page()
+        try:
+            page.goto(control_server, wait_until="networkidle")
+            install_cursor_overlay(page)
+            page.evaluate(
+                "() => { window.__clicked = false;"
+                " document.getElementById('below-fold')"
+                ".addEventListener('click', () => { window.__clicked = true; }); }"
+            )
+            # Exactly the starting state the user described: parked at the top,
+            # target far below the fold.
+            page.evaluate("() => window.scrollTo(0, 0)")
+            assert page.evaluate("() => window.scrollY") == 0
+
+            click_with_cursor(page, "#below-fold", timeout=3000)
+
+            assert page.evaluate("() => window.scrollY") > 0, (
+                "the page never scrolled to the target, so the cursor left the screen"
+            )
+            assert page.evaluate("() => window.__clicked") is True, (
+                "the press never landed on the button"
+            )
+
+            cursor = page.evaluate(
+                """() => {
+                    const el = document.getElementById('__qa-cursor');
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    return {
+                      pointTop: parseFloat(el.style.top || '0'),
+                      top: r.top, bottom: r.bottom, viewport: window.innerHeight,
+                    };
+                }"""
+            )
+            assert cursor is not None, "overlay cursor was never installed"
+            # The pointer position itself must be on-screen. (The arrow graphic
+            # is ~22px tall, so at the very bottom of a document — where the
+            # element cannot be centred — its tail may clip a few pixels.)
+            assert 0 <= cursor["pointTop"] <= cursor["viewport"], (
+                f"cursor's press point is outside the viewport: {cursor}"
+            )
+        finally:
+            browser.close()
 
 
 def test_loop_returns_to_the_route_when_a_navigation_commits_late() -> None:

@@ -166,8 +166,42 @@ export function FixProposalViewer({
   };
 
   const badge = getParadigmBadge(proposal.paradigm || "logic");
-  const rawDiff = proposal.unified_diff || "";
-  const diffLines = rawDiff.split("\n");
+  const patches = proposal.patches || [];
+
+  // A synthesizer proposal stores its diff per-file in `patches[]`; only an
+  // agentic repair result populates the top-level `unified_diff`. Prefer the
+  // top-level field when it is present, otherwise fall back to the patches so
+  // the pane is never blank for a proposal that actually carries a fix.
+  const rawDiff = (proposal.unified_diff || "").trim()
+    ? proposal.unified_diff || ""
+    : patches
+        .map((p) => (p.unified_diff || "").trim())
+        .filter(Boolean)
+        .join("\n");
+  const diffLines = rawDiff ? rawDiff.split("\n") : [];
+
+  // Same story for the GitHub-suggestion view: the synthesizer never emits a
+  // top-level `suggested_change`, so derive it from the replacement snippets.
+  const suggestedChange =
+    (proposal.suggested_change || "").trim() ||
+    patches
+      .map((p) => (p.replacement_snippet || "").trim())
+      .filter(Boolean)
+      .join("\n\n");
+
+  const targetFiles =
+    proposal.target_files && proposal.target_files.length > 0
+      ? proposal.target_files
+      : patches.map((p) => p.file_path);
+
+  // `steps_taken`/`max_steps` default to 0/10 on every proposal, so the meter
+  // only carries information when an agentic repair actually ran.
+  const isAgenticRepair =
+    Boolean(proposal.build_command) || Boolean(proposal.repair_trajectory?.length);
+
+  const summaryText = (proposal.summary || "").trim();
+  const analysisText = (proposal.explanation || "").trim();
+  const showSummary = Boolean(summaryText) && summaryText !== analysisText;
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden dark:border-slate-800 dark:bg-slate-900">
@@ -193,7 +227,7 @@ export function FixProposalViewer({
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 Target:{" "}
                 <span className="font-mono font-medium text-slate-700 dark:text-slate-300">
-                  {proposal.target_files.join(", ")}
+                  {targetFiles.join(", ") || "unknown target"}
                 </span>
               </p>
             </div>
@@ -272,8 +306,10 @@ export function FixProposalViewer({
       <div className="p-4 border-b border-slate-100 bg-white dark:bg-slate-900 dark:border-slate-800 space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs font-medium text-slate-800 dark:text-slate-200">
-            <span className="font-semibold text-slate-900 dark:text-white">Summary: </span>
-            {proposal.summary || proposal.explanation || "Autonomous code repair synthesized."}
+            <span className="font-semibold text-slate-900 dark:text-white">
+              {showSummary ? "Summary: " : "Analysis: "}
+            </span>
+            {showSummary ? summaryText : analysisText || "Autonomous code repair synthesized."}
           </p>
 
           {/* Verification & Resource Meter Chips */}
@@ -295,7 +331,7 @@ export function FixProposalViewer({
               </span>
             )}
 
-            {proposal.steps_taken !== undefined && (
+            {proposal.steps_taken !== undefined && isAgenticRepair && (
               <span className="bg-slate-100 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 px-2 py-0.5 rounded font-mono">
                 {proposal.steps_taken}/{proposal.max_steps || 10} steps
               </span>
@@ -309,10 +345,10 @@ export function FixProposalViewer({
           </div>
         </div>
 
-        {proposal.explanation && (
+        {showSummary && analysisText && (
           <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
             <span className="font-semibold text-slate-700 dark:text-slate-300">Analysis: </span>
-            {proposal.explanation}
+            {analysisText}
           </p>
         )}
       </div>
@@ -328,7 +364,7 @@ export function FixProposalViewer({
           <span>
             {viewMode === "trajectory"
               ? "Autonomous Agent Trajectory (Bash execution stream)"
-              : proposal.target_files[0] || "patch.diff"}
+              : targetFiles[0] || "patch.diff"}
           </span>
         </div>
 
@@ -372,7 +408,7 @@ export function FixProposalViewer({
                 handleCopy(
                   viewMode === "diff"
                     ? rawDiff
-                    : proposal.suggested_change || rawDiff,
+                    : suggestedChange || rawDiff,
                   "diff"
                 )
               }
@@ -455,44 +491,50 @@ export function FixProposalViewer({
             )}
           </div>
         ) : viewMode === "diff" ? (
-          <table className="w-full border-collapse">
-            <tbody>
-              {diffLines.map((line: string, idx: number) => {
-                let rowBg = "";
-                let textColor = "text-slate-300";
-                let prefixColor = "text-slate-500";
+          diffLines.length > 0 ? (
+            <table className="w-full border-collapse">
+              <tbody>
+                {diffLines.map((line: string, idx: number) => {
+                  let rowBg = "";
+                  let textColor = "text-slate-300";
+                  let prefixColor = "text-slate-500";
 
-                if (line.startsWith("+") && !line.startsWith("+++")) {
-                  rowBg = "bg-emerald-950/40 border-l-2 border-emerald-500";
-                  textColor = "text-emerald-300";
-                  prefixColor = "text-emerald-400 font-bold";
-                } else if (line.startsWith("-") && !line.startsWith("---")) {
-                  rowBg = "bg-rose-950/40 border-l-2 border-rose-500";
-                  textColor = "text-rose-300";
-                  prefixColor = "text-rose-400 font-bold";
-                } else if (line.startsWith("@@")) {
-                  rowBg = "bg-sky-950/30";
-                  textColor = "text-sky-300 font-medium";
-                  prefixColor = "text-sky-400";
-                }
+                  if (line.startsWith("+") && !line.startsWith("+++")) {
+                    rowBg = "bg-emerald-950/40 border-l-2 border-emerald-500";
+                    textColor = "text-emerald-300";
+                    prefixColor = "text-emerald-400 font-bold";
+                  } else if (line.startsWith("-") && !line.startsWith("---")) {
+                    rowBg = "bg-rose-950/40 border-l-2 border-rose-500";
+                    textColor = "text-rose-300";
+                    prefixColor = "text-rose-400 font-bold";
+                  } else if (line.startsWith("@@")) {
+                    rowBg = "bg-sky-950/30";
+                    textColor = "text-sky-300 font-medium";
+                    prefixColor = "text-sky-400";
+                  }
 
-                return (
-                  <tr key={idx} className={`${rowBg} leading-5`}>
-                    <td className="w-10 select-none px-2 text-right text-[11px] text-slate-600 border-r border-slate-800">
-                      {idx + 1}
-                    </td>
-                    <td className="px-3 whitespace-pre font-mono">
-                      <span className={prefixColor}>{line.charAt(0)}</span>
-                      <span className={textColor}>{line.slice(1)}</span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                  return (
+                    <tr key={idx} className={`${rowBg} leading-5`}>
+                      <td className="w-10 select-none px-2 text-right text-[11px] text-slate-600 border-r border-slate-800">
+                        {idx + 1}
+                      </td>
+                      <td className="px-3 whitespace-pre font-mono">
+                        <span className={prefixColor}>{line.charAt(0)}</span>
+                        <span className={textColor}>{line.slice(1)}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <div className="p-4 text-center text-slate-500 italic">
+              No unified diff was recorded for this proposal.
+            </div>
+          )
         ) : (
           <div className="p-4 whitespace-pre-wrap leading-relaxed text-slate-300">
-            {proposal.suggested_change || (
+            {suggestedChange || (
               <div className="text-slate-500 italic">
                 No suggestion block available. Review Unified Diff tab.
               </div>

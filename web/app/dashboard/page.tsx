@@ -1,11 +1,12 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
-import { DashboardOverviewClient } from "./dashboard-overview-client";
+import { AgentChatClient } from "./agent/agent-chat-client";
 
 export const metadata = {
-  title: "Overview — Projects & Activity — AutoQA",
-  description: "Vercel-style workspace overview showing all repositories, domains, commits, and autonomous QA health.",
+  title: "Copilot — AutoQA",
+  description:
+    "The AutoQA agent: read runs, findings, pull requests, and analytics, and act on them with per-session controls.",
 };
 
 export default async function DashboardPage() {
@@ -14,15 +15,11 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  // The overview reads `?deleted=` (set when a project is deleted from Project
-  // Settings) via useSearchParams, which needs a Suspense boundary.
+  // The copilot reads `?repo=` (the active project scope) via useSearchParams,
+  // which needs a Suspense boundary.
   return (
-    <Suspense
-      fallback={
-        <div className="p-8 text-xs text-slate-500">Loading workspace overview...</div>
-      }
-    >
-      <DashboardOverviewClient userEmail={session} />
+    <Suspense fallback={<div className="p-8 text-xs text-slate-500">Loading copilot...</div>}>
+      <AgentChatClient userEmail={session} />
     </Suspense>
   );
 }

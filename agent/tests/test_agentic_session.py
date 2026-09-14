@@ -125,6 +125,23 @@ def test_mouse_exactly_one_attempt_at_target_and_within_viewport():
     assert moves[-1] == (300, 200), "final position must be the exact target"
 
 
+def test_off_viewport_target_is_refused_rather_than_chased_off_screen():
+    """The overlay cursor is position:fixed and bounding_box() is
+    viewport-relative, so an element below the fold reports a y past the
+    viewport. Gliding to it moved the pointer off the bottom of the screen
+    while the page stayed put — the viewer sees the cursor leave and never
+    sees the click."""
+    from agent.journeys.cursor_overlay import move_mouse_to_locator
+
+    page = MagicMock()
+    page.viewport_size = {"width": 1280, "height": 720}
+    locator = MagicMock()
+    locator.bounding_box.return_value = {"x": 100, "y": 4000, "width": 80, "height": 20}
+
+    assert move_mouse_to_locator(page, locator) is False
+    page.mouse.move.assert_not_called()
+
+
 def test_cursor_caption_travels_with_the_pointer():
     """Callers label an action *before* gliding to it, so the caption must
     follow the cursor rather than stay behind at the old position."""

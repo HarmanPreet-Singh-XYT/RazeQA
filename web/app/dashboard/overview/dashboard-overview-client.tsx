@@ -221,7 +221,7 @@ export function DashboardOverviewClient({ userEmail }: { userEmail?: string }) {
             type="button"
             onClick={() => {
               setShowDeletedBanner(false);
-              router.replace("/dashboard");
+              router.replace("/dashboard/overview");
             }}
             className="text-slate-500 hover:text-slate-900 font-semibold text-xs shrink-0 cursor-pointer"
           >

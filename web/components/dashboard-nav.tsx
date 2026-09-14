@@ -46,7 +46,6 @@ import {
 } from "lucide-react";
 import { logout } from "@/app/login/actions";
 import { useDashboard } from "./dashboard-context";
-import { AgentModal } from "./agent-modal";
 import { CommandPalette } from "./command-palette";
 import { ExternalTestModal } from "./external-test-modal";
 
@@ -70,7 +69,6 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isAddNewOpen, setIsAddNewOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isAgentModalOpen, setIsAgentModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isExternalTestOpen, setIsExternalTestOpen] = useState(false);
 
@@ -104,16 +102,10 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
     ? scopeRepo.split("/")[1] || scopeRepo
     : (projects[0]?.name || "Workspace");
 
-  const activeProjectSlug = scopeRepo;
-
-  // External projects live in browser storage; the copilot needs their target
-  // URL to be able to dispatch an audit for them.
-  const activeTargetUrl =
-    projects.find((p) => p.repo_full_name === activeProjectSlug)?.domain || null;
-
   // Breadcrumb title resolution
   const getBreadcrumbTitle = () => {
-    if (pathname === "/dashboard") return "Overview";
+    if (pathname === "/dashboard") return "Copilot";
+    if (pathname.startsWith("/dashboard/overview")) return "Overview";
     if (pathname.startsWith("/dashboard/projects")) {
       if (currentTab === "roles") return "Test Personas";
       if (currentTab === "auto-repair") return "AI Auto-Repair";
@@ -122,6 +114,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
     }
     if (pathname === "/dashboard/project") return "Project Overview";
     if (pathname.startsWith("/dashboard/runs") || pathname.startsWith("/dashboard/deployments")) return "Test Runs";
+    if (pathname.startsWith("/dashboard/agent")) return "AI Copilot";
     if (pathname.startsWith("/dashboard/tools") || pathname.startsWith("/dashboard/journeys")) return "User Journeys";
     if (pathname.startsWith("/dashboard/logs")) return "Execution Logs";
     if (pathname.startsWith("/dashboard/analytics")) return "Quality Analytics";
@@ -155,7 +148,16 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
   // overview pages (rendered below) are intentionally fleet-wide.
   const scopeQuery = scopeRepo ? `?repo=${encodeURIComponent(scopeRepo)}` : "";
 
+  // The copilot is a full page now, not a modal; every entry point keeps the
+  // active project in scope through the same `repo` query param.
+  const agentHref = `/dashboard${scopeQuery}`;
+
   const navPrimary = [
+    {
+      href: `/dashboard/project${scopeQuery}`,
+      label: "Overview",
+      icon: Home,
+    },
     {
       href: `/dashboard/pull-requests${scopeQuery}`,
       label: "Pull Requests",
@@ -165,11 +167,6 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
       href: `/dashboard/tests${scopeQuery}`,
       label: "Tests",
       icon: ListChecks,
-    },
-    {
-      href: `/dashboard/project${scopeQuery}`,
-      label: "Overview",
-      icon: Home,
     },
     {
       href: `/dashboard/runs${scopeQuery}`,
@@ -208,12 +205,12 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
           { href: "/dashboard/automation", label: "Automation", icon: Workflow },
         ]
       : []),
-    { href: "#agent", label: "Autonomous Agent", icon: Cpu, isAgentTrigger: true },
+    { href: `/dashboard${scopeQuery}`, label: "Copilot", icon: Cpu },
   ];
 
   const isOverviewPage =
     !urlRepoParam &&
-    (pathname === "/dashboard" ||
+    (pathname === "/dashboard/overview" ||
       pathname === "/dashboard/runs" ||
       pathname === "/dashboard/tools" ||
       pathname === "/dashboard/journeys" ||
@@ -280,13 +277,13 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                 <kbd className="font-mono text-[10px] bg-white border border-slate-200 text-slate-500 px-1 rounded">F</kbd>
               </button>
 
-              <button
-                onClick={() => setIsAgentModalOpen(true)}
+              <Link
+                href={agentHref}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-semibold transition-all shadow-2xs cursor-pointer"
               >
                 <Cpu className="h-3.5 w-3.5 text-slate-600" />
                 <span>Agent</span>
-              </button>
+              </Link>
 
               <div className="relative">
                 <button
@@ -358,8 +355,15 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
           <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 flex items-center gap-1 overflow-x-auto text-xs font-medium text-slate-600 no-scrollbar">
             <Link
               href="/dashboard"
+              className="flex items-center gap-1.5 px-3 py-2 border-b-2 border-transparent transition-colors whitespace-nowrap hover:text-slate-950 hover:border-slate-300"
+            >
+              <Cpu className="h-3.5 w-3.5" />
+              <span>Copilot</span>
+            </Link>
+            <Link
+              href="/dashboard/overview"
               className={`flex items-center gap-1.5 px-3 py-2 border-b-2 transition-colors whitespace-nowrap ${
-                pathname === "/dashboard"
+                pathname.startsWith("/dashboard/overview")
                   ? "border-slate-950 text-slate-950 font-bold"
                   : "border-transparent hover:text-slate-950 hover:border-slate-300"
               }`}
@@ -419,16 +423,10 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
           {children}
         </main>
 
-        <AgentModal
-          isOpen={isAgentModalOpen}
-          onClose={() => setIsAgentModalOpen(false)}
-          activeRepo={scopeRepo}
-          targetUrl={activeTargetUrl}
-        />
         <CommandPalette
           isOpen={isCommandPaletteOpen}
           onClose={() => setIsCommandPaletteOpen(false)}
-          onOpenAgent={() => setIsAgentModalOpen(true)}
+          onOpenAgent={() => router.push(agentHref)}
           onOpenExternalTest={() => setIsExternalTestOpen(true)}
         />
         <ExternalTestModal
@@ -451,7 +449,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
         {/* Top: Back to All Projects + Active Project Card */}
         <div className="p-3 border-b border-slate-200">
           <Link
-            href="/dashboard"
+            href="/dashboard/overview"
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold text-slate-600 hover:text-slate-950 hover:bg-slate-100 transition-colors group mb-2"
           >
             <ArrowLeft className="h-3.5 w-3.5 text-slate-500 group-hover:text-slate-900" />
@@ -551,23 +549,6 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
 
           {navSecondary.map((item) => {
             const Icon = item.icon;
-            if (item.isAgentTrigger) {
-              return (
-                <button
-                  key={item.label}
-                  onClick={() => setIsAgentModalOpen(true)}
-                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-slate-700 hover:text-slate-950 hover:bg-slate-100 transition-colors group cursor-pointer text-left"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Cpu className="h-4 w-4 shrink-0 text-slate-600 group-hover:text-slate-900" />
-                    <span className="font-semibold">Autonomous Agent</span>
-                  </div>
-                  <span className="text-[9px] font-mono bg-slate-100 border border-slate-200 text-slate-600 px-1 py-0.2 rounded font-medium">
-                    Automated
-                  </span>
-                </button>
-              );
-            }
             const active = isSecondaryActive(item.href);
             return (
               <Link
@@ -598,14 +579,14 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
               </span>
             </div>
             <div className="flex items-center gap-1">
-              <button
-                onClick={() => setIsAgentModalOpen(true)}
-                title="Notifications"
+              <Link
+                href={agentHref}
+                title="AutoQA Copilot"
                 className="relative p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100 transition-colors"
               >
                 <Bell className="h-3.5 w-3.5" />
                 <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-sky-500" />
-              </button>
+              </Link>
               <button
                 onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
                 className="p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100 transition-colors"
@@ -623,7 +604,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                   {userEmail || "harmanpreet-singh-xyt"}
                 </div>
                 <Link
-                  href="/dashboard"
+                  href="/dashboard/overview"
                   onClick={() => setIsUserMenuOpen(false)}
                   className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-slate-700 hover:bg-slate-50 hover:text-slate-900"
                 >
@@ -684,7 +665,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                   onClick={() => setIsRepoDropdownOpen(!isRepoDropdownOpen)}
                   className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-semibold text-slate-900 hover:bg-slate-100 border border-transparent hover:border-slate-200 transition-all cursor-pointer truncate max-w-[180px] sm:max-w-[260px]"
                 >
-                  <span className="truncate">{pathname === "/dashboard" ? "All Projects" : projectName}</span>
+                  <span className="truncate">{pathname === "/dashboard/overview" ? "All Projects" : projectName}</span>
                   <ChevronDown className="h-3 w-3 text-slate-400 shrink-0" />
                 </button>
 
@@ -696,7 +677,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                         Switch Project
                       </div>
                       {projects.map((p) => {
-                        const isCurrent = scopeRepo === p.repo_full_name && pathname !== "/dashboard";
+                        const isCurrent = scopeRepo === p.repo_full_name && pathname !== "/dashboard/overview";
                         return (
                           <button
                             key={p.repo_full_name}
@@ -721,10 +702,10 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                       })}
                       <div className="border-t border-slate-100 my-1" />
                       <Link
-                        href="/dashboard"
+                        href="/dashboard/overview"
                         onClick={() => setIsRepoDropdownOpen(false)}
                         className={`w-full flex items-center justify-between px-2 py-1.5 rounded transition-colors ${
-                          pathname === "/dashboard"
+                          pathname === "/dashboard/overview"
                             ? "bg-slate-100 text-slate-950 font-semibold"
                             : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
                         }`}
@@ -733,7 +714,7 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
                           <Home className="h-3.5 w-3.5" />
                           <span>View All Projects</span>
                         </div>
-                        {pathname === "/dashboard" && <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
+                        {pathname === "/dashboard/overview" && <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />}
                       </Link>
                       <Link
                         href="/dashboard/new"
@@ -761,13 +742,13 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
             {/* Right Action Buttons */}
             <div className="flex items-center gap-2.5">
               {/* Autonomous Agent Button */}
-              <button
-                onClick={() => setIsAgentModalOpen(true)}
+              <Link
+                href={agentHref}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-semibold transition-all shadow-2xs cursor-pointer group"
               >
                 <Cpu className="h-3.5 w-3.5 text-slate-600 group-hover:text-slate-900 transition-colors" />
                 <span>Agent</span>
-              </button>
+              </Link>
 
               {/* Add New Dropdown */}
               <div className="relative">
@@ -884,23 +865,6 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
 
                 {navSecondary.map((item) => {
                   const Icon = item.icon;
-                  if (item.isAgentTrigger) {
-                    return (
-                      <button
-                        key={item.label}
-                        onClick={() => {
-                          setIsMobileMenuOpen(false);
-                          setIsAgentModalOpen(true);
-                        }}
-                        className="w-full flex items-center justify-between px-3 py-2 rounded-md text-slate-700 hover:bg-slate-100 text-left"
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <Cpu className="h-4 w-4 text-slate-600" />
-                          <span className="font-semibold">Autonomous Agent</span>
-                        </div>
-                      </button>
-                    );
-                  }
                   const active = isSecondaryActive(item.href);
                   return (
                     <Link
@@ -935,17 +899,10 @@ export function DashboardNav({ children }: { children?: React.ReactNode }) {
       )}
 
       {/* Global Modals */}
-      <AgentModal
-        isOpen={isAgentModalOpen}
-        onClose={() => setIsAgentModalOpen(false)}
-        activeRepo={activeProjectSlug}
-        targetUrl={activeTargetUrl}
-      />
-
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
-        onOpenAgent={() => setIsAgentModalOpen(true)}
+        onOpenAgent={() => router.push(agentHref)}
         onOpenExternalTest={() => setIsExternalTestOpen(true)}
       />
 

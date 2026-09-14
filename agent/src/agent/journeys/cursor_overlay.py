@@ -277,11 +277,19 @@ def _box_center(box: dict[str, float]) -> tuple[float, float]:
     )
 
 
-def _locator_center(locator: Locator) -> tuple[float, float] | None:
+def _locator_center(page: Page, locator: Locator) -> tuple[float, float] | None:
     box = locator.bounding_box()
     if not box:
         return None
-    return _box_center(box)
+    center = _box_center(box)
+    # A center outside the viewport cannot be pointed at or pressed: the overlay
+    # cursor would glide off the screen (it is position: fixed) and the press
+    # would land on nothing. Callers fall back to a real Playwright action,
+    # which scrolls the element in itself.
+    viewport = _viewport_size(page)
+    if not (0 <= center[0] <= viewport["width"] and 0 <= center[1] <= viewport["height"]):
+        return None
+    return center
 
 
 _LINK_BOX_SCRIPT = """(target) => {
@@ -420,10 +428,37 @@ def move_mouse_to(page: Page, x: float, y: float, steps: int = 14) -> None:
     _set_last_position(page, x, y)
 
 
+def bring_into_view(page: Page, locator: Locator, settle_ms: int = 90) -> None:
+    """Scroll an element to the middle of the viewport before pointing at it.
+
+    This is what stops the cursor sliding off the bottom of the screen. The
+    overlay cursor is ``position: fixed`` and Playwright's ``bounding_box()`` is
+    viewport-relative, so an element below the fold has a y *past* the viewport:
+    gliding to it moved the pointer off-screen while the page stayed put, and
+    the subsequent press landed on whatever happened to be at that point (or
+    nothing). Centering rather than ``scroll_into_view_if_needed`` also keeps
+    the target clear of sticky headers, which align to the top edge.
+    """
+    try:
+        locator.evaluate("(el) => el.scrollIntoView({ block: 'center', inline: 'center' })")
+    except Exception:  # noqa: BLE001
+        # Locator.evaluate is unavailable on some fakes and on detached nodes;
+        # Playwright's own scroll is a fine second best.
+        try:
+            locator.scroll_into_view_if_needed(timeout=2000)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not scroll element into view: %s", exc)
+            return
+    try:
+        page.wait_for_timeout(settle_ms)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("No settle wait after scrolling into view: %s", exc)
+
+
 def move_mouse_to_locator(page: Page, locator: Locator, steps: int = 14) -> bool:
     """Moves the cursor to `locator`'s (jittered) center. Returns False if
-    the element isn't visible/measurable."""
-    target = _locator_center(locator)
+    the element isn't visible/measurable or isn't inside the viewport."""
+    target = _locator_center(page, locator)
     if not target:
         return False
     move_mouse_to(page, target[0], target[1], steps=steps)
@@ -447,6 +482,10 @@ def click_with_cursor(
         locator.wait_for(state="visible", timeout=timeout)
     else:
         locator.wait_for(state="visible")
+
+    # Scroll the target to the middle of the viewport *before* aiming at it, so
+    # the pointer and the press both happen where the viewer can see them.
+    bring_into_view(page, locator)
 
     if label:
         annotate_cursor(page, label)
@@ -472,6 +511,11 @@ def fill_with_cursor(page: Page, selector: str, value: str, label: str | None = 
     """Human-looking text entry: glide, click to focus, then type per keystroke."""
     locator = page.locator(selector).first
     locator.wait_for(state="visible")
+
+    # Same as click_with_cursor: an input below the fold has to be scrolled to
+    # the middle first, or the cursor travels off-screen to a position that is
+    # not where the field is.
+    bring_into_view(page, locator)
 
     if label:
         annotate_cursor(page, label)

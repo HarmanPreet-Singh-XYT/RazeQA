@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from agent.journeys.cursor_overlay import (
     annotate_cursor,
+    bring_into_view,
     click_with_cursor,
     drift_cursor,
     fill_with_cursor,
@@ -930,6 +931,46 @@ def _return_to_route(page: Page, route_url: str) -> bool:
         return False
 
 
+def _close_extra_pages(page: Page) -> int:
+    """Close tabs a control opened (``target="_blank"``).
+
+    A sweep that clicks every link on a marketing page opens several — GitHub,
+    an app store, a docs site. Left open they keep loading in the background,
+    each writes its own video file into the run's artifact directory, and the
+    sweep never inspects them anyway. Returns how many were closed.
+    """
+    closed = 0
+    try:
+        context = page.context
+    except Exception:  # noqa: BLE001
+        return 0
+    try:
+        others = [p for p in list(context.pages) if p is not page]
+    except Exception:  # noqa: BLE001
+        return 0
+    for other in others:
+        video = None
+        try:
+            video = other.video
+        except Exception:  # noqa: BLE001
+            video = None
+        try:
+            other.close()
+            closed += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not close a popup tab: %s", exc)
+            continue
+        # The context records a video per page, so every popup leaves a stray
+        # file in the run's video directory. Drop it: the run's evidence is the
+        # main page's recording.
+        if video is not None:
+            try:
+                video.delete()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Could not delete a popup recording: %s", exc)
+    return closed
+
+
 def _dismiss_transient_ui(page: Page) -> None:
     """Escape out of a menu/dialog a control may have opened, so the next
     control is reachable rather than hidden behind an overlay."""
@@ -994,29 +1035,6 @@ def _restore_browser_state(page: Page, snapshot: dict[str, Any] | None, route_ur
         restore_cursor(page)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not reload %s after the sweep: %s", route_url, exc)
-
-
-def _centre_element(page: Page, selector: str) -> None:
-    """Bring a control to the middle of the viewport before acting on it.
-
-    Playwright's ``scroll_into_view_if_needed`` aligns to the nearest edge,
-    which parks the control directly under a sticky header (most marketing
-    sites have one). ``elementFromPoint`` at its center then returns the
-    header, and the reachability check correctly refuses a control a user
-    could not actually click — which read as "unreachable" for controls that
-    were merely scrolled under the nav bar. Centering avoids the whole class.
-    """
-    try:
-        page.evaluate(
-            """(sel) => {
-                const el = document.querySelector(sel);
-                if (el) el.scrollIntoView({ block: 'center', inline: 'center' });
-            }""",
-            selector,
-        )
-        page.wait_for_timeout(90)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Could not centre element %s: %s", selector, exc)
 
 
 def exercise_discovered_controls(
@@ -1131,7 +1149,7 @@ def exercise_discovered_controls(
             if locator.count() == 0:
                 inaccessible.append({"key": key, "label": candidate.label, "reason": "detached"})
                 continue
-            _centre_element(page, selector)
+            bring_into_view(page, locator)
             if not is_visible_and_reachable(page, selector):
                 inaccessible.append({"key": key, "label": candidate.label, "reason": "not-reachable"})
                 continue
@@ -1193,6 +1211,8 @@ def exercise_discovered_controls(
             _return_to_route(page, route_url)
         else:
             _dismiss_transient_ui(page)
+        # `target="_blank"` links leave a live tab behind (and a stray video).
+        _close_extra_pages(page)
 
     discovered = len(candidates)
     return {

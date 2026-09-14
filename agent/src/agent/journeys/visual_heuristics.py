@@ -34,11 +34,31 @@ _HEURISTIC_SCRIPT = """(selector) => {
     const el = document.querySelector(selector);
     if (!el) return null;
 
+    // Resolve a CSS colour to sRGB by painting one pixel and reading it back.
+    //
+    // This used to be a regex for rgb()/rgba(). Every modern syntax —
+    // lab(), oklch(), color(display-p3 …), which Tailwind v4 and current
+    // design systems emit — fell through to the `|| black` fallback. Light
+    // text on a dark hero was therefore measured as black-on-dark and
+    // reported as "low text/background contrast (1.1:1)". The browser knows
+    // every colour space; let it do the conversion.
+    const _cv = document.createElement('canvas');
+    _cv.width = 1;
+    _cv.height = 1;
+    const _ctx = _cv.getContext('2d', { willReadFrequently: true });
+
     function parseColor(str) {
-        const m = str.match(/rgba?\\(([^)]+)\\)/);
-        if (!m) return null;
-        const parts = m[1].split(',').map(s => parseFloat(s.trim()));
-        return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+        if (!str) return null;
+        try {
+            _ctx.clearRect(0, 0, 1, 1);
+            _ctx.fillStyle = 'rgba(0, 0, 0, 0)';
+            _ctx.fillStyle = str;
+            _ctx.fillRect(0, 0, 1, 1);
+            const d = _ctx.getImageData(0, 0, 1, 1).data;
+            return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
+        } catch (e) {
+            return null;
+        }
     }
 
     function relativeLuminance(c) {
@@ -66,20 +86,65 @@ _HEURISTIC_SCRIPT = """(selector) => {
             const style = window.getComputedStyle(cur);
             const bg = parseColor(style.backgroundColor);
             if (bg && bg.a > 0.05) return bg;
+            // A gradient or image background cannot be reduced to a single
+            // colour. Walking past it and using some further ancestor's colour
+            // measured text against a background it is not painted on, so
+            // report "unknown" and claim nothing rather than inventing a
+            // defect — or paying for a vision call on every gradient panel.
+            if (style.backgroundImage && style.backgroundImage !== 'none') return null;
             cur = cur.parentElement;
         }
         return { r: 255, g: 255, b: 255, a: 1 };
     }
 
+    // Does this element's background-image actually hide anything? A gradient
+    // made of 7%-alpha lines does not, and a decorative grid overlay was
+    // otherwise reported as "100% of the element is overlapped by div" on five
+    // hero controls — where it is not even painted above them.
+    const _NAMED_COLORS =
+        /\\b(?:white|black|red|green|blue|gray|grey|transparent|currentcolor|yellow|orange|purple|pink|teal|cyan|magenta|lime|navy|maroon|olive|silver|aqua|fuchsia)\\b/gi;
+
+    function imageObscures(bgImage) {
+        if (!bgImage || bgImage === 'none') return false;
+        // A referenced image paints content that cannot be introspected.
+        if (bgImage.indexOf('url(') !== -1) return true;
+        const tokens = bgImage.match(
+            /rgba?\\([^)]*\\)|oklch\\([^)]*\\)|lab\\([^)]*\\)|color\\([^)]*\\)|#[0-9a-fA-F]{3,8}/g
+        ) || [];
+        const named = bgImage.match(_NAMED_COLORS) || [];
+        let maxAlpha = 0;
+        for (const token of tokens.concat(named)) {
+            const c = parseColor(token);
+            if (c && c.a > maxAlpha) maxAlpha = c.a;
+        }
+        return maxAlpha > 0.5;
+    }
+
+    // An element only overlaps *visually* if it actually paints something
+    // opaque there. The old check counted any geometrically intersecting
+    // sibling, so a fully transparent panel (background: rgba(0,0,0,0)) sitting
+    // over a button was reported as "100% of the element is overlapped by div"
+    // — 28 such findings on a single healthy marketing site.
+    function paints(other) {
+        const s = window.getComputedStyle(other);
+        if (s.display === 'none' || s.visibility === 'hidden') return false;
+        if (parseFloat(s.opacity) < 0.05) return false;
+        const bg = parseColor(s.backgroundColor);
+        if (bg && bg.a > 0.5) return true;
+        if (imageObscures(s.backgroundImage)) return true;
+        const tag = other.tagName.toLowerCase();
+        return tag === 'img' || tag === 'canvas' || tag === 'video' || tag === 'svg';
+    }
+
     const style = window.getComputedStyle(el);
-    const fg = parseColor(style.color) || { r: 0, g: 0, b: 0, a: 1 };
+    const fg = parseColor(style.color);
     const bg = effectiveBackground(el);
-    const contrast = contrastRatio(fg, bg);
+    const contrast = (fg && bg) ? contrastRatio(fg, bg) : null;
 
     const textClipped = el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 2;
 
-    // Overlap check: any element (not an ancestor/descendant of this one)
-    // whose box meaningfully intersects this element's box.
+    // Overlap check: any painted element (not an ancestor/descendant of this
+    // one) whose box meaningfully intersects this element's box.
     const rect = el.getBoundingClientRect();
     const rectArea = Math.max(rect.width * rect.height, 1);
     let overlapRatio = 0;
@@ -87,8 +152,7 @@ _HEURISTIC_SCRIPT = """(selector) => {
     const candidates = document.querySelectorAll('div, span, img, section, aside, header, nav');
     for (const other of candidates) {
         if (other === el || el.contains(other) || other.contains(el)) continue;
-        const oStyle = window.getComputedStyle(other);
-        if (oStyle.display === 'none' || oStyle.visibility === 'hidden' || parseFloat(oStyle.opacity) < 0.05) continue;
+        if (!paints(other)) continue;
         const oRect = other.getBoundingClientRect();
         if (oRect.width <= 0 || oRect.height <= 0) continue;
 
@@ -116,7 +180,9 @@ _HEURISTIC_SCRIPT = """(selector) => {
 @dataclass
 class VisualHeuristicResult:
     selector: str
-    contrast_ratio: float
+    # None when the background could not be reduced to a colour (a gradient or
+    # image sits behind the element). Unmeasured is not the same as bad.
+    contrast_ratio: float | None
     text_clipped: bool
     overlap_ratio: float
     overlapping_with: str | None
@@ -126,7 +192,7 @@ class VisualHeuristicResult:
         """High-confidence defect: bad enough that CSS math alone is
         sufficient to call it broken, no vision check needed."""
         return (
-            self.contrast_ratio < CONTRAST_FAIL_THRESHOLD
+            (self.contrast_ratio is not None and self.contrast_ratio < CONTRAST_FAIL_THRESHOLD)
             or self.text_clipped
             or self.overlap_ratio > 0.6
         )
@@ -135,17 +201,24 @@ class VisualHeuristicResult:
     def is_borderline(self) -> bool:
         """Ambiguous zone: not clean, not confidently broken either — this
         is where an actual vision check earns its cost, versus a clean
-        element (skip) or a clear defect (already know it's bad)."""
+        element (skip) or a clear defect (already know it's bad).
+
+        An unmeasurable contrast is deliberately *not* borderline: escalating
+        every element that happens to sit on a gradient would fire a vision
+        call per element per route, and we would be paying to re-answer a
+        question we never actually asked.
+        """
         if self.is_defect:
             return False
         return (
-            CONTRAST_FAIL_THRESHOLD <= self.contrast_ratio < CONTRAST_BORDERLINE_CEILING
+            (self.contrast_ratio is not None
+             and CONTRAST_FAIL_THRESHOLD <= self.contrast_ratio < CONTRAST_BORDERLINE_CEILING)
             or 0.15 < self.overlap_ratio <= 0.6
         )
 
     def describe(self) -> str:
         parts = []
-        if self.contrast_ratio < CONTRAST_BORDERLINE_CEILING:
+        if self.contrast_ratio is not None and self.contrast_ratio < CONTRAST_BORDERLINE_CEILING:
             parts.append(f"low text/background contrast ({self.contrast_ratio:.1f}:1)")
         if self.text_clipped:
             parts.append("label text is clipped/overflowing its container")
