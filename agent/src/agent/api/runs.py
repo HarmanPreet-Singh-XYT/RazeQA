@@ -23,16 +23,42 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 _SAFE_BASE_REF = re.compile(r"^[A-Za-z0-9._/@+-]+$")
 
 
+def _refresh_if_expiring_signed_url(url: str) -> str:
+    """Re-signs a Supabase Storage URL so links stay live past their original
+    1-hour signature (SIGNED_URL_EXPIRY_S), which otherwise expires long
+    before someone opens an old run in the dashboard. Falls back to the
+    original URL untouched for anything that isn't one of our signed URLs, or
+    if Supabase Storage isn't configured / re-signing fails."""
+    if "/object/sign/" not in url:
+        return url
+    try:
+        from agent.db.storage import default_artifact_storage
+
+        if not default_artifact_storage.is_available():
+            return url
+        refreshed = default_artifact_storage.refresh_signed_url(url)
+        return refreshed or url
+    except Exception:  # noqa: BLE001
+        return url
+
+
 def _normalize_artifact_urls(data: dict) -> dict:
     """Converts local filesystem paths for video_url / trace_url stored in a run
-    record into browser-fetchable /artifacts/runs/... API URLs. The pipeline
-    stores raw local paths in the DB; the API must translate them before
-    sending to the client so the video player and trace download links work."""
+    record into browser-fetchable /artifacts/runs/... API URLs, and re-signs
+    Supabase Storage URLs so a run viewed long after it finished doesn't hand
+    back a dead, expired link. The pipeline stores raw local paths (or an
+    already-signed Supabase URL) in the DB; the API must translate/refresh
+    them before sending to the client so the video player and trace download
+    links keep working."""
     from agent.api.artifacts import to_artifact_url
 
     for field in ("video_url", "trace_url"):
         val = data.get(field)
-        if val and not val.startswith("http") and not val.startswith("/artifacts"):
+        if not val:
+            continue
+        if val.startswith("http"):
+            data[field] = _refresh_if_expiring_signed_url(val)
+        elif not val.startswith("/artifacts"):
             converted = to_artifact_url(val)
             if converted:
                 data[field] = converted
@@ -42,7 +68,11 @@ def _normalize_artifact_urls(data: dict) -> dict:
     if isinstance(result, dict):
         for field in ("video_url", "trace_url"):
             val = result.get(field)
-            if val and not val.startswith("http") and not val.startswith("/artifacts"):
+            if not val:
+                continue
+            if val.startswith("http"):
+                result[field] = _refresh_if_expiring_signed_url(val)
+            elif not val.startswith("/artifacts"):
                 converted = to_artifact_url(val)
                 if converted:
                     result[field] = converted

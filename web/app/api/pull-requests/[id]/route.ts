@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSessionUser } from "@/lib/auth";
 import { resolveTenantScope } from "@/lib/tenant";
+import { refreshSignedArtifactUrl } from "@/lib/supabase/storage-urls";
 
 /**
  * One pull request: its latest run, the structured test cases it produced, and
@@ -99,6 +100,15 @@ export async function GET(
     updated_at: row.updated_at,
   }));
 
+  // Supabase Storage signed URLs expire an hour after issue; a PR opened
+  // later than that would otherwise hand back a dead video/trace link.
+  const [videoUrl, traceUrl] = runResult.data
+    ? await Promise.all([
+        refreshSignedArtifactUrl(admin, runResult.data.video_url),
+        refreshSignedArtifactUrl(admin, runResult.data.trace_url),
+      ])
+    : [null, null];
+
   return NextResponse.json({
     pull_request: pr,
     run: runResult.data
@@ -109,8 +119,8 @@ export async function GET(
           severity_summary: runResult.data.result?.severity_summary ?? null,
           change_impact: runResult.data.result?.change_impact ?? null,
           environment_context: runResult.data.result?.environment_context ?? null,
-          video_url: runResult.data.video_url,
-          trace_url: runResult.data.trace_url,
+          video_url: videoUrl,
+          trace_url: traceUrl,
           completed_at: runResult.data.completed_at,
           created_at: runResult.data.created_at,
         }

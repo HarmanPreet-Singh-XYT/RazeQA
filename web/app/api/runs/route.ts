@@ -27,6 +27,7 @@ function getGitInfo(): { sha: string; branch: string } {
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSessionUser } from "@/lib/auth";
 import { canAccessRepo, resolveTenantScope, type TenantScope } from "@/lib/tenant";
+import { refreshRunArtifactUrls } from "@/lib/supabase/storage-urls";
 
 /**
  * The engine labels every record `repo: "default"` and keeps the real
@@ -192,7 +193,12 @@ export async function GET(request: Request) {
           if (p?.id) repoByProjectId[p.id] = p.repo_full_name;
         }
       }
-      const mapped = dbRuns.map((r: any) => ({
+      // Supabase Storage signed URLs expire an hour after issue; a run listed
+      // later than that would otherwise hand back a dead video/trace link.
+      const refreshed = await Promise.all(
+        dbRuns.map((r: any) => refreshRunArtifactUrls(admin, r))
+      );
+      const mapped = refreshed.map((r: any) => ({
         id: r.id,
         run_id: r.id,
         branch: r.branch,

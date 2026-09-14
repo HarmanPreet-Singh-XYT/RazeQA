@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getSessionUser } from "@/lib/auth";
 import { canAccessRepo, resolveTenantScope } from "@/lib/tenant";
+import { refreshSignedArtifactUrl } from "@/lib/supabase/storage-urls";
 
 /**
  * One test run: the run record itself plus the structured test cases it
@@ -144,6 +145,13 @@ export async function GET(
 
   const pr = prResult?.data || null;
 
+  // Supabase Storage signed URLs expire an hour after issue; a run opened
+  // later than that would otherwise hand back a dead video/trace link.
+  const [videoUrl, traceUrl] = await Promise.all([
+    refreshSignedArtifactUrl(admin, record.video_url || result.video_url || null),
+    refreshSignedArtifactUrl(admin, record.trace_url || result.trace_url || null),
+  ]);
+
   // The PR-centric projection that writes `test_cases` is best-effort, so a run
   // can carry its cases in `result.test_cases` without rows ever landing in the
   // table. Fall back to those rather than showing an empty list.
@@ -187,8 +195,8 @@ export async function GET(
       severity_summary: result.severity_summary ?? null,
       change_impact: result.change_impact ?? null,
       environment_context: result.environment_context ?? null,
-      video_url: record.video_url || result.video_url || null,
-      trace_url: record.trace_url || result.trace_url || null,
+      video_url: videoUrl,
+      trace_url: traceUrl,
       screenshot_url: result.screenshot_url || null,
       console_errors: result.console_errors || [],
       journey_artifacts: result.journey_artifacts || [],

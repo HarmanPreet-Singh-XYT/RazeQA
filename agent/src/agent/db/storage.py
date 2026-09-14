@@ -238,6 +238,32 @@ class SupabaseArtifactStorage:
             logger.warning("Failed to re-sign URL for %s: %s", clean_dest, exc)
             return None
 
+    def object_path_from_signed_url(self, signed_url: str) -> str | None:
+        """Extracts the storage object path (e.g. 'runs/run_123/video/x.webm')
+        out of a previously-issued signed URL for this bucket.
+
+        Supabase signs URLs shaped like
+        '.../storage/v1/object/sign/<bucket>/<path>?token=...'. The path is not
+        persisted separately anywhere (only the full, expiring signed URL is
+        stored on the run record), so refreshing an expired URL means parsing
+        it back out of the old one rather than looking it up.
+        """
+        marker = f"/object/sign/{self.bucket}/"
+        idx = signed_url.find(marker)
+        if idx == -1:
+            return None
+        path_and_query = signed_url[idx + len(marker):]
+        return path_and_query.split("?", 1)[0] or None
+
+    def refresh_signed_url(self, signed_url: str) -> str | None:
+        """Returns a freshly-signed replacement for an expired (or soon to
+        expire) signed URL previously issued for this bucket, or None if the
+        URL isn't one of ours or re-signing fails."""
+        object_path = self.object_path_from_signed_url(signed_url)
+        if not object_path:
+            return None
+        return self.get_signed_url(object_path)
+
     # ------------------------------------------------------------------
     # Retention
     # ------------------------------------------------------------------

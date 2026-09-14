@@ -36,6 +36,37 @@ def test_storage_upload_success(tmp_path: Path) -> None:
     mock_bucket.create_signed_url.assert_called_once()
 
 
+def test_object_path_from_signed_url_extracts_path() -> None:
+    storage = SupabaseArtifactStorage(client=MagicMock(), bucket="run-artifacts")
+    url = "https://example.supabase.co/storage/v1/object/sign/run-artifacts/runs/run_1/video/test_video.webm?token=abc"
+    assert storage.object_path_from_signed_url(url) == "runs/run_1/video/test_video.webm"
+
+
+def test_object_path_from_signed_url_rejects_foreign_url() -> None:
+    storage = SupabaseArtifactStorage(client=MagicMock(), bucket="run-artifacts")
+    assert storage.object_path_from_signed_url("https://example.com/not-ours.mp4") is None
+
+
+def test_refresh_signed_url_reissues_from_expired_url() -> None:
+    mock_client = MagicMock()
+    mock_bucket = MagicMock()
+    mock_bucket.create_signed_url.return_value = {
+        "signedURL": "https://example.supabase.co/storage/v1/object/sign/run-artifacts/runs/run_1/video/test_video.webm?token=fresh"
+    }
+    mock_client.storage.from_.return_value = mock_bucket
+
+    storage = SupabaseArtifactStorage(client=mock_client, bucket="run-artifacts")
+    expired_url = "https://example.supabase.co/storage/v1/object/sign/run-artifacts/runs/run_1/video/test_video.webm?token=stale"
+
+    refreshed = storage.refresh_signed_url(expired_url)
+    assert refreshed == (
+        "https://example.supabase.co/storage/v1/object/sign/run-artifacts/runs/run_1/video/test_video.webm?token=fresh"
+    )
+    mock_bucket.create_signed_url.assert_called_once_with(
+        "runs/run_1/video/test_video.webm", 3600
+    )
+
+
 def test_storage_upload_missing_client(tmp_path: Path) -> None:
     test_file = tmp_path / "video.webm"
     test_file.write_bytes(b"content")
